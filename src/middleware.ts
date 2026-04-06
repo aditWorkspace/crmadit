@@ -18,8 +18,9 @@ export function middleware(request: NextRequest) {
   const isAllowed = allowedWithoutSession.some(p => pathname.startsWith(p));
   if (isAllowed) return NextResponse.next();
 
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const memberId = request.headers.get('x-team-member-id');
-  if (!memberId) {
+  if (!memberId || !UUID_RE.test(memberId)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

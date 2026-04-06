@@ -13,7 +13,7 @@ export function UserSelectorModal() {
   useEffect(() => {
     createClient()
       .from('team_members')
-      .select('*')
+      .select('id, name, email, gmail_connected')
       .order('name')
       .then(({ data }) => {
         setMembers((data as TeamMember[]) || []);
