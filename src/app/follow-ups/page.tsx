@@ -7,8 +7,9 @@ import { FollowUpCard } from '@/components/follow-ups/follow-up-card';
 import { toast } from 'sonner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { formatDate } from '@/lib/utils';
-import { Clock, CheckCheck } from 'lucide-react';
+import { RelativeTime } from '@/components/ui/relative-time';
+import { SkeletonCards } from '@/components/ui/skeleton-cards';
+import { Clock, CheckCheck, Bell } from 'lucide-react';
 
 export default function FollowUpsPage() {
   const { user } = useSession();
@@ -66,15 +67,9 @@ export default function FollowUpsPage() {
 
   const overdueCount = pending.filter(f => new Date(f.due_at) < new Date()).length;
 
-  if (loading) {
-    return (
-      <div className="p-8 text-gray-400">Loading...</div>
-    );
-  }
-
   return (
     <div className="flex flex-col h-screen">
-      <div className="border-b border-gray-100 px-8 py-5 flex-shrink-0">
+      <div className="border-b border-gray-100 px-4 md:px-8 py-5 flex-shrink-0 pt-16 md:pt-5">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-semibold text-gray-900">Follow-ups</h1>
           {overdueCount > 0 && (
@@ -84,7 +79,7 @@ export default function FollowUpsPage() {
         <p className="text-sm text-gray-500 mt-0.5">Your pending follow-up actions.</p>
       </div>
 
-      <div className="flex-1 overflow-auto px-8 py-6">
+      <div className="flex-1 overflow-auto px-4 md:px-8 py-6">
         <Tabs defaultValue="pending">
           <TabsList className="mb-6">
             <TabsTrigger value="pending" className="gap-2">
@@ -101,11 +96,13 @@ export default function FollowUpsPage() {
           </TabsList>
 
           <TabsContent value="pending">
-            {pending.length === 0 ? (
+            {loading ? (
+              <SkeletonCards count={4} />
+            ) : pending.length === 0 ? (
               <div className="text-center py-16 text-gray-400">
-                <CheckCheck className="h-10 w-10 mx-auto mb-3 text-gray-200" />
-                <p className="text-sm font-medium">You&apos;re all caught up!</p>
-                <p className="text-xs mt-1">No pending follow-ups.</p>
+                <Bell className="h-10 w-10 mx-auto mb-3 text-gray-200" />
+                <p className="text-sm font-medium text-gray-700">You&apos;re all caught up!</p>
+                <p className="text-xs mt-1 text-gray-400">No pending follow-ups right now.</p>
               </div>
             ) : (
               <div className="space-y-3 max-w-2xl">
@@ -117,8 +114,13 @@ export default function FollowUpsPage() {
           </TabsContent>
 
           <TabsContent value="history">
-            {completed.length === 0 ? (
-              <div className="text-center py-16 text-gray-400 text-sm">No completed follow-ups yet.</div>
+            {loading ? (
+              <SkeletonCards count={3} />
+            ) : completed.length === 0 ? (
+              <div className="text-center py-16 text-gray-400">
+                <CheckCheck className="h-10 w-10 mx-auto mb-3 text-gray-200" />
+                <p className="text-sm">No completed follow-ups yet.</p>
+              </div>
             ) : (
               <div className="space-y-2 max-w-2xl">
                 {completed.map(f => {
@@ -130,9 +132,9 @@ export default function FollowUpsPage() {
                         <span className="font-medium text-gray-700">{lead?.contact_name || '—'}</span>
                         <span className="text-gray-400"> at {lead?.company_name || '—'}</span>
                       </div>
-                      <span className="text-xs text-gray-400 flex-shrink-0">
-                        {f.completed_at ? formatDate(f.completed_at) : '—'}
-                      </span>
+                      {f.completed_at && (
+                        <RelativeTime date={f.completed_at} className="text-xs text-gray-400 flex-shrink-0" />
+                      )}
                     </div>
                   );
                 })}

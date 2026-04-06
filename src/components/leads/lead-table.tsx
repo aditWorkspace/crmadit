@@ -8,12 +8,16 @@ import { Lead, TeamMember, LeadStage, Priority } from '@/types';
 import { StageBadge } from './stage-badge';
 import { LeadFormModal } from './lead-form';
 import { STAGE_LABELS, PRIORITY_COLORS, PRIORITY_LABELS, ACTIVE_STAGES } from '@/lib/constants';
-import { formatRelativeTime, cn } from '@/lib/utils';
+import { formatRelativeTime, formatDateTime, cn } from '@/lib/utils';
 import { differenceInDays } from 'date-fns';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import { SkeletonTable } from '@/components/ui/skeleton-table';
+import { useLeadRealtime } from '@/hooks/use-realtime';
+import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,6 +33,8 @@ import {
   Search,
   ChevronLeft,
   ChevronRight,
+  Download,
+  X,
 } from 'lucide-react';
 
 type Preset = 'all' | 'my_leads' | 'awaiting_response' | 'awaiting_demo' | 'stale';
@@ -51,6 +57,9 @@ export function LeadTable() {
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [showAddLead, setShowAddLead] = useState(false);
 
+  // Selection state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
   // Filters
   const [preset, setPreset] = useState<Preset>('all');
   const [search, setSearch] = useState('');
@@ -63,6 +72,7 @@ export function LeadTable() {
   const limit = 50;
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -107,6 +117,19 @@ export function LeadTable() {
   useEffect(() => {
     fetchLeads();
   }, [fetchLeads]);
+
+  // Realtime updates
+  useLeadRealtime(fetchLeads);
+
+  // Keyboard shortcuts
+  useKeyboardShortcuts({
+    onNewLead: () => setShowAddLead(true),
+    onSearch: () => searchInputRef.current?.focus(),
+    onEscape: () => {
+      setShowAddLead(false);
+      setSelectedIds(new Set());
+    },
+  });
 
   const handleSort = (col: string) => {
     if (sortBy === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -158,10 +181,106 @@ export function LeadTable() {
 
   const totalPages = Math.ceil(total / limit);
 
+  // ── Selection helpers ──────────────────────────────────────────────
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === leads.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(leads.map((l) => l.id)));
+    }
+  };
+
+  // ── Bulk actions ───────────────────────────────────────────────────
+  const bulkPatch = async (body: Record<string, unknown>) => {
+    if (!user) return;
+    try {
+      await Promise.all(
+        [...selectedIds].map((id) =>
+          fetch(`/api/leads/${id}`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-team-member-id': user.team_member_id,
+            },
+            body: JSON.stringify(body),
+          })
+        )
+      );
+      toast.success(`Updated ${selectedIds.size} lead(s)`);
+      setSelectedIds(new Set());
+      fetchLeads();
+    } catch {
+      toast.error('Some updates failed');
+    }
+  };
+
+  // ── CSV Export ─────────────────────────────────────────────────────
+  const handleExportCSV = async () => {
+    if (!user) return;
+    // Fetch all with current filters (no pagination)
+    const params = new URLSearchParams();
+    if (preset !== 'all') params.set('preset', preset);
+    if (debouncedSearch) params.set('q', debouncedSearch);
+    selectedStages.forEach((s) => params.append('stage', s));
+    if (selectedPriority) params.set('priority', selectedPriority);
+    if (selectedOwner) params.set('owned_by', selectedOwner);
+    params.set('sort_by', sortBy);
+    params.set('sort_dir', sortDir);
+    params.set('limit', '1000');
+
+    const res = await fetch(`/api/leads?${params}`, {
+      headers: { 'x-team-member-id': user.team_member_id },
+    });
+    if (!res.ok) {
+      toast.error('Export failed');
+      return;
+    }
+    const data = await res.json();
+    const allLeads: Lead[] = data.leads || [];
+
+    const headers = [
+      'Name', 'Company', 'Email', 'Stage', 'Priority',
+      'Owned By', 'First Reply At', 'Call Scheduled For',
+      'Demo Sent At', 'Heat Score',
+    ];
+
+    const rows = allLeads.map((l) => [
+      l.contact_name,
+      l.company_name,
+      l.contact_email,
+      STAGE_LABELS[l.stage],
+      PRIORITY_LABELS[l.priority],
+      (l.owned_by_member as TeamMember | undefined)?.name || '',
+      l.first_reply_at ? formatDateTime(l.first_reply_at) : '',
+      l.call_scheduled_for ? formatDateTime(l.call_scheduled_for) : '',
+      l.demo_sent_at ? formatDateTime(l.demo_sent_at) : '',
+      String(l.heat_score),
+    ].map((v) => `"${String(v).replace(/"/g, '""')}"`));
+
+    const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'proxi-leads.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${allLeads.length} leads`);
+  };
+
   return (
     <div className="space-y-4">
       {/* Preset tabs */}
-      <div className="flex items-center gap-1 border-b border-gray-100">
+      <div className="flex items-center gap-1 border-b border-gray-100 overflow-x-auto">
         {(Object.keys(PRESET_LABELS) as Preset[]).map((p) => (
           <button
             key={p}
@@ -170,7 +289,7 @@ export function LeadTable() {
               setPage(1);
             }}
             className={cn(
-              'px-4 py-2.5 text-sm font-medium border-b-2 transition-colors',
+              'px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap',
               preset === p
                 ? 'border-gray-900 text-gray-900'
                 : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -181,13 +300,14 @@ export function LeadTable() {
         ))}
       </div>
 
-      {/* Search + filters + add button */}
+      {/* Search + filters + export + add */}
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-60">
+        <div className="relative flex-1 min-w-48">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
           <Input
+            ref={searchInputRef}
             className="pl-9"
-            placeholder="Search leads..."
+            placeholder="Search leads... (/)"
             value={search}
             onChange={(e) => {
               setSearch(e.target.value);
@@ -235,22 +355,11 @@ export function LeadTable() {
             <ChevronDown className="h-3.5 w-3.5" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            <DropdownMenuItem
-              onClick={() => {
-                setSelectedPriority('');
-                setPage(1);
-              }}
-            >
+            <DropdownMenuItem onClick={() => { setSelectedPriority(''); setPage(1); }}>
               All
             </DropdownMenuItem>
             {(['critical', 'high', 'medium', 'low'] as Priority[]).map((p) => (
-              <DropdownMenuItem
-                key={p}
-                onClick={() => {
-                  setSelectedPriority(p);
-                  setPage(1);
-                }}
-              >
+              <DropdownMenuItem key={p} onClick={() => { setSelectedPriority(p); setPage(1); }}>
                 <span className={cn('mr-2 h-2 w-2 rounded-full inline-block', PRIORITY_COLORS[p])} />
                 {PRIORITY_LABELS[p]}
               </DropdownMenuItem>
@@ -270,163 +379,273 @@ export function LeadTable() {
             <ChevronDown className="h-3.5 w-3.5" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            <DropdownMenuItem
-              onClick={() => {
-                setSelectedOwner('');
-                setPage(1);
-              }}
-            >
+            <DropdownMenuItem onClick={() => { setSelectedOwner(''); setPage(1); }}>
               All
             </DropdownMenuItem>
             {members.map((m) => (
-              <DropdownMenuItem
-                key={m.id}
-                onClick={() => {
-                  setSelectedOwner(m.id);
-                  setPage(1);
-                }}
-              >
+              <DropdownMenuItem key={m.id} onClick={() => { setSelectedOwner(m.id); setPage(1); }}>
                 {m.name}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleExportCSV} className="gap-1.5 hidden sm:inline-flex">
+            <Download className="h-4 w-4" />
+            Export CSV
+          </Button>
           <Button size="sm" onClick={() => setShowAddLead(true)} className="gap-1.5">
             <Plus className="h-4 w-4" />
-            Add Lead
+            <span className="hidden sm:inline">Add Lead</span>
+            <span className="sm:hidden">Add</span>
           </Button>
         </div>
       </div>
 
-      {/* Table */}
-      <div className="rounded-lg border border-gray-100 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100 bg-gray-50/50">
-                {[
-                  { key: 'contact_name', label: 'Contact' },
-                  { key: 'company_name', label: 'Company' },
-                  { key: 'contact_role', label: 'Role', noSort: true },
-                  { key: 'stage', label: 'Stage' },
-                  { key: 'priority', label: 'Priority' },
-                  { key: 'owned_by', label: 'Owner', noSort: true },
-                  { key: 'last_contact_at', label: 'Last Contact' },
-                  { key: '_days', label: 'Days Since', noSort: true },
-                  { key: 'next_followup_at', label: 'Next Follow-up' },
-                  { key: 'poc_status', label: 'POC', noSort: true },
-                ].map((col) => (
-                  <th
-                    key={col.key}
-                    className={cn(
-                      'px-4 py-2.5 text-left font-medium text-gray-500 whitespace-nowrap',
-                      !col.noSort && 'cursor-pointer hover:text-gray-700'
-                    )}
-                    onClick={() => !col.noSort && handleSort(col.key)}
-                  >
-                    <span className="flex items-center gap-1">
-                      {col.label}
-                      {!col.noSort && <SortIcon col={col.key} />}
-                    </span>
-                  </th>
+      {/* Bulk actions bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2.5 bg-gray-900 text-white rounded-lg text-sm">
+          <span className="font-medium">{selectedIds.size} selected</span>
+          <div className="flex items-center gap-2 ml-2">
+            {/* Reassign */}
+            <DropdownMenu>
+              <DropdownMenuTrigger className="inline-flex items-center gap-1 rounded-md bg-white/10 hover:bg-white/20 px-2.5 py-1 text-xs font-medium transition-colors">
+                Reassign <ChevronDown className="h-3 w-3" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {members.map((m) => (
+                  <DropdownMenuItem key={m.id} onClick={() => bulkPatch({ owned_by: m.id })}>
+                    {m.name}
+                  </DropdownMenuItem>
                 ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {loading ? (
-                <tr>
-                  <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
-                    Loading...
-                  </td>
-                </tr>
-              ) : leads.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="px-4 py-12 text-center text-gray-400">
-                    No leads found. Add your first lead to get started.
-                  </td>
-                </tr>
-              ) : (
-                leads.map((lead) => {
-                  const days = daysSince(lead.last_contact_at);
-                  return (
-                    <tr
-                      key={lead.id}
-                      className="hover:bg-gray-50/50 cursor-pointer group"
-                      onClick={() => router.push(`/leads/${lead.id}`)}
-                    >
-                      <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">
-                        {lead.contact_name}
-                      </td>
-                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
-                        {lead.company_name}
-                      </td>
-                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
-                        {lead.contact_role || '—'}
-                      </td>
-                      <td
-                        className="px-4 py-3"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <DropdownMenu>
-                          <DropdownMenuTrigger className="cursor-pointer">
-                            <StageBadge stage={lead.stage} />
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start" className="w-44">
-                            {(Object.keys(STAGE_LABELS) as LeadStage[]).map((s) => (
-                              <DropdownMenuItem
-                                key={s}
-                                onClick={() => handleStageChange(lead.id, s)}
-                              >
-                                {STAGE_LABELS[s]}
-                              </DropdownMenuItem>
-                            ))}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="flex items-center gap-1.5">
-                          <span
-                            className={cn('h-2 w-2 rounded-full', PRIORITY_COLORS[lead.priority])}
-                          />
-                          <span className="text-gray-600">{PRIORITY_LABELS[lead.priority]}</span>
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
-                        {(lead.owned_by_member as TeamMember | undefined)?.name || '—'}
-                      </td>
-                      <td
-                        className="px-4 py-3 text-gray-500 whitespace-nowrap"
-                        title={lead.last_contact_at || ''}
-                      >
-                        {lead.last_contact_at ? formatRelativeTime(lead.last_contact_at) : '—'}
-                      </td>
-                      <td
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Change Stage */}
+            <DropdownMenu>
+              <DropdownMenuTrigger className="inline-flex items-center gap-1 rounded-md bg-white/10 hover:bg-white/20 px-2.5 py-1 text-xs font-medium transition-colors">
+                Change Stage <ChevronDown className="h-3 w-3" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {(Object.keys(STAGE_LABELS) as LeadStage[]).map((s) => (
+                  <DropdownMenuItem key={s} onClick={() => bulkPatch({ stage: s })}>
+                    {STAGE_LABELS[s]}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Change Priority */}
+            <DropdownMenu>
+              <DropdownMenuTrigger className="inline-flex items-center gap-1 rounded-md bg-white/10 hover:bg-white/20 px-2.5 py-1 text-xs font-medium transition-colors">
+                Priority <ChevronDown className="h-3 w-3" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {(['critical', 'high', 'medium', 'low'] as Priority[]).map((p) => (
+                  <DropdownMenuItem key={p} onClick={() => bulkPatch({ priority: p })}>
+                    <span className={cn('mr-2 h-2 w-2 rounded-full inline-block', PRIORITY_COLORS[p])} />
+                    {PRIORITY_LABELS[p]}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="ml-auto text-white/60 hover:text-white"
+            aria-label="Clear selection"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Loading skeleton */}
+      {loading ? (
+        <SkeletonTable cols={11} rows={5} />
+      ) : (
+        <>
+          {/* Desktop Table */}
+          <div className="hidden md:block rounded-lg border border-gray-100 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 bg-gray-50/50">
+                    <th className="px-4 py-2.5 w-8">
+                      <Checkbox
+                        checked={leads.length > 0 && selectedIds.size === leads.length}
+                        onCheckedChange={toggleSelectAll}
+                        aria-label="Select all"
+                      />
+                    </th>
+                    {[
+                      { key: 'contact_name', label: 'Contact' },
+                      { key: 'company_name', label: 'Company' },
+                      { key: 'contact_role', label: 'Role', noSort: true },
+                      { key: 'stage', label: 'Stage' },
+                      { key: 'priority', label: 'Priority' },
+                      { key: 'owned_by', label: 'Owner', noSort: true },
+                      { key: 'last_contact_at', label: 'Last Contact' },
+                      { key: '_days', label: 'Days Since', noSort: true },
+                      { key: 'next_followup_at', label: 'Next Follow-up' },
+                      { key: 'poc_status', label: 'POC', noSort: true },
+                    ].map((col) => (
+                      <th
+                        key={col.key}
                         className={cn(
-                          'px-4 py-3 font-medium whitespace-nowrap',
-                          daysSinceColor(days)
+                          'px-4 py-2.5 text-left font-medium text-gray-500 whitespace-nowrap',
+                          !col.noSort && 'cursor-pointer hover:text-gray-700'
                         )}
+                        onClick={() => !col.noSort && handleSort(col.key)}
                       >
-                        {days !== null ? `${days}d` : '—'}
-                      </td>
-                      <td
-                        className="px-4 py-3 text-gray-500 whitespace-nowrap"
-                        title={lead.next_followup_at || ''}
-                      >
-                        {lead.next_followup_at ? formatRelativeTime(lead.next_followup_at) : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap capitalize">
-                        {lead.poc_status?.replace('_', ' ') || '—'}
+                        <span className="flex items-center gap-1">
+                          {col.label}
+                          {!col.noSort && <SortIcon col={col.key} />}
+                        </span>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {leads.length === 0 ? (
+                    <tr>
+                      <td colSpan={11} className="px-4 py-16 text-center">
+                        <div className="flex flex-col items-center gap-3 text-gray-400">
+                          <Users className="h-10 w-10 text-gray-200" />
+                          <p className="font-medium text-sm">No leads found</p>
+                          <p className="text-xs">Try adjusting your filters or add your first lead.</p>
+                          <Button size="sm" variant="outline" onClick={() => setShowAddLead(true)} className="mt-2 gap-1.5">
+                            <Plus className="h-4 w-4" />
+                            Add Lead
+                          </Button>
+                        </div>
                       </td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                  ) : (
+                    leads.map((lead) => {
+                      const days = daysSince(lead.last_contact_at);
+                      const isSelected = selectedIds.has(lead.id);
+                      return (
+                        <tr
+                          key={lead.id}
+                          className={cn(
+                            'hover:bg-gray-50/50 cursor-pointer group',
+                            isSelected && 'bg-blue-50/40'
+                          )}
+                          onClick={() => router.push(`/leads/${lead.id}`)}
+                        >
+                          <td
+                            className="px-4 py-3"
+                            onClick={(e) => { e.stopPropagation(); toggleSelect(lead.id); }}
+                          >
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={() => toggleSelect(lead.id)}
+                              aria-label={`Select ${lead.contact_name}`}
+                            />
+                          </td>
+                          <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">
+                            {lead.contact_name}
+                          </td>
+                          <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
+                            {lead.company_name}
+                          </td>
+                          <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
+                            {lead.contact_role || '—'}
+                          </td>
+                          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger className="cursor-pointer">
+                                <StageBadge stage={lead.stage} />
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="start" className="w-44">
+                                {(Object.keys(STAGE_LABELS) as LeadStage[]).map((s) => (
+                                  <DropdownMenuItem key={s} onClick={() => handleStageChange(lead.id, s)}>
+                                    {STAGE_LABELS[s]}
+                                  </DropdownMenuItem>
+                                ))}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="flex items-center gap-1.5">
+                              <span className={cn('h-2 w-2 rounded-full', PRIORITY_COLORS[lead.priority])} />
+                              <span className="text-gray-600">{PRIORITY_LABELS[lead.priority]}</span>
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
+                            {(lead.owned_by_member as TeamMember | undefined)?.name || '—'}
+                          </td>
+                          <td
+                            className="px-4 py-3 text-gray-500 whitespace-nowrap"
+                            title={lead.last_contact_at ? formatDateTime(lead.last_contact_at) : ''}
+                          >
+                            {lead.last_contact_at ? formatRelativeTime(lead.last_contact_at) : '—'}
+                          </td>
+                          <td className={cn('px-4 py-3 font-medium whitespace-nowrap', daysSinceColor(days))}>
+                            {days !== null ? `${days}d` : '—'}
+                          </td>
+                          <td
+                            className="px-4 py-3 text-gray-500 whitespace-nowrap"
+                            title={lead.next_followup_at ? formatDateTime(lead.next_followup_at) : ''}
+                          >
+                            {lead.next_followup_at ? formatRelativeTime(lead.next_followup_at) : '—'}
+                          </td>
+                          <td className="px-4 py-3 text-gray-500 whitespace-nowrap capitalize">
+                            {lead.poc_status?.replace('_', ' ') || '—'}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Mobile Card View */}
+          <div className="md:hidden space-y-2">
+            {leads.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 py-16 text-gray-400 text-center">
+                <Users className="h-10 w-10 text-gray-200" />
+                <p className="font-medium text-sm">No leads found</p>
+                <p className="text-xs">Try adjusting your filters or add a new lead.</p>
+              </div>
+            ) : (
+              leads.map((lead) => (
+                <div
+                  key={lead.id}
+                  onClick={() => router.push(`/leads/${lead.id}`)}
+                  className={cn(
+                    'rounded-lg border border-gray-100 bg-white p-4 cursor-pointer hover:border-gray-200 transition-colors',
+                    selectedIds.has(lead.id) && 'border-blue-300 bg-blue-50/30'
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-900 truncate">{lead.contact_name}</p>
+                      <p className="text-sm text-gray-500 truncate">{lead.company_name}</p>
+                    </div>
+                    <StageBadge stage={lead.stage} />
+                  </div>
+                  <div className="mt-2 flex items-center gap-3 text-xs text-gray-500">
+                    <span className="flex items-center gap-1">
+                      <span className={cn('h-1.5 w-1.5 rounded-full', PRIORITY_COLORS[lead.priority])} />
+                      {PRIORITY_LABELS[lead.priority]}
+                    </span>
+                    {lead.last_contact_at && (
+                      <span title={formatDateTime(lead.last_contact_at)}>
+                        {formatRelativeTime(lead.last_contact_at)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      )}
 
       {/* Pagination */}
       {totalPages > 1 && (
@@ -460,5 +679,14 @@ export function LeadTable() {
 
       <LeadFormModal open={showAddLead} onClose={() => setShowAddLead(false)} onSuccess={fetchLeads} />
     </div>
+  );
+}
+
+// Re-export Users icon used inside JSX above
+function Users({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-1a4 4 0 00-5.197-3.796M9 20H4v-1a4 4 0 015.197-3.796M15 8a4 4 0 11-8 0 4 4 0 018 0zM21 8a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
   );
 }

@@ -17,7 +17,12 @@ import { ACTIVE_STAGES, STAGE_LABELS } from '@/lib/constants';
 import { KanbanColumn } from './kanban-column';
 import { KanbanCard } from './kanban-card';
 import { toast } from 'sonner';
-import { Loader2 } from 'lucide-react';
+import { useLeadRealtime } from '@/hooks/use-realtime';
+import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
+import { SkeletonKanban } from '@/components/ui/skeleton-cards';
+import { LeadFormModal } from '@/components/leads/lead-form';
+import { Kanban } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 // Kanban shows all active stages except paused (it's in ACTIVE_STAGES but not useful in Kanban)
 const KANBAN_STAGES: LeadStage[] = ACTIVE_STAGES;
@@ -27,6 +32,7 @@ export function KanbanBoard() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeLeadId, setActiveLeadId] = useState<string | null>(null);
+  const [showAddLead, setShowAddLead] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -47,6 +53,15 @@ export function KanbanBoard() {
   }, [user]);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
+
+  // Realtime updates
+  useLeadRealtime(fetchLeads);
+
+  // Keyboard shortcuts
+  useKeyboardShortcuts({
+    onNewLead: () => setShowAddLead(true),
+    onEscape: () => setShowAddLead(false),
+  });
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveLeadId(event.active.id as string);
@@ -96,39 +111,54 @@ export function KanbanBoard() {
   const activeLead = leads.find(l => l.id === activeLeadId);
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64 text-gray-400">
-        <Loader2 className="h-6 w-6 animate-spin" />
-      </div>
-    );
+    return <SkeletonKanban columns={KANBAN_STAGES.length} cardsPerColumn={3} />;
   }
 
-  return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-    >
-      <div className="flex gap-4 pb-4 overflow-x-auto">
-        {KANBAN_STAGES.map(stage => (
-          <KanbanColumn
-            key={stage}
-            stage={stage}
-            leads={leadsByStage[stage] || []}
-            activeLeadId={activeLeadId}
-          />
-        ))}
-      </div>
+  const totalLeads = leads.length;
 
-      {/* Drag overlay — the card that follows the cursor */}
-      <DragOverlay>
-        {activeLead ? (
-          <div className="rotate-2 shadow-2xl">
-            <KanbanCard lead={activeLead} />
+  return (
+    <>
+      {totalLeads === 0 && (
+        <div className="flex flex-col items-center gap-4 py-24 text-center text-gray-400">
+          <Kanban className="h-12 w-12 text-gray-200" />
+          <div>
+            <p className="font-medium text-gray-700">No leads in the pipeline</p>
+            <p className="text-sm mt-1">Add a lead to get started — press <kbd className="px-1.5 py-0.5 text-xs bg-gray-100 rounded border border-gray-200 font-mono">n</kbd> or click below.</p>
           </div>
-        ) : null}
-      </DragOverlay>
-    </DndContext>
+          <Button size="sm" onClick={() => setShowAddLead(true)}>Add Lead</Button>
+        </div>
+      )}
+
+      {totalLeads > 0 && (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+        >
+          <div className="flex gap-4 pb-4 overflow-x-auto">
+            {KANBAN_STAGES.map(stage => (
+              <KanbanColumn
+                key={stage}
+                stage={stage}
+                leads={leadsByStage[stage] || []}
+                activeLeadId={activeLeadId}
+              />
+            ))}
+          </div>
+
+          {/* Drag overlay — the card that follows the cursor */}
+          <DragOverlay>
+            {activeLead ? (
+              <div className="rotate-2 shadow-2xl">
+                <KanbanCard lead={activeLead} />
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
+      )}
+
+      <LeadFormModal open={showAddLead} onClose={() => setShowAddLead(false)} onSuccess={fetchLeads} />
+    </>
   );
 }

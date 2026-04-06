@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { Interaction, ActivityLog } from '@/types';
-import { formatRelativeTime, formatDateTime, cn } from '@/lib/utils';
+import { formatDateTime, cn } from '@/lib/utils';
+import { RelativeTime } from '@/components/ui/relative-time';
 import {
   Mail, MessageSquare, Phone, Star, ArrowRight, RefreshCw, Send, Zap
 } from 'lucide-react';
@@ -50,16 +51,23 @@ function InteractionEntry({ item }: { item: Interaction & { team_member?: { name
           <span className="text-sm text-gray-600">
             {item.team_member?.name || 'System'}
           </span>
-          <span className="text-xs text-gray-400" title={formatDateTime(item.occurred_at)}>
-            {formatRelativeTime(item.occurred_at)}
-          </span>
+          <RelativeTime date={item.occurred_at} className="text-xs text-gray-400" />
         </div>
+
+        {/* Email subject — shown in bold */}
         {item.subject && (
-          <p className="text-sm font-medium text-gray-800 mt-0.5">{item.subject}</p>
+          <p className="text-sm font-semibold text-gray-800 mt-0.5">{item.subject}</p>
         )}
+
+        {/* Body / preview */}
         {item.body && (
-          <div className={cn('mt-1', isEmail && !expanded && 'line-clamp-2')}>
-            <p className="text-sm text-gray-600 whitespace-pre-wrap">{item.body}</p>
+          <div className="mt-1">
+            <p className={cn(
+              'text-sm text-gray-600 whitespace-pre-wrap',
+              isEmail && !expanded && 'line-clamp-2'
+            )}>
+              {item.body}
+            </p>
             {isEmail && item.body.length > 150 && (
               <button
                 onClick={() => setExpanded(!expanded)}
@@ -112,7 +120,7 @@ export function LeadTimeline({ interactions, activities }: LeadTimelineProps) {
 
   return (
     <div className="divide-y divide-gray-50">
-      {entries.map((entry, i) => (
+      {entries.map((entry) => (
         <InteractionEntry key={`${entry._source}-${entry.id}`} item={entry as Interaction & { team_member?: { name: string } }} />
       ))}
     </div>
