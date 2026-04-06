@@ -3,7 +3,7 @@
 import { useState, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from '@/hooks/use-session';
-import { Lead, ActionItem, Interaction, ActivityLog, TeamMember, LeadStage } from '@/types';
+import { Lead, ActionItem, Interaction, ActivityLog, TeamMember, LeadStage, Transcript } from '@/types';
 import { createClient } from '@/lib/supabase/client';
 import { STAGE_LABELS, PRIORITY_COLORS, PRIORITY_LABELS } from '@/lib/constants';
 import { StageBadge } from '@/components/leads/stage-badge';
@@ -12,9 +12,11 @@ import { LeadTimeline } from '@/components/leads/lead-timeline';
 import { LeadInfoPanel } from '@/components/leads/lead-info-panel';
 import { ActionItemList } from '@/components/action-items/action-item-list';
 import { InlineEdit } from '@/components/leads/inline-edit';
+import { TranscriptUploadModal } from '@/components/transcripts/upload-modal';
+import { AiInsights } from '@/components/transcripts/ai-insights';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { ArrowLeft, Flame } from 'lucide-react';
+import { ArrowLeft, Flame, Upload } from 'lucide-react';
 import Link from 'next/link';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -30,6 +32,8 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [activities, setActivities] = useState<ActivityLog[]>([]);
   const [members, setMembers] = useState<TeamMember[]>([]);
+  const [transcript, setTranscript] = useState<Transcript | null>(null);
+  const [showUploadModal, setShowUploadModal] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [addingNote, setAddingNote] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -44,25 +48,33 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
     const headers: Record<string, string> = { 'x-team-member-id': user.team_member_id, 'Content-Type': 'application/json' };
     (async () => {
       try {
-        const [leadRes, aiRes, intRes, actRes, memRes] = await Promise.all([
+        const supabase = createClient();
+        const [leadRes, aiRes, intRes, actRes, memRes, transcriptRes] = await Promise.all([
           fetch(`/api/leads/${id}`, { headers }).then(r => r.json()),
           fetch(`/api/leads/${id}/action-items`, { headers }).then(r => r.json()),
           fetch(`/api/leads/${id}/interactions`, { headers }).then(r => r.json()),
-          createClient()
+          supabase
             .from('activity_log')
             .select('*, team_member:team_members(id, name)')
             .eq('lead_id', id)
             .order('created_at', { ascending: false })
             .limit(50),
-          createClient()
+          supabase
             .from('team_members')
             .select('id, name, email, gmail_connected, created_at'),
+          supabase
+            .from('transcripts')
+            .select('*')
+            .eq('lead_id', id)
+            .order('created_at', { ascending: false })
+            .limit(1),
         ]);
         if (leadRes.lead) setLead(leadRes.lead);
         if (aiRes.action_items) setActionItems(aiRes.action_items);
         if (intRes.interactions) setInteractions(intRes.interactions);
         if (actRes.data) setActivities(actRes.data as ActivityLog[]);
         if (memRes.data) setMembers(memRes.data as TeamMember[]);
+        if (transcriptRes.data?.[0]) setTranscript(transcriptRes.data[0] as Transcript);
       } finally {
         setLoading(false);
       }
@@ -321,8 +333,56 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
               <p className="text-sm text-gray-600">{lead.next_steps}</p>
             </div>
           )}
+
+          {/* Transcript */}
+          <div>
+            <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Transcript</h4>
+            {transcript ? (
+              <div className="space-y-3">
+                {transcript.ai_summary && (
+                  <p className="text-sm text-gray-600">{transcript.ai_summary}</p>
+                )}
+                {transcript.processing_status === 'completed' && (
+                  <AiInsights transcript={transcript} />
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowUploadModal(true)}
+                className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-700"
+              >
+                <Upload className="h-4 w-4" />
+                Upload Transcript
+              </button>
+            )}
+            {transcript && (
+              <button
+                onClick={() => setShowUploadModal(true)}
+                className="mt-2 text-xs text-gray-400 hover:text-gray-600"
+              >
+                + Upload new transcript
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      <TranscriptUploadModal
+        open={showUploadModal}
+        leadId={id}
+        onClose={() => setShowUploadModal(false)}
+        onSuccess={() => {
+          setShowUploadModal(false);
+          createClient()
+            .from('transcripts')
+            .select('*')
+            .eq('lead_id', id)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .then(({ data }) => { if (data?.[0]) setTranscript(data[0] as Transcript); });
+        }}
+        members={members}
+      />
     </div>
   );
 }
