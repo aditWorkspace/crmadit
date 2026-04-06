@@ -40,6 +40,27 @@ async function dismissAllPendingFollowUps(leadId: string) {
     .eq('status', 'pending');
 }
 
+/**
+ * Compute hours from call_completed_at to the first outbound email after that.
+ * Returns null if not enough data.
+ */
+export async function computePostCallFollowupHrs(leadId: string, callCompletedAt: string): Promise<number | null> {
+  const supabase = createAdminClient();
+  const { data } = await supabase
+    .from('interactions')
+    .select('occurred_at')
+    .eq('lead_id', leadId)
+    .eq('type', 'email_outbound')
+    .gt('occurred_at', callCompletedAt)
+    .order('occurred_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (!data) return null;
+  const hrs = (new Date(data.occurred_at).getTime() - new Date(callCompletedAt).getTime()) / (1000 * 60 * 60);
+  return Math.round(hrs * 10) / 10;
+}
+
 type StageTrigger = {
   validate?: (lead: Lead) => { valid: boolean; error?: string };
   onEnter: (lead: Lead, teamMemberId: string) => Promise<void>;
@@ -47,10 +68,10 @@ type StageTrigger = {
 
 const stageRegistry: Record<string, StageTrigger> = {
   replied: {
-    onEnter: async (lead, memberId) => {
+    onEnter: async (lead) => {
       await createActionItem({
         lead_id: lead.id,
-        text: `Respond to ${lead.contact_name}'s reply`,
+        text: `Reply to ${lead.contact_name} — they're in dialogue`,
         assigned_to: lead.owned_by,
         due_date: addHours(new Date(), 4).toISOString().split('T')[0],
         source: 'auto_generated',
@@ -64,10 +85,10 @@ const stageRegistry: Record<string, StageTrigger> = {
         lead_id: lead.id,
         assigned_to: lead.owned_by,
         type: 'auto_email_followup',
-        reason: 'No scheduling confirmation after 48 hours',
+        reason: 'No call booked after 48 hours — follow up to schedule',
         due_at: addHours(new Date(), 48).toISOString(),
         auto_send: true,
-        suggested_message: `Hi ${lead.contact_name.split(' ')[0]}, just wanted to follow up on this — would love to find a time that works if you're still open to it!`,
+        suggested_message: `Hi ${lead.contact_name.split(' ')[0]}, just circling back — still happy to jump on a quick call if it works for you!`,
       });
     },
   },
@@ -75,16 +96,22 @@ const stageRegistry: Record<string, StageTrigger> = {
   scheduled: {
     validate: (lead) => {
       if (!lead.call_scheduled_for) {
-        return { valid: false, error: 'Must set a call date/time before marking as scheduled' };
+        return { valid: false, error: 'Set a call date/time before marking as scheduled' };
       }
       return { valid: true };
     },
     onEnter: async (lead) => {
+      // Auto-elevate priority when a discovery call is booked
+      const priorityUpgrade = lead.priority === 'low' || lead.priority === 'medium' ? 'high' : lead.priority;
+      if (priorityUpgrade !== lead.priority) {
+        await updateLead(lead.id, { priority: priorityUpgrade });
+      }
+      // Pre-call reminder
       await createFollowUp({
         lead_id: lead.id,
         assigned_to: lead.owned_by,
         type: 'custom',
-        reason: `Call with ${lead.contact_name} at ${lead.company_name}`,
+        reason: `Discovery call with ${lead.contact_name} at ${lead.company_name}`,
         due_at: addHours(new Date(lead.call_scheduled_for!), -1).toISOString(),
       });
     },
@@ -94,7 +121,7 @@ const stageRegistry: Record<string, StageTrigger> = {
     onEnter: async (lead, memberId) => {
       await createActionItem({
         lead_id: lead.id,
-        text: 'Upload call transcript',
+        text: 'Upload discovery call transcript',
         assigned_to: memberId,
         due_date: addHours(new Date(), 2).toISOString().split('T')[0],
         source: 'auto_generated',
@@ -103,41 +130,79 @@ const stageRegistry: Record<string, StageTrigger> = {
         lead_id: lead.id,
         text: `Send product demo/access to ${lead.contact_name}`,
         assigned_to: lead.owned_by,
-        due_date: addHours(new Date(), 4).toISOString().split('T')[0],
+        due_date: addHours(new Date(), 6).toISOString().split('T')[0],
         source: 'auto_generated',
+      });
+      await createFollowUp({
+        lead_id: lead.id,
+        assigned_to: lead.owned_by,
+        type: 'post_call_followup',
+        reason: `Send demo + follow-up email to ${lead.contact_name} after discovery call`,
+        due_at: addHours(new Date(), 6).toISOString(),
       });
     },
   },
 
   demo_sent: {
     onEnter: async (lead) => {
+      await createActionItem({
+        lead_id: lead.id,
+        text: `Schedule feedback call with ${lead.contact_name}`,
+        assigned_to: lead.owned_by,
+        due_date: addDays(new Date(), 3).toISOString().split('T')[0],
+        source: 'auto_generated',
+      });
       await createFollowUp({
         lead_id: lead.id,
         assigned_to: lead.owned_by,
         type: 'check_in',
-        reason: `Check if ${lead.contact_name} has tried the product`,
+        reason: `Check if ${lead.contact_name} has tried the demo — push to book feedback call`,
         due_at: addDays(new Date(), 3).toISOString(),
+      });
+    },
+  },
+
+  feedback_call: {
+    onEnter: async (lead) => {
+      await createActionItem({
+        lead_id: lead.id,
+        text: `Run feedback call with ${lead.contact_name} — get product feedback`,
+        assigned_to: lead.owned_by,
+        due_date: addDays(new Date(), 7).toISOString().split('T')[0],
+        source: 'auto_generated',
+      });
+      await createFollowUp({
+        lead_id: lead.id,
+        assigned_to: lead.owned_by,
+        type: 'check_in',
+        reason: `Book or confirm feedback call with ${lead.contact_name}`,
+        due_at: addDays(new Date(), 7).toISOString(),
       });
     },
   },
 
   active_user: {
     onEnter: async (lead) => {
+      await createActionItem({
+        lead_id: lead.id,
+        text: `Set up recurring weekly call cadence with ${lead.contact_name}`,
+        assigned_to: lead.owned_by,
+        due_date: addDays(new Date(), 3).toISOString().split('T')[0],
+        source: 'auto_generated',
+      });
       await createFollowUp({
         lead_id: lead.id,
         assigned_to: lead.owned_by,
         type: 'check_in',
-        reason: 'Weekly check-in with active user',
+        reason: `Weekly call with ${lead.contact_name}`,
         due_at: addDays(new Date(), 7).toISOString(),
       });
     },
   },
 
+  // Legacy stage — kept for DB compat, no automation
   post_call: {
-    onEnter: async (_lead, _memberId) => {
-      // No automated side-effects for post_call stage.
-      // Founders manually handle follow-up actions in this stage.
-    },
+    onEnter: async (_lead, _memberId) => {},
   },
 
   paused: {
@@ -188,6 +253,8 @@ export async function changeStage(
   if (newStage === 'call_completed' && !lead.call_completed_at) updates.call_completed_at = now;
   if (newStage === 'demo_sent' && !lead.demo_sent_at) updates.demo_sent_at = now;
   if (newStage === 'active_user' && !lead.product_access_granted_at) updates.product_access_granted_at = now;
+  // feedback_call: reuse call_scheduled_for for the feedback call date (set manually by founder)
+  if (newStage === 'feedback_call') updates.priority = lead.priority === 'low' ? 'medium' : lead.priority;
 
   const { error: updateError } = await supabase.from('leads').update(updates).eq('id', leadId);
   if (updateError) return { success: false, error: updateError.message };
@@ -205,6 +272,7 @@ export async function changeStage(
     type: 'stage_change',
     body: `Stage changed from ${lead.stage} to ${newStage}`,
     occurred_at: now,
+    metadata: {},
   });
 
   if (trigger?.onEnter) {

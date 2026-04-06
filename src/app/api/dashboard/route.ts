@@ -11,12 +11,15 @@ export async function GET(req: NextRequest) {
 
   const supabase = createAdminClient();
 
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
   const [
     { data: actionItems },
     { data: followUps },
     { data: recentActivity },
     { data: allLeads },
     { data: teamMembers },
+    { data: stageChanges },
   ] = await Promise.all([
     supabase
       .from('action_items')
@@ -44,6 +47,12 @@ export async function GET(req: NextRequest) {
     supabase
       .from('team_members')
       .select('id, name, gmail_connected'),
+    supabase
+      .from('activity_log')
+      .select('team_member_id, details, created_at')
+      .eq('action', 'stage_changed')
+      .gte('created_at', sevenDaysAgo)
+      .not('team_member_id', 'is', null),
   ]);
 
   // Pipeline stage counts
@@ -76,6 +85,25 @@ export async function GET(req: NextRequest) {
     };
   }
 
+  // Velocity leaderboard — stage advances per member in last 7 days
+  // A "forward" advance is moving to a later stage (higher index in the pipeline)
+  const STAGE_ORDER = ['replied', 'scheduling', 'scheduled', 'call_completed', 'demo_sent', 'feedback_call', 'active_user'];
+  const velocityByMember: Record<string, { advances: number; name: string }> = {};
+  for (const member of teamMembers || []) {
+    velocityByMember[member.id] = { advances: 0, name: member.name };
+  }
+  for (const log of stageChanges || []) {
+    if (!log.team_member_id || !velocityByMember[log.team_member_id]) continue;
+    const from = (log.details as Record<string, string>)?.from_stage;
+    const to = (log.details as Record<string, string>)?.to_stage;
+    if (from && to && STAGE_ORDER.indexOf(to) > STAGE_ORDER.indexOf(from)) {
+      velocityByMember[log.team_member_id].advances++;
+    }
+  }
+  const velocityLeaderboard = Object.entries(velocityByMember)
+    .map(([id, v]) => ({ id, name: v.name, advances: v.advances }))
+    .sort((a, b) => b.advances - a.advances);
+
   return NextResponse.json({
     action_items: actionItems || [],
     follow_ups: followUps || [],
@@ -85,5 +113,6 @@ export async function GET(req: NextRequest) {
     stale_count: staleLeads.length,
     speed_by_member: speedByMember,
     team_members: teamMembers || [],
+    velocity_leaderboard: velocityLeaderboard,
   });
 }

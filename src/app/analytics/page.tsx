@@ -7,7 +7,10 @@ import { ActivityChart } from '@/components/analytics/activity-chart';
 import { SourceChart } from '@/components/analytics/source-chart';
 import { TimeToDemoChart } from '@/components/analytics/time-to-demo-chart';
 import { WeeklyRetro } from '@/components/analytics/weekly-retro';
+import { SpeedScorecard } from '@/components/dashboard/speed-scorecard';
+import { VelocityLeaderboard } from '@/components/dashboard/velocity-leaderboard';
 import { useSession } from '@/hooks/use-session';
+import { TeamMember } from '@/types';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -44,6 +47,18 @@ interface RetroApiPayload {
   new_leads: { contact_name: string; company_name: string }[];
   stale_leads: { contact_name: string; company_name: string; stage: string; hours_stale: number }[];
   total_active: number;
+}
+
+interface SpeedData {
+  avg_reply: number | null;
+  avg_demo: number | null;
+  active_count: number;
+}
+
+interface VelocityEntry {
+  id: string;
+  name: string;
+  advances: number;
 }
 
 interface RetroData extends RetroApiPayload {
@@ -138,6 +153,9 @@ export default function AnalyticsPage() {
   const [sourceData, setSourceData] = useState<MemberScore[]>([]);
   const [timeToDemoData, setTimeToDemoData] = useState<BucketRow[]>([]);
   const [retroData, setRetroData] = useState<RetroData | null>(null);
+  const [members, setMembers] = useState<TeamMember[]>([]);
+  const [speedByMember, setSpeedByMember] = useState<Record<string, SpeedData>>({});
+  const [velocityLeaderboard, setVelocityLeaderboard] = useState<VelocityEntry[]>([]);
 
   const [loading, setLoading] = useState({
     funnel: true,
@@ -146,6 +164,7 @@ export default function AnalyticsPage() {
     source: true,
     timeToDemo: true,
     retro: true,
+    team: true,
   });
 
   const markDone = useCallback(
@@ -197,6 +216,17 @@ export default function AnalyticsPage() {
         markDone('retro');
       })
       .catch(() => markDone('retro'));
+
+    // Team speed + velocity (from dashboard)
+    fetch('/api/dashboard', { headers: h })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.members) setMembers(d.members);
+        if (d.speed_by_member) setSpeedByMember(d.speed_by_member);
+        if (d.velocity_leaderboard) setVelocityLeaderboard(d.velocity_leaderboard);
+        markDone('team');
+      })
+      .catch(() => markDone('team'));
   }, [user?.team_member_id, markDone]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -256,6 +286,26 @@ export default function AnalyticsPage() {
         <h2 className="text-sm font-semibold text-gray-700 mb-4">Weekly Retro</h2>
         <WeeklyRetro data={retroData} loading={loading.retro} />
       </section>
+
+      {/* Row 5: Speed scorecard (60%) + Velocity leaderboard (40%) */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <section className="col-span-3 rounded-xl border border-gray-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-gray-700 mb-4">Response Speed by Founder</h2>
+          {loading.team ? (
+            <div className="h-24 animate-pulse bg-gray-50 rounded-lg" />
+          ) : (
+            <SpeedScorecard members={members} speedByMember={speedByMember} />
+          )}
+        </section>
+        <section className="col-span-2 rounded-xl border border-gray-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-gray-700 mb-4">7-Day Velocity</h2>
+          {loading.team ? (
+            <div className="h-24 animate-pulse bg-gray-50 rounded-lg" />
+          ) : (
+            <VelocityLeaderboard leaderboard={velocityLeaderboard} />
+          )}
+        </section>
+      </div>
     </div>
   );
 }

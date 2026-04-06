@@ -1,6 +1,8 @@
 'use client';
 
 import { STAGE_LABELS } from '@/lib/constants';
+import type { LeadStage } from '@/types';
+const stageLabel = (s: string) => STAGE_LABELS[s as LeadStage] ?? s;
 
 interface RetroData {
   leads_moved_forward: { contact_name: string; company_name: string; from_stage: string; to_stage: string }[];
@@ -64,8 +66,8 @@ export function WeeklyRetro({ data, loading }: Props) {
                 <span className="font-medium">{l.contact_name}</span>{' '}
                 <span className="text-gray-400">({l.company_name})</span>
                 <span className="text-xs text-gray-400 ml-1">
-                  {STAGE_LABELS[l.from_stage] ?? l.from_stage} →{' '}
-                  {STAGE_LABELS[l.to_stage] ?? l.to_stage}
+                  {stageLabel(l.from_stage)} →{' '}
+                  {stageLabel(l.to_stage)}
                 </span>
               </li>
             ))}
@@ -95,7 +97,7 @@ export function WeeklyRetro({ data, loading }: Props) {
                 <span className="font-medium">{l.contact_name}</span>{' '}
                 <span className="text-gray-400">({l.company_name})</span>
                 <span className="text-xs text-red-500 ml-1">
-                  {l.hours_stale}h in {STAGE_LABELS[l.stage] ?? l.stage}
+                  {l.hours_stale}h in {stageLabel(l.stage)}
                 </span>
               </li>
             ))}

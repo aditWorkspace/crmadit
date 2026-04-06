@@ -54,6 +54,7 @@ export function buildAuthUrl(teamMemberId: string): string {
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/calendar',
     ].join(' '),
     access_type: 'offline',
     prompt: 'consent',

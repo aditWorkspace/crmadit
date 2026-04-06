@@ -128,3 +128,54 @@
     @apply font-sans;
   }
 }
+
+/* ── Dark mode: remap the gray palette so every bg-gray-* / border-gray-* / text-gray-* adapts ── */
+.dark {
+  /* Backgrounds: light grays become dark grays */
+  --color-gray-50:  oklch(0.11 0 0);
+  --color-gray-100: oklch(0.16 0 0);
+  --color-gray-200: oklch(0.22 0 0);
+  --color-gray-300: oklch(0.30 0 0);
+  --color-gray-400: oklch(0.44 0 0);
+  /* gray-500 stays roughly neutral */
+  --color-gray-500: oklch(0.52 0 0);
+  /* Text: dark grays become light */
+  --color-gray-600: oklch(0.66 0 0);
+  --color-gray-700: oklch(0.75 0 0);
+  --color-gray-800: oklch(0.83 0 0);
+  --color-gray-900: oklch(0.92 0 0);
+  /* white backgrounds (bg-white) handled by --background variable */
+}
+
+/* bg-white doesn't use a CSS variable — override it directly */
+.dark .bg-white {
+  background-color: oklch(0.16 0 0) !important;
+}
+
+/* Buttons/avatars that intentionally use a dark background: restore them */
+.dark .bg-gray-900.text-white,
+.dark .hover\:bg-gray-700:hover,
+.dark button.bg-gray-900,
+.dark a.bg-gray-900 {
+  background-color: oklch(0.92 0 0) !important;
+  color: oklch(0.11 0 0) !important;
+}
+
+/* Sidebar active nav item */
+.dark nav a.bg-gray-900 {
+  background-color: oklch(0.22 0 0) !important;
+  color: oklch(0.95 0 0) !important;
+}
+
+/* Input fields */
+.dark input,
+.dark textarea,
+.dark select {
+  background-color: oklch(0.16 0 0);
+  border-color: oklch(0.25 0 0);
+  color: oklch(0.92 0 0);
+}
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: oklch(0.44 0 0);
+}

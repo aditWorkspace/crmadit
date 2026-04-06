@@ -1,217 +1,194 @@
 import { createAdminClient } from '@/lib/supabase/admin';
+import { callAI } from '@/lib/ai/openrouter';
 import { sendReplyInThread } from '@/lib/gmail/send';
+import { QWEN_FREE_MODEL } from '@/lib/constants';
 
 const FOLLOWUP_HOURS = 48;
 
-const FOLLOWUP_TEMPLATE = `Hi,
-
-Just following up on my last message — wanted to see if you had a chance to think about this.
-
-Happy to jump on a quick call if that's easier. What does your schedule look like this week?
-
-Best,`;
+// Only send auto follow-ups for leads still in early outreach stages
+const AUTO_FOLLOWUP_STAGES = ['replied', 'scheduling'];
 
 export interface AutoFollowupResult {
   processed: number;
   sent: number;
+  skipped: number;
   errors: string[];
 }
 
+interface AiFollowupDecision {
+  should_send: boolean;
+  reason: string;
+  message: string | null;
+}
+
+async function getFollowupDecision(
+  contactName: string,
+  companyName: string,
+  lastOutboundBody: string,
+  hoursAgo: number,
+  recentThread: Array<{ type: string; body: string | null; occurred_at: string }>
+): Promise<AiFollowupDecision> {
+  const threadContext = recentThread
+    .slice(0, 4)
+    .map(i => {
+      const role = i.type === 'email_inbound' ? contactName : 'Me';
+      return `[${role}]: ${(i.body || '').slice(0, 200)}`;
+    })
+    .join('\n\n');
+
+  const raw = await callAI({
+    model: QWEN_FREE_MODEL,
+    jsonMode: true,
+    systemPrompt: `You are a sales assistant deciding whether to send a follow-up email.
+
+Return JSON: { "should_send": boolean, "reason": string, "message": string | null }
+
+Rules:
+- should_send = true if my last email asked a question, shared something that needs a response, or proposed next steps
+- should_send = false if my last email was a natural close ("no worries", "sounds good", "talk soon", "thanks") or if following up would feel pushy/inappropriate
+- If should_send = true: write a warm, 1-2 sentence follow-up in "message". Reference the context naturally. Sign off with just my first name.
+- If should_send = false: message = null`,
+    userMessage: `Lead: ${contactName} at ${companyName}
+
+Recent thread (oldest first):
+${threadContext}
+
+My last email (sent ${hoursAgo}h ago):
+"${lastOutboundBody.slice(0, 400)}"
+
+Should I follow up?`,
+  });
+
+  try {
+    return JSON.parse(raw) as AiFollowupDecision;
+  } catch {
+    return { should_send: false, reason: 'Failed to parse AI response', message: null };
+  }
+}
+
 export async function runAutoFollowup(): Promise<AutoFollowupResult> {
-  const result: AutoFollowupResult = { processed: 0, sent: 0, errors: [] };
+  const result: AutoFollowupResult = { processed: 0, sent: 0, skipped: 0, errors: [] };
   const supabase = createAdminClient();
 
   const cutoff = new Date(Date.now() - FOLLOWUP_HOURS * 60 * 60 * 1000).toISOString();
 
-  // Find leads in 'scheduling' stage with a pending auto_send follow-up
-  const { data: queueItems, error } = await supabase
-    .from('follow_up_queue')
-    .select('id, lead_id, assigned_to, gmail_thread_id, message_template, scheduled_for')
-    .eq('type', 'auto_send')
-    .eq('status', 'pending')
-    .lte('scheduled_for', new Date().toISOString())
-    .not('gmail_thread_id', 'is', null)
-    .not('assigned_to', 'is', null);
+  // Only auto-email leads in early outreach stages — never bother scheduled/active leads
+  const { data: leads } = await supabase
+    .from('leads')
+    .select('id, contact_name, company_name, contact_email, owned_by, stage')
+    .eq('is_archived', false)
+    .in('stage', AUTO_FOLLOWUP_STAGES)
+    .not('owned_by', 'is', null);
 
-  if (error) {
-    result.errors.push(`Queue fetch error: ${error.message}`);
-    return result;
-  }
+  if (!leads || leads.length === 0) return result;
 
-  if (!queueItems || queueItems.length === 0) return result;
-
-  for (const item of queueItems) {
+  for (const lead of leads) {
     result.processed++;
 
     try {
-      // Verify lead is in scheduling stage
-      const { data: lead } = await supabase
-        .from('leads')
-        .select('id, stage, contact_email, contact_name, company_name, owned_by')
-        .eq('id', item.lead_id)
-        .single();
-
-      if (!lead || lead.stage !== 'scheduling') continue;
-
-      // Verify no outbound email in last 48h
-      const { data: recentOutbound } = await supabase
+      const { data: recentInteractions } = await supabase
         .from('interactions')
+        .select('id, type, body, gmail_message_id, gmail_thread_id, occurred_at')
+        .eq('lead_id', lead.id)
+        .in('type', ['email_inbound', 'email_outbound'])
+        .order('occurred_at', { ascending: false })
+        .limit(6);
+
+      if (!recentInteractions || recentInteractions.length === 0) continue;
+
+      const lastInteraction = recentInteractions[0];
+
+      if (lastInteraction.type !== 'email_outbound') continue;
+      if (new Date(lastInteraction.occurred_at) > new Date(cutoff)) continue;
+
+      const hasInbound = recentInteractions.some(i => i.type === 'email_inbound');
+      if (!hasInbound) continue;
+
+      const threadId = lastInteraction.gmail_thread_id;
+      if (!threadId) continue;
+
+      const { data: existing } = await supabase
+        .from('follow_up_queue')
         .select('id')
-        .eq('lead_id', item.lead_id)
-        .eq('type', 'email_outbound')
-        .gte('occurred_at', cutoff)
-        .limit(1)
+        .eq('lead_id', lead.id)
+        .eq('type', 'auto_send')
+        .eq('status', 'pending')
         .maybeSingle();
+      if (existing) continue;
 
-      if (recentOutbound) continue;
-
-      // Verify the assigned member has Gmail connected
       const { data: member } = await supabase
         .from('team_members')
         .select('id, name, email, gmail_connected')
-        .eq('id', item.assigned_to)
+        .eq('id', lead.owned_by)
         .single();
-
       if (!member?.gmail_connected) continue;
 
-      const messageBody = item.message_template || `${FOLLOWUP_TEMPLATE}\n${member.name}`;
+      const hoursAgo = Math.round(
+        (Date.now() - new Date(lastInteraction.occurred_at).getTime()) / (1000 * 60 * 60)
+      );
 
-      // Fetch last inbound message ID for In-Reply-To threading header
-      // Note: gmail_message_id is the Gmail API ID, not the RFC 2822 Message-ID header.
-      // We wrap it as a best-effort fallback: <id@gmail.com>
-      const { data: lastInbound } = await supabase
-        .from('interactions')
-        .select('gmail_message_id')
-        .eq('lead_id', item.lead_id)
-        .eq('type', 'email_inbound')
-        .order('occurred_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const decision = await getFollowupDecision(
+        lead.contact_name,
+        lead.company_name,
+        lastInteraction.body || '',
+        hoursAgo,
+        [...recentInteractions].reverse()
+      );
 
+      if (!decision.should_send || !decision.message) {
+        result.skipped++;
+        continue;
+      }
+
+      const lastInbound = recentInteractions.find(i => i.type === 'email_inbound');
       const inReplyToMessageId = lastInbound?.gmail_message_id
-        ? `${lastInbound.gmail_message_id}@gmail.com`
+        ? `<${lastInbound.gmail_message_id}@gmail.com>`
         : undefined;
 
-      // Send reply in thread
       const sentMessageId = await sendReplyInThread({
         teamMemberId: member.id,
-        threadId: item.gmail_thread_id,
+        threadId,
         to: lead.contact_email,
         subject: `product prioritization at ${lead.company_name}`,
-        body: messageBody,
+        body: decision.message,
         inReplyToMessageId,
       });
 
       const now = new Date().toISOString();
 
-      // Mark queue item as sent
-      await supabase
-        .from('follow_up_queue')
-        .update({ status: 'sent', sent_at: now })
-        .eq('id', item.id);
-
-      // Log the interaction
       await supabase.from('interactions').insert({
-        lead_id: item.lead_id,
+        lead_id: lead.id,
         team_member_id: member.id,
         type: 'email_outbound',
-        direction: 'outbound',
         subject: `product prioritization at ${lead.company_name}`,
-        body: messageBody.slice(0, 500),
+        body: decision.message,
         gmail_message_id: sentMessageId || undefined,
-        gmail_thread_id: item.gmail_thread_id,
+        gmail_thread_id: threadId,
         occurred_at: now,
-        metadata: { auto_followup: true },
+        metadata: { auto_followup: true, ai_decision_reason: decision.reason },
       });
 
-      // Update lead last_contact_at
+      await supabase.from('follow_up_queue').insert({
+        lead_id: lead.id,
+        assigned_to: lead.owned_by,
+        type: 'auto_send',
+        status: 'sent',
+        due_at: now,
+        sent_at: now,
+        suggested_message: decision.message,
+        gmail_thread_id: threadId,
+      });
+
       await supabase
         .from('leads')
         .update({ last_contact_at: now })
-        .eq('id', item.lead_id);
+        .eq('id', lead.id);
 
       result.sent++;
     } catch (err) {
-      result.errors.push(
-        `Item ${item.id}: ${err instanceof Error ? err.message : String(err)}`
-      );
+      result.errors.push(`Lead ${lead.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   return result;
-}
-
-export async function enqueueAutoFollowups(): Promise<void> {
-  const supabase = createAdminClient();
-
-  const cutoff48h = new Date(Date.now() - FOLLOWUP_HOURS * 60 * 60 * 1000).toISOString();
-
-  // Find scheduling leads whose last inbound was > 48h ago and no auto-send is pending
-  const { data: leads } = await supabase
-    .from('leads')
-    .select('id, contact_name, company_name, contact_email, owned_by')
-    .eq('stage', 'scheduling')
-    .eq('is_archived', false)
-    .not('owned_by', 'is', null);
-
-  if (!leads) return;
-
-  for (const lead of leads) {
-    // Check last inbound email
-    const { data: lastInbound } = await supabase
-      .from('interactions')
-      .select('id, occurred_at, gmail_thread_id, gmail_message_id')
-      .eq('lead_id', lead.id)
-      .eq('type', 'email_inbound')
-      .order('occurred_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (!lastInbound) continue;
-    if (new Date(lastInbound.occurred_at) > new Date(cutoff48h)) continue;
-    if (!lastInbound.gmail_thread_id) continue;
-
-    // Check no outbound in last 48h
-    const { data: recentOutbound } = await supabase
-      .from('interactions')
-      .select('id')
-      .eq('lead_id', lead.id)
-      .eq('type', 'email_outbound')
-      .gte('occurred_at', cutoff48h)
-      .limit(1)
-      .maybeSingle();
-
-    if (recentOutbound) continue;
-
-    // Check member has Gmail
-    const { data: member } = await supabase
-      .from('team_members')
-      .select('id, name, gmail_connected')
-      .eq('id', lead.owned_by)
-      .single();
-
-    if (!member?.gmail_connected) continue;
-
-    // Check no pending auto_send in queue
-    const { data: existing } = await supabase
-      .from('follow_up_queue')
-      .select('id')
-      .eq('lead_id', lead.id)
-      .eq('type', 'auto_send')
-      .eq('status', 'pending')
-      .maybeSingle();
-
-    if (existing) continue;
-
-    // Enqueue
-    await supabase.from('follow_up_queue').insert({
-      lead_id: lead.id,
-      assigned_to: lead.owned_by,
-      type: 'auto_send',
-      status: 'pending',
-      scheduled_for: new Date().toISOString(),
-      gmail_thread_id: lastInbound.gmail_thread_id,
-      message_template: `${FOLLOWUP_TEMPLATE}\n${member.name}`,
-    });
-  }
 }

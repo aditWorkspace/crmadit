@@ -34,3 +34,19 @@ export function formatHours(hrs: number): string {
 export function getInitials(name: string): string {
   return name.split(' ').map(n => n[0]).join('').toUpperCase();
 }
+
+export function stripHtml(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')          // <br> → newline
+    .replace(/<\/p>/gi, '\n')               // </p> → newline
+    .replace(/<\/div>/gi, '\n')             // </div> → newline
+    .replace(/<[^>]+>/g, '')               // strip remaining tags
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')            // collapse excessive newlines
+    .trim();
+}

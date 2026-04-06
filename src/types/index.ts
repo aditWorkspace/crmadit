@@ -3,8 +3,9 @@ export type LeadStage =
   | 'scheduling'
   | 'scheduled'
   | 'call_completed'
-  | 'post_call'
+  | 'post_call'      // legacy — kept for DB compat, not shown in active flow
   | 'demo_sent'
+  | 'feedback_call'
   | 'active_user'
   | 'paused'
   | 'dead';
@@ -69,6 +70,9 @@ export interface Lead {
   poc_status: PocStatus;
   poc_notes?: string;
   heat_score: number;
+  ai_heat_reason?: string;
+  ai_next_action?: string;
+  ai_next_action_at?: string;
   paused_until?: string;
   paused_previous_stage?: LeadStage;
   pinned_note?: string;

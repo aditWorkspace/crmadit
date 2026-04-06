@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { exchangeCodeForTokens, encryptToken } from '@/lib/gmail/auth';
+import { runInitialSync } from '@/lib/gmail/sync';
 import { createAdminClient } from '@/lib/supabase/admin';
 
 export async function GET(req: NextRequest) {
@@ -47,6 +48,11 @@ export async function GET(req: NextRequest) {
       console.error('Gmail callback DB error:', dbErr.message);
       return NextResponse.redirect(`${appUrl}/settings?error=gmail_db_error`);
     }
+
+    // Kick off 48h sync in the background — don't await so redirect is instant
+    runInitialSync(state).catch(err =>
+      console.error('Post-connect sync error:', err)
+    );
 
     const response = NextResponse.redirect(`${appUrl}/settings?connected=true`);
     response.cookies.delete('gmail_oauth_state');

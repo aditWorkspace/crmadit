@@ -32,7 +32,7 @@ export async function getGmailClientForMember(teamMemberId: string): Promise<Gma
 
     // Update stored access token, refresh token (rotation), and expiry
     const encryptedAccess = encryptToken(refreshed.access_token);
-    const encryptedRefresh = encryptToken(refreshed.refresh_token);
+    const encryptedRefresh = encryptToken(refreshed.refresh_token ?? '');
     await supabase
       .from('team_members')
       .update({

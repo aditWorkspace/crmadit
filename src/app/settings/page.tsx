@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSession } from '@/hooks/use-session';
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
-import { Mail, CheckCircle, XCircle, RefreshCw, Loader2 } from 'lucide-react';
+import { Mail, CheckCircle, XCircle, RefreshCw, Loader2, Calendar, KeyRound } from 'lucide-react';
 
 interface MemberGmailStatus {
   id: string;
@@ -19,7 +19,9 @@ export default function SettingsPage() {
   const [members, setMembers] = useState<MemberGmailStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState<string | null>(null);
+  const [syncingCalendar, setSyncingCalendar] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const [resettingPin, setResettingPin] = useState(false);
 
   const fetchMembers = useCallback(async () => {
     if (!user) return;
@@ -41,7 +43,6 @@ export default function SettingsPage() {
     fetchMembers();
   }, [fetchMembers]);
 
-  // Check for OAuth redirect result
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('connected') === 'true') {
@@ -62,9 +63,6 @@ export default function SettingsPage() {
   }, [fetchMembers]);
 
   const handleConnect = (memberId: string) => {
-    if (!user) return;
-    // Navigate to connect endpoint — middleware will use x-team-member-id header
-    // Since this is a browser redirect, we use a form POST trick via query param
     window.location.href = `/api/gmail/connect?member_id=${memberId}`;
   };
 
@@ -105,6 +103,43 @@ export default function SettingsPage() {
     }
   };
 
+  const handleCalendarSync = async () => {
+    if (!user) return;
+    setSyncingCalendar(true);
+    try {
+      const res = await fetch('/api/gmail/sync-calendar', {
+        method: 'POST',
+        headers: { 'x-team-member-id': user.team_member_id },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Calendar sync failed');
+      const { leads_created, leads_updated, events_scanned } = data.result;
+      toast.success(`Calendar sync done — ${events_scanned} events scanned, ${leads_created} leads created, ${leads_updated} updated`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Calendar sync failed');
+    } finally {
+      setSyncingCalendar(false);
+    }
+  };
+
+  const handleResetPin = async (memberId: string) => {
+    if (!confirm('Reset PIN? The next login will require creating a new one.')) return;
+    setResettingPin(true);
+    try {
+      const res = await fetch('/api/auth/set-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-team-member-id': user!.team_member_id },
+        body: JSON.stringify({ member_id: memberId, pin: null, reset: true }),
+      });
+      if (!res.ok) throw new Error('Failed');
+      toast.success('PIN reset — next login will prompt to create a new one');
+    } catch {
+      toast.error('Failed to reset PIN');
+    } finally {
+      setResettingPin(false);
+    }
+  };
+
   const isCurrentUser = (memberId: string) => user?.team_member_id === memberId;
 
   if (loading) {
@@ -124,14 +159,13 @@ export default function SettingsPage() {
       </div>
 
       <div className="flex-1 overflow-auto px-8 py-6 max-w-3xl">
-        {/* Gmail Integration Card */}
         <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-3">
             <Mail className="h-5 w-5 text-gray-500" />
             <div>
-              <h2 className="text-sm font-semibold text-gray-900">Gmail Integration</h2>
+              <h2 className="text-sm font-semibold text-gray-900">Gmail & Calendar Integration</h2>
               <p className="text-xs text-gray-500 mt-0.5">
-                Connect Gmail to automatically sync outreach emails and track replies.
+                Connect Gmail to sync outreach emails. Calendar sync imports Proxi calls where another founder is co-attending.
               </p>
             </div>
           </div>
@@ -147,12 +181,10 @@ export default function SettingsPage() {
 
               return (
                 <div key={member.id} className="px-6 py-4 flex items-center gap-4">
-                  {/* Avatar */}
                   <div className="h-9 w-9 rounded-full bg-gray-900 flex items-center justify-center text-white text-sm font-medium flex-shrink-0">
                     {member.name[0]?.toUpperCase()}
                   </div>
 
-                  {/* Info */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-gray-900">{member.name}</span>
@@ -168,7 +200,6 @@ export default function SettingsPage() {
                     )}
                   </div>
 
-                  {/* Status badge */}
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     {member.gmail_connected ? (
                       <>
@@ -183,18 +214,38 @@ export default function SettingsPage() {
                     )}
                   </div>
 
-                  {/* Actions — only for current user */}
+                  {/* PIN reset — any founder can reset any other founder's PIN */}
+                  {!isSelf && (
+                    <button
+                      onClick={() => handleResetPin(member.id)}
+                      disabled={resettingPin}
+                      className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-lg px-2.5 py-1.5 hover:bg-gray-50 disabled:opacity-50 transition-colors flex-shrink-0"
+                      title="Reset PIN"
+                    >
+                      <KeyRound className="h-3 w-3" />
+                      Reset PIN
+                    </button>
+                  )}
+
                   {isSelf && (
                     <div className="flex items-center gap-2 flex-shrink-0">
                       {member.gmail_connected ? (
                         <>
+                          <button
+                            onClick={handleCalendarSync}
+                            disabled={syncingCalendar}
+                            className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-900 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          >
+                            <Calendar className={`h-3.5 w-3.5 ${syncingCalendar ? 'animate-spin' : ''}`} />
+                            {syncingCalendar ? 'Syncing...' : 'Sync Calendar'}
+                          </button>
                           <button
                             onClick={() => handleManualSync(member.id)}
                             disabled={isSyncing}
                             className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-900 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                           >
                             <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                            {isSyncing ? 'Syncing...' : 'Manual Sync'}
+                            {isSyncing ? 'Syncing...' : 'Sync Email'}
                           </button>
                           <button
                             onClick={() => handleDisconnect(member.id)}

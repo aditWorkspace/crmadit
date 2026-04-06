@@ -1,6 +1,11 @@
+import type { gmail_v1 } from 'googleapis';
 import { getGmailClientForMember } from './client';
 import { isOutreachThread, extractCompanyFromSubject } from './matcher';
+import { parseCalendarInvite } from './calendar-parser';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { syncCalendarLeads } from '@/lib/google/calendar-sync';
+import { callAI } from '@/lib/ai/openrouter';
+import { QWEN_FREE_MODEL } from '@/lib/constants';
 
 interface EmailHeader {
   from: string;
@@ -30,12 +35,7 @@ function extractName(headerValue: string): string {
   return match ? match[1].trim().replace(/^"|"$/g, '') : '';
 }
 
-function getBodyPreview(message: {
-  payload?: {
-    body?: { data?: string | null } | null;
-    parts?: Array<{ mimeType?: string | null; body?: { data?: string | null } | null }> | null;
-  } | null;
-}): string {
+function getBodyPreview(message: gmail_v1.Schema$Message): string {
   const payload = message.payload;
   if (!payload) return '';
 
@@ -44,8 +44,14 @@ function getBodyPreview(message: {
   if (payload.body?.data) {
     data = payload.body.data;
   } else if (payload.parts) {
-    const textPart = payload.parts.find(p => p.mimeType === 'text/plain');
-    data = textPart?.body?.data;
+    const findText = (parts: gmail_v1.Schema$MessagePart[]): string | null => {
+      for (const part of parts) {
+        if (part.mimeType === 'text/plain' && part.body?.data) return part.body.data;
+        if (part.parts) { const found = findText(part.parts); if (found) return found; }
+      }
+      return null;
+    };
+    data = findText(payload.parts);
   }
 
   if (!data) return '';
@@ -63,16 +69,18 @@ export interface SyncResult {
   created_leads: number;
   errors: string[];
   duration_ms: number;
+  calendar_events_detected: number;
+  calendar_leads_created: number;
+  calendar_leads_updated: number;
 }
 
 export async function runInitialSync(teamMemberId: string): Promise<SyncResult> {
   const start = Date.now();
-  const result: SyncResult = { synced: 0, created_leads: 0, errors: [], duration_ms: 0 };
+  const result: SyncResult = { synced: 0, created_leads: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
 
   const { gmail } = await getGmailClientForMember(teamMemberId);
   const supabase = createAdminClient();
 
-  // Get team member email for direction detection
   const { data: member } = await supabase
     .from('team_members')
     .select('id, email, name')
@@ -85,53 +93,73 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
     return result;
   }
 
+  const profileRes = await gmail.users.getProfile({ userId: 'me' });
+  const gmailEmail = profileRes.data.emailAddress?.toLowerCase() || member.email.toLowerCase();
+
+  const threadIds = new Set<string>();
   let pageToken: string | undefined;
 
   do {
     const listRes = await gmail.users.messages.list({
       userId: 'me',
-      q: 'subject:"product prioritization at" newer_than:60d',
+      q: 'subject:"product prioritization at" newer_than:7d -from:me',
       maxResults: 100,
       pageToken,
     });
 
-    const messages = listRes.data.messages || [];
-    pageToken = listRes.data.nextPageToken || undefined;
-
-    for (const msg of messages) {
-      if (!msg.id) continue;
-      try {
-        await processMessage(gmail, supabase, msg.id, member, result);
-      } catch (err) {
-        result.errors.push(`Message ${msg.id}: ${err instanceof Error ? err.message : String(err)}`);
-      }
+    for (const msg of listRes.data.messages || []) {
+      if (msg.threadId) threadIds.add(msg.threadId);
     }
+    pageToken = listRes.data.nextPageToken || undefined;
   } while (pageToken);
 
-  // Store latest history ID for incremental sync
-  const profileRes = await gmail.users.getProfile({ userId: 'me' });
-  const historyId = profileRes.data.historyId;
+  for (const threadId of threadIds) {
+    try {
+      const threadRes = await gmail.users.threads.get({
+        userId: 'me',
+        id: threadId,
+        format: 'full',
+      });
+
+      const messages = threadRes.data.messages || [];
+      for (const message of messages) {
+        if (!message.id) continue;
+        try {
+          await processMessage(supabase, message, gmailEmail, member, result);
+        } catch (err) {
+          result.errors.push(`Message ${message.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } catch (err) {
+      result.errors.push(`Thread ${threadId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const finalProfile = await gmail.users.getProfile({ userId: 'me' });
+  const historyId = finalProfile.data.historyId;
 
   await supabase
     .from('team_members')
-    .update({
-      gmail_history_id: historyId,
-      last_gmail_sync: new Date().toISOString(),
-    })
+    .update({ gmail_history_id: historyId, last_gmail_sync: new Date().toISOString() })
     .eq('id', teamMemberId);
 
   await supabase
     .from('email_sync_state')
     .upsert(
-      {
-        team_member_id: teamMemberId,
-        last_sync_at: new Date().toISOString(),
-        history_id: historyId,
-        total_synced: result.synced,
-        updated_at: new Date().toISOString(),
-      },
+      { team_member_id: teamMemberId, last_sync_at: new Date().toISOString(), history_id: historyId, total_synced: result.synced, updated_at: new Date().toISOString() },
       { onConflict: 'team_member_id' }
     );
+
+  // Calendar sync: import meetings from past 7 days + upcoming 30 days as leads
+  try {
+    const calResult = await syncCalendarLeads(teamMemberId);
+    result.calendar_leads_created = calResult.leads_created;
+    result.calendar_leads_updated = calResult.leads_updated;
+    result.calendar_events_detected += calResult.events_scanned;
+    result.errors.push(...calResult.errors.map(e => `[calendar] ${e}`));
+  } catch (err) {
+    result.errors.push(`[calendar] ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   result.duration_ms = Date.now() - start;
   return result;
@@ -139,10 +167,9 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
 
 export async function runIncrementalSync(teamMemberId: string): Promise<SyncResult> {
   const start = Date.now();
-  const result: SyncResult = { synced: 0, created_leads: 0, errors: [], duration_ms: 0 };
+  const result: SyncResult = { synced: 0, created_leads: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
 
   const supabase = createAdminClient();
-
   const { data: member } = await supabase
     .from('team_members')
     .select('id, email, name, gmail_history_id')
@@ -155,12 +182,12 @@ export async function runIncrementalSync(teamMemberId: string): Promise<SyncResu
     return result;
   }
 
-  if (!member.gmail_history_id) {
-    // No history id yet — do full initial sync
-    return runInitialSync(teamMemberId);
-  }
+  if (!member.gmail_history_id) return runInitialSync(teamMemberId);
 
   const { gmail } = await getGmailClientForMember(teamMemberId);
+
+  const profileRes = await gmail.users.getProfile({ userId: 'me' });
+  const gmailEmail = profileRes.data.emailAddress?.toLowerCase() || member.email.toLowerCase();
 
   let pageToken: string | undefined;
   const processedMessageIds = new Set<string>();
@@ -176,7 +203,6 @@ export async function runIncrementalSync(teamMemberId: string): Promise<SyncResu
         pageToken,
       });
     } catch (err) {
-      // History ID expired — fall back to initial sync
       if (String(err).includes('404') || String(err).includes('Invalid startHistoryId')) {
         return runInitialSync(teamMemberId);
       }
@@ -187,38 +213,29 @@ export async function runIncrementalSync(teamMemberId: string): Promise<SyncResu
     pageToken = historyRes.data.nextPageToken || undefined;
 
     for (const historyItem of historyList) {
-      const added = historyItem.messagesAdded || [];
-      for (const { message } of added) {
+      for (const { message } of historyItem.messagesAdded || []) {
         if (!message?.id || processedMessageIds.has(message.id)) continue;
         processedMessageIds.add(message.id);
 
         try {
-          await processMessage(gmail, supabase, message.id, member, result);
+          const msgRes = await gmail.users.messages.get({ userId: 'me', id: message.id, format: 'full' });
+          await processMessage(supabase, msgRes.data, gmailEmail, member, result);
         } catch (err) {
           result.errors.push(`Message ${message.id}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }
 
-    // Update history ID to latest
     if (historyRes.data.historyId) {
       await supabase
         .from('team_members')
-        .update({
-          gmail_history_id: historyRes.data.historyId,
-          last_gmail_sync: new Date().toISOString(),
-        })
+        .update({ gmail_history_id: historyRes.data.historyId, last_gmail_sync: new Date().toISOString() })
         .eq('id', teamMemberId);
 
       await supabase
         .from('email_sync_state')
         .upsert(
-          {
-            team_member_id: teamMemberId,
-            last_sync_at: new Date().toISOString(),
-            history_id: historyRes.data.historyId,
-            updated_at: new Date().toISOString(),
-          },
+          { team_member_id: teamMemberId, last_sync_at: new Date().toISOString(), history_id: historyRes.data.historyId, updated_at: new Date().toISOString() },
           { onConflict: 'team_member_id' }
         );
     }
@@ -228,124 +245,250 @@ export async function runIncrementalSync(teamMemberId: string): Promise<SyncResu
   return result;
 }
 
-async function processMessage(
-  gmail: ReturnType<typeof import('googleapis').google.gmail>,
+/**
+ * Find a lead by the prospect's email address (for manually-added leads
+ * that don't have the outreach subject pattern in their emails).
+ */
+async function findLeadByContactEmail(
   supabase: ReturnType<typeof import('@/lib/supabase/admin').createAdminClient>,
-  messageId: string,
+  contactEmail: string,
+  memberId: string
+): Promise<string | null> {
+  const { data } = await supabase
+    .from('leads')
+    .select('id')
+    .eq('contact_email', contactEmail)
+    .eq('owned_by', memberId)
+    .eq('is_archived', false)
+    .not('stage', 'in', '("dead")')
+    .limit(1)
+    .maybeSingle();
+  return data?.id ?? null;
+}
+
+async function processMessage(
+  supabase: ReturnType<typeof import('@/lib/supabase/admin').createAdminClient>,
+  message: gmail_v1.Schema$Message,
+  gmailEmail: string,
   member: { id: string; email: string; name: string },
   result: SyncResult
 ) {
-  const msgRes = await gmail.users.messages.get({
-    userId: 'me',
-    id: messageId,
-    format: 'full',
-  });
-
-  const message = msgRes.data;
   const headers = parseHeaders(message.payload?.headers || []);
-
-  if (!isOutreachThread(headers.subject)) return;
-
-  const company = extractCompanyFromSubject(headers.subject);
-  if (!company) return;
-
   const fromEmail = extractEmail(headers.from);
-  const fromName = extractName(headers.from);
   const toEmail = extractEmail(headers.to);
-
-  const isOutbound = fromEmail === member.email.toLowerCase();
-  const direction = isOutbound ? 'outbound' : 'inbound';
-
+  const isOutbound = fromEmail === gmailEmail;
   const contactEmail = isOutbound ? toEmail : fromEmail;
-  const contactName = isOutbound ? extractName(headers.to) : fromName;
 
-  const occurredAt = message.internalDate
-    ? new Date(parseInt(message.internalDate)).toISOString()
-    : new Date().toISOString();
+  // ── Path 1: Calendar invite detection ─────────────────────────────────────
+  const calendarEvent = parseCalendarInvite(message);
+  if (calendarEvent) {
+    const allEmails = [calendarEvent.organizerEmail, ...calendarEvent.attendeeEmails];
+    const matchesLead = allEmails.some(e => e === contactEmail) || allEmails.includes(contactEmail);
 
-  const bodyPreview = getBodyPreview(message);
-  const threadId = message.threadId || undefined;
+    if (matchesLead) {
+      const leadId = await findLeadByContactEmail(supabase, contactEmail, member.id);
+      if (leadId) {
+        // Advance to scheduled and set call time
+        const { data: lead } = await supabase
+          .from('leads')
+          .select('stage')
+          .eq('id', leadId)
+          .single();
 
-  // Find or create lead
-  let leadId: string | null = null;
+        if (lead && ['replied', 'scheduling'].includes(lead.stage)) {
+          await supabase
+            .from('leads')
+            .update({
+              call_scheduled_for: calendarEvent.startTime.toISOString(),
+              stage: 'scheduled',
+              priority: 'high',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', leadId);
 
-  const { data: existingLead } = await supabase
-    .from('leads')
-    .select('id, stage, first_reply_at, our_first_response_at')
-    .eq('company_name', company)
-    .eq('owned_by', member.id)
-    .eq('is_archived', false)
-    .limit(1)
-    .maybeSingle();
+          const { error: calErr } = await supabase.from('interactions').insert({
+            lead_id: leadId,
+            team_member_id: member.id,
+            type: 'other',
+            subject: `Calendar: ${calendarEvent.summary}`,
+            body: `Call scheduled for ${calendarEvent.startTime.toISOString()}`,
+            gmail_message_id: message.id,
+            occurred_at: calendarEvent.startTime.toISOString(),
+            metadata: { auto_stage: true, calendar_event: true },
+          });
+          // 23505 = unique_violation on gmail_message_id (already processed)
+          if (calErr && (calErr as { code?: string }).code !== '23505') {
+            result.errors.push(`Calendar interaction insert: ${calErr.message}`);
+          }
 
-  if (existingLead) {
-    leadId = existingLead.id;
+          result.calendar_events_detected++;
+        }
+      }
+    }
+    // Calendar invites are processed separately — don't fall through to email processing
+    return;
+  }
 
-    // Update stage inference
-    const updates: Record<string, string> = {};
-    if (!isOutbound && !existingLead.first_reply_at) {
+  // ── Path 2: Outreach thread (subject pattern match) ───────────────────────
+  if (isOutreachThread(headers.subject)) {
+    const company = extractCompanyFromSubject(headers.subject);
+    if (!company) return;
+
+    const contactName = isOutbound ? extractName(headers.to) : extractName(headers.from);
+    const occurredAt = message.internalDate
+      ? new Date(parseInt(message.internalDate)).toISOString()
+      : new Date().toISOString();
+    const bodyPreview = getBodyPreview(message);
+    const threadId = message.threadId || undefined;
+
+    let leadId: string | null = null;
+
+    const { data: existingLead } = await supabase
+      .from('leads')
+      .select('id, stage, first_reply_at, our_first_response_at')
+      .eq('company_name', company)
+      .eq('owned_by', member.id)
+      .eq('is_archived', false)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingLead) {
+      leadId = existingLead.id;
+
+      const updates: Record<string, unknown> = { last_contact_at: occurredAt };
+      if (!isOutbound && !existingLead.first_reply_at) {
+        updates.first_reply_at = occurredAt;
+        updates.stage = 'replied';
+      }
+      if (isOutbound && !existingLead.our_first_response_at && existingLead.first_reply_at) {
+        updates.our_first_response_at = occurredAt;
+      }
+
+      await supabase.from('leads').update(updates).eq('id', leadId);
+    } else if (!isOutbound) {
+      const { data: newLead, error: createErr } = await supabase
+        .from('leads')
+        .insert({
+          contact_name: contactName || company,
+          contact_email: contactEmail,
+          company_name: company,
+          owned_by: member.id,
+          sourced_by: member.id,
+          stage: 'replied',
+          first_reply_at: occurredAt,
+          last_contact_at: occurredAt,
+          tags: [],
+          poc_status: 'not_started',
+          heat_score: 50,
+          is_archived: false,
+        })
+        .select('id')
+        .single();
+
+      if (!createErr && newLead) {
+        leadId = newLead.id;
+        result.created_leads++;
+      }
+    }
+
+    if (!leadId) return;
+    await upsertInteraction(supabase, {
+      lead_id: leadId,
+      team_member_id: member.id,
+      type: isOutbound ? 'email_outbound' : 'email_inbound',
+      subject: headers.subject,
+      body: bodyPreview,
+      gmail_message_id: message.id ?? undefined,
+      gmail_thread_id: threadId,
+      occurred_at: message.internalDate
+        ? new Date(parseInt(message.internalDate)).toISOString()
+        : new Date().toISOString(),
+    }, result);
+    return;
+  }
+
+  // ── Path 3: Contact-email match (manually-added leads) ───────────────────
+  // Only link inbound emails — outbound from us doesn't need linkage here
+  if (!isOutbound) {
+    const leadId = await findLeadByContactEmail(supabase, contactEmail, member.id);
+    if (!leadId) return;
+
+    const occurredAt = message.internalDate
+      ? new Date(parseInt(message.internalDate)).toISOString()
+      : new Date().toISOString();
+    const bodyPreview = getBodyPreview(message);
+    const threadId = message.threadId || undefined;
+
+    // Update lead last_contact_at and first_reply_at if applicable
+    const { data: lead } = await supabase
+      .from('leads')
+      .select('first_reply_at')
+      .eq('id', leadId)
+      .single();
+
+    const updates: Record<string, unknown> = { last_contact_at: occurredAt };
+    if (lead && !lead.first_reply_at) {
       updates.first_reply_at = occurredAt;
       updates.stage = 'replied';
     }
-    if (isOutbound && !existingLead.our_first_response_at && existingLead.first_reply_at) {
-      updates.our_first_response_at = occurredAt;
-    }
-    updates.last_contact_at = occurredAt;
+    await supabase.from('leads').update(updates).eq('id', leadId);
 
-    if (Object.keys(updates).length > 0) {
-      await supabase.from('leads').update(updates).eq('id', leadId);
-    }
-  } else if (!isOutbound) {
-    // Auto-create lead from inbound email
-    const { data: newLead, error: createErr } = await supabase
-      .from('leads')
-      .insert({
-        contact_name: contactName || company,
-        contact_email: contactEmail,
-        company_name: company,
-        owned_by: member.id,
-        sourced_by: member.id,
-        stage: 'replied',
-        first_reply_at: occurredAt,
-        last_contact_at: occurredAt,
-        tags: [],
-        poc_status: 'not_started',
-        heat_score: 50,
-        is_archived: false,
-      })
-      .select('id')
-      .single();
+    await upsertInteraction(supabase, {
+      lead_id: leadId,
+      team_member_id: member.id,
+      type: 'email_inbound',
+      subject: headers.subject,
+      body: bodyPreview,
+      gmail_message_id: message.id ?? undefined,
+      gmail_thread_id: threadId,
+      occurred_at: occurredAt,
+    }, result);
+  }
+}
 
-    if (!createErr && newLead) {
-      leadId = newLead.id;
-      result.created_leads++;
-    }
+async function summarizeEmail(subject: string, body: string): Promise<string | null> {
+  if (!body.trim()) return null;
+  try {
+    return await callAI({
+      model: QWEN_FREE_MODEL,
+      systemPrompt: 'Summarize this email in one concise sentence (max 120 chars). Plain text, no quotes.',
+      userMessage: `Subject: ${subject}\n\n${body.slice(0, 800)}`,
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function upsertInteraction(
+  supabase: ReturnType<typeof import('@/lib/supabase/admin').createAdminClient>,
+  data: {
+    lead_id: string;
+    team_member_id: string;
+    type: string;
+    subject: string;
+    body: string;
+    gmail_message_id?: string;
+    gmail_thread_id?: string;
+    occurred_at: string;
+  },
+  result: SyncResult
+) {
+  // Auto-summarize inbound emails for faster scanning
+  let summary: string | null = null;
+  if (data.type === 'email_inbound' && data.body) {
+    summary = await summarizeEmail(data.subject, data.body);
   }
 
-  if (!leadId) return;
-
-  // Determine interaction type
-  const interactionType = isOutbound ? 'email_outbound' : 'email_inbound';
-
-  // Upsert interaction — ON CONFLICT DO NOTHING via the unique index
-  const { error: interactionErr } = await supabase.from('interactions').insert({
-    lead_id: leadId,
-    team_member_id: member.id,
-    type: interactionType,
-    direction,
-    subject: headers.subject,
-    body: bodyPreview,
-    gmail_message_id: messageId,
-    gmail_thread_id: threadId,
-    occurred_at: occurredAt,
+  const { error } = await supabase.from('interactions').insert({
+    ...data,
+    summary: summary || undefined,
     metadata: {},
   });
 
-  // 23505 = unique_violation: expected from idx_interactions_gmail_msg partial unique index
-  // This is intentional ON CONFLICT DO NOTHING semantics for email deduplication
-  if (!interactionErr || (interactionErr as { code?: string }).code === '23505') {
-    if (!interactionErr) result.synced++;
+  // 23505 = unique_violation on gmail_message_id — expected deduplication
+  if (!error || (error as { code?: string }).code === '23505') {
+    if (!error) result.synced++;
   } else {
-    throw new Error(interactionErr.message);
+    throw new Error(error.message);
   }
 }

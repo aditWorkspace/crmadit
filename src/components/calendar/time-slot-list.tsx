@@ -1,7 +1,6 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import { format } from 'date-fns';
 
 interface Slot {
   start: string;
@@ -14,6 +13,15 @@ interface TimeSlotListProps {
   selectedSlot: string | null;
   durationMinutes: 15 | 30;
   onSelect: (start: string) => void;
+}
+
+function formatPT(iso: string): string {
+  return new Date(iso).toLocaleString('en-US', {
+    timeZone: 'America/Los_Angeles',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
 }
 
 export function TimeSlotList({ slots, selectedSlot, durationMinutes: _durationMinutes, onSelect }: TimeSlotListProps) {
@@ -41,7 +49,7 @@ export function TimeSlotList({ slots, selectedSlot, durationMinutes: _durationMi
             )}
           >
             <span className={cn('h-2 w-2 rounded-full flex-shrink-0', selected ? 'bg-green-500' : 'bg-green-400')} />
-            {format(new Date(slot.start), 'h:mm a')}
+            {formatPT(slot.start)}
           </button>
         );
       })}

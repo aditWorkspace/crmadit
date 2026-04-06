@@ -15,7 +15,7 @@ CREATE TABLE team_members (
 );
 
 INSERT INTO team_members (name, email, major) VALUES
-  ('Adit', 'adit@proxi.ai', 'Business and CS'),
+  ('Adit', 'aditmittal@berkeley.edu', 'Business and CS'),
   ('Srijay', 'srijay@proxi.ai', 'TBD'),
   ('Asim', 'asim@proxi.ai', 'TBD');
 

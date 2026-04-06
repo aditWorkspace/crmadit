@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
 import { addDays } from '@/lib/utils';
+import { changeStage } from '@/lib/automation/stage-logic';
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSessionFromRequest(req);
@@ -32,6 +33,20 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     case 'update_message':
       updates = { suggested_message };
       break;
+    case 'confirm_call': {
+      // Mark confirmation done, then advance lead to call_completed
+      updates = { status: 'completed', completed_at: now };
+      const { data: fq } = await supabase.from('follow_up_queue').select('lead_id').eq('id', id).single();
+      if (fq?.lead_id) {
+        await changeStage(fq.lead_id, 'call_completed', session.id);
+      }
+      break;
+    }
+    case 'noshow_call': {
+      // Dismiss the confirmation — lead stays in scheduled, founders reschedule
+      updates = { status: 'dismissed', dismissed_at: now };
+      break;
+    }
     default:
       return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
   }

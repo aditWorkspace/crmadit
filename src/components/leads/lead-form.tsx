@@ -9,7 +9,8 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { createClient } from '@/lib/supabase/client';
 import { useSession } from '@/hooks/use-session';
-import { TeamMember } from '@/types';
+import { TeamMember, LeadStage } from '@/types';
+import { STAGE_LABELS, ACTIVE_STAGES } from '@/lib/constants';
 
 interface LeadFormModalProps {
   open: boolean;
@@ -24,6 +25,7 @@ interface FormData {
   contact_role: string;
   owned_by: string;
   sourced_by: string;
+  stage: LeadStage;
 }
 
 const EMPTY_FORM: FormData = {
@@ -33,6 +35,7 @@ const EMPTY_FORM: FormData = {
   contact_role: '',
   owned_by: '',
   sourced_by: '',
+  stage: 'replied',
 };
 
 export function LeadFormModal({ open, onClose, onSuccess }: LeadFormModalProps) {
@@ -213,6 +216,25 @@ export function LeadFormModal({ open, onClose, onSuccess }: LeadFormModalProps) 
                 </SelectContent>
               </Select>
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Stage</Label>
+            <Select
+              value={form.stage}
+              onValueChange={(v) => v && handleChange('stage', v)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select stage" />
+              </SelectTrigger>
+              <SelectContent>
+                {ACTIVE_STAGES.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {STAGE_LABELS[s]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <DialogFooter className="pt-2">

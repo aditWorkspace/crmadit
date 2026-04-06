@@ -14,9 +14,11 @@ import { ActionItemList } from '@/components/action-items/action-item-list';
 import { InlineEdit } from '@/components/leads/inline-edit';
 import { TranscriptUploadModal } from '@/components/transcripts/upload-modal';
 import { AiInsights } from '@/components/transcripts/ai-insights';
+import { EmailComposeModal } from '@/components/leads/email-compose-modal';
+import { BookMeetingModal } from '@/components/leads/book-meeting-modal';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { ArrowLeft, Flame, Upload } from 'lucide-react';
+import { ArrowLeft, Flame, Upload, Mail, CalendarPlus, Sparkles, X } from 'lucide-react';
 import Link from 'next/link';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -34,9 +36,15 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [transcript, setTranscript] = useState<Transcript | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [composeThread, setComposeThread] = useState<{ threadId: string; subject: string } | null>(null);
+  const [showBookMeeting, setShowBookMeeting] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [addingNote, setAddingNote] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [suggestingAction, setSuggestingAction] = useState(false);
+  const [draftingPostCall, setDraftingPostCall] = useState(false);
+  const [postCallDraft, setPostCallDraft] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const getHeaders = (): Record<string, string> => ({
     'Content-Type': 'application/json',
@@ -152,6 +160,53 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
     else toast.error('Failed to update action item');
   };
 
+  const handleSuggestAction = async () => {
+    if (!user) return;
+    setSuggestingAction(true);
+    const res = await fetch(`/api/leads/${id}/suggest-action`, { method: 'POST', headers: getHeaders() });
+    const data = await res.json();
+    if (res.ok && data.ai_next_action) {
+      setLead(cur => cur ? { ...cur, ai_next_action: data.ai_next_action, ai_heat_reason: data.ai_heat_reason, heat_score: data.heat_score ?? cur.heat_score } : cur);
+    }
+    setSuggestingAction(false);
+  };
+
+  const handlePostCallDraft = async () => {
+    if (!user) return;
+    const latestThread = interactions.find(i => i.gmail_thread_id);
+    if (!latestThread) { toast.error('No email thread found for this lead'); return; }
+    setDraftingPostCall(true);
+    try {
+      const res = await fetch(`/api/leads/${id}/draft-email`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ thread_id: latestThread.gmail_thread_id, context_type: 'post_call' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Draft failed');
+      setPostCallDraft(data.draft ?? '');
+      setComposeThread({ threadId: latestThread.gmail_thread_id!, subject: latestThread.subject || '' });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to generate draft');
+    } finally {
+      setDraftingPostCall(false);
+    }
+  };
+
+  const handleDeleteLead = async () => {
+    if (!user) return;
+    if (!confirm(`Delete ${lead?.contact_name} (${lead?.company_name})? This cannot be undone.`)) return;
+    setDeleting(true);
+    const res = await fetch(`/api/leads/${id}`, { method: 'DELETE', headers: getHeaders() });
+    if (res.ok) {
+      toast.success('Lead deleted');
+      router.push('/leads');
+    } else {
+      toast.error('Failed to delete lead');
+      setDeleting(false);
+    }
+  };
+
   const handleDeleteActionItem = async (itemId: string) => {
     if (!user) return;
     setActionItems(prev => prev.filter(i => i.id !== itemId));
@@ -162,6 +217,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
       if (r.action_items) setActionItems(r.action_items);
     }
   };
+
 
   if (loading || !lead) {
     return (
@@ -180,12 +236,21 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
     <div className="flex flex-col h-screen">
       {/* Top bar */}
       <div className="border-b border-gray-100 px-8 py-4 bg-white flex-shrink-0">
-        <div className="flex items-center gap-3 mb-3">
-          <Link href="/leads" className="text-gray-400 hover:text-gray-600">
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <span className="text-gray-300">/</span>
-          <span className="text-sm text-gray-500">Leads</span>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-3">
+            <Link href="/leads" className="text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300">
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <span className="text-gray-300">/</span>
+            <span className="text-sm text-gray-500">Leads</span>
+          </div>
+          <button
+            onClick={handleDeleteLead}
+            disabled={deleting}
+            className="flex items-center gap-1.5 text-xs text-red-500 hover:text-red-700 border border-red-200 hover:border-red-300 rounded-lg px-3 py-1.5 hover:bg-red-50 disabled:opacity-50 transition-colors dark:border-red-900 dark:hover:bg-red-950/50"
+          >
+            {deleting ? 'Deleting...' : 'Delete Lead'}
+          </button>
         </div>
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-baseline gap-3 flex-wrap min-w-0">
@@ -215,6 +280,14 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
             </span>
           </div>
           <div className="flex items-center gap-3 flex-shrink-0">
+            <button
+              onClick={() => setShowBookMeeting(true)}
+              title="Book a meeting via Google Calendar"
+              className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded-md px-2.5 py-1.5 hover:border-gray-300 transition-colors"
+            >
+              <CalendarPlus className="h-3.5 w-3.5" />
+              Book Meeting
+            </button>
             <Flame className={cn('h-5 w-5', heatColor)} aria-label={`Heat score: ${lead.heat_score}`} />
 
             {/* Priority dropdown */}
@@ -264,11 +337,40 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
 
           {/* Timeline */}
           <div className="rounded-lg border border-gray-100 overflow-hidden">
-            <div className="px-4 py-3 bg-gray-50/50 border-b border-gray-100">
+            <div className="px-4 py-3 bg-gray-50/50 border-b border-gray-100 flex items-center justify-between">
               <h3 className="text-sm font-medium text-gray-700">Timeline</h3>
+              {(() => {
+                const latestThread = interactions.find(i => i.gmail_thread_id);
+                const isPostCallStage = ['call_completed', 'demo_sent', 'feedback_call', 'active_user'].includes(lead.stage);
+                return latestThread ? (
+                  <div className="flex items-center gap-2">
+                    {isPostCallStage && (
+                      <button
+                        onClick={handlePostCallDraft}
+                        disabled={draftingPostCall}
+                        className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 border border-indigo-200 rounded-md px-2.5 py-1 hover:border-indigo-300 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+                      >
+                        <Sparkles className={`h-3.5 w-3.5 ${draftingPostCall ? 'animate-pulse' : ''}`} />
+                        {draftingPostCall ? 'Drafting...' : 'Post-Call Draft'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setComposeThread({ threadId: latestThread.gmail_thread_id!, subject: latestThread.subject || '' })}
+                      className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded-md px-2.5 py-1 hover:border-gray-300 transition-colors"
+                    >
+                      <Mail className="h-3.5 w-3.5" />
+                      Send Email
+                    </button>
+                  </div>
+                ) : null;
+              })()}
             </div>
             <div className="px-4">
-              <LeadTimeline interactions={interactions} activities={activities} />
+              <LeadTimeline
+                interactions={interactions}
+                activities={activities}
+                onReply={(ctx) => setComposeThread(ctx)}
+              />
             </div>
 
             {/* Add Note */}
@@ -299,6 +401,33 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
         {/* Right column (35%) */}
         <div className="flex-[35] overflow-auto p-6 space-y-6">
           <LeadInfoPanel lead={lead} members={members} onUpdate={updateLead} />
+
+          {/* AI Next Action */}
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+                <span className="text-xs font-semibold text-amber-800">AI Suggested Action</span>
+              </div>
+              <button
+                onClick={handleSuggestAction}
+                disabled={suggestingAction}
+                className="text-xs text-amber-600 hover:text-amber-800 disabled:opacity-50 transition-colors"
+              >
+                {suggestingAction ? 'Thinking...' : lead?.ai_next_action ? 'Refresh' : 'Generate'}
+              </button>
+            </div>
+            {lead?.ai_next_action ? (
+              <div>
+                <p className="text-sm text-amber-900 font-medium">{lead.ai_next_action}</p>
+                {lead.ai_heat_reason && (
+                  <p className="text-xs text-amber-600 mt-1">{lead.ai_heat_reason}</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-amber-600">Click Generate for an AI-suggested next step based on this lead&apos;s history.</p>
+            )}
+          </div>
 
           {/* Action Items */}
           <div>
@@ -382,6 +511,44 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
         }}
         members={members}
       />
+
+      {showBookMeeting && user && lead && (
+        <BookMeetingModal
+          leadId={id}
+          leadName={lead.contact_name}
+          companyName={lead.company_name}
+          teamMemberId={user.team_member_id}
+          onClose={() => setShowBookMeeting(false)}
+          onBooked={(startTime, meetLink) => {
+            setLead(cur => cur ? { ...cur, call_scheduled_for: startTime } : cur);
+            setShowBookMeeting(false);
+            if (meetLink) {
+              toast.success(
+                <span>
+                  Meeting booked! <a href={meetLink} target="_blank" rel="noopener noreferrer" className="underline">Join Meet</a>
+                </span>
+              );
+            }
+          }}
+        />
+      )}
+
+      {composeThread && user && lead && (
+        <EmailComposeModal
+          leadId={id}
+          threadId={composeThread.threadId}
+          toEmail={lead.contact_email}
+          subject={composeThread.subject}
+          teamMemberId={user.team_member_id}
+          initialDraft={postCallDraft ?? undefined}
+          onClose={() => { setComposeThread(null); setPostCallDraft(null); }}
+          onSent={(interaction) => {
+            if (interaction) setInteractions(prev => [interaction as Interaction, ...prev]);
+            setComposeThread(null);
+            setPostCallDraft(null);
+          }}
+        />
+      )}
     </div>
   );
 }

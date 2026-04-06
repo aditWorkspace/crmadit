@@ -4,7 +4,7 @@ import { FollowUp } from '@/types';
 import { formatRelativeTime, cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useSession } from '@/hooks/use-session';
-import { Copy, CheckCheck, Clock } from 'lucide-react';
+import { Copy, CheckCheck, Clock, Phone, PhoneOff } from 'lucide-react';
 import Link from 'next/link';
 
 interface PendingFollowupsProps {
@@ -15,16 +15,20 @@ interface PendingFollowupsProps {
 export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps) {
   const { user } = useSession();
 
-  const handleComplete = async (id: string) => {
+  const handleAction = async (id: string, action: string) => {
     if (!user) return;
     const res = await fetch(`/api/follow-ups/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', 'x-team-member-id': user.team_member_id },
-      body: JSON.stringify({ action: 'complete' }),
+      body: JSON.stringify({ action }),
     });
     if (res.ok) {
       onUpdate(id);
-      toast.success('Follow-up marked done');
+      if (action === 'confirm_call') toast.success('Call confirmed — stage moved to Call Completed');
+      else if (action === 'noshow_call') toast.info('Marked as no-show — lead stays scheduled');
+      else if (action === 'complete') toast.success('Follow-up marked done');
+    } else {
+      toast.error('Failed to update follow-up');
     }
   };
 
@@ -41,18 +45,33 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
     <div className="space-y-3">
       {followUps.slice(0, 5).map(f => {
         const isOverdue = new Date(f.due_at) < new Date();
+        const isCallConfirmation = f.type === 'call_confirmation';
         const lead = f.lead as { id: string; contact_name: string; company_name: string } | undefined;
+
         return (
           <div key={f.id} className={cn(
             'rounded-lg border p-3 space-y-2',
-            isOverdue ? 'border-red-200 bg-red-50/30' : 'border-gray-100'
+            isCallConfirmation
+              ? 'border-indigo-200 bg-indigo-50/40'
+              : isOverdue
+                ? 'border-red-200 bg-red-50/30'
+                : 'border-gray-100'
           )}>
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="flex items-center gap-1.5 text-xs text-gray-400 mb-0.5">
-                  <Clock className="h-3 w-3" />
-                  <span className={isOverdue ? 'text-red-500 font-medium' : ''}>
-                    {isOverdue ? 'Overdue' : 'Due'} {formatRelativeTime(f.due_at)}
+                  {isCallConfirmation
+                    ? <Phone className="h-3 w-3 text-indigo-400" />
+                    : <Clock className="h-3 w-3" />
+                  }
+                  <span className={cn(
+                    isCallConfirmation ? 'text-indigo-600 font-medium' :
+                    isOverdue ? 'text-red-500 font-medium' : ''
+                  )}>
+                    {isCallConfirmation
+                      ? 'Call check-in'
+                      : isOverdue ? `Overdue ${formatRelativeTime(f.due_at)}` : `Due ${formatRelativeTime(f.due_at)}`
+                    }
                   </span>
                 </div>
                 <p className="text-sm font-medium text-gray-800">
@@ -65,24 +84,45 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
                 {f.reason && <p className="text-xs text-gray-500 mt-0.5">{f.reason}</p>}
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              {f.suggested_message && (
+
+            {/* Call confirmation — special two-button UI */}
+            {isCallConfirmation ? (
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => copyMessage(f.suggested_message!)}
+                  onClick={() => handleAction(f.id, 'confirm_call')}
+                  className="flex items-center gap-1.5 text-xs text-white bg-indigo-600 hover:bg-indigo-700 rounded px-2.5 py-1 transition-colors"
+                >
+                  <Phone className="h-3 w-3" />
+                  Yes, happened
+                </button>
+                <button
+                  onClick={() => handleAction(f.id, 'noshow_call')}
+                  className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded px-2.5 py-1"
+                >
+                  <PhoneOff className="h-3 w-3" />
+                  No-show
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                {f.suggested_message && (
+                  <button
+                    onClick={() => copyMessage(f.suggested_message!)}
+                    className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded px-2 py-1"
+                  >
+                    <Copy className="h-3 w-3" />
+                    Copy
+                  </button>
+                )}
+                <button
+                  onClick={() => handleAction(f.id, 'complete')}
                   className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded px-2 py-1"
                 >
-                  <Copy className="h-3 w-3" />
-                  Copy
+                  <CheckCheck className="h-3 w-3" />
+                  Done
                 </button>
-              )}
-              <button
-                onClick={() => handleComplete(f.id)}
-                className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded px-2 py-1"
-              >
-                <CheckCheck className="h-3 w-3" />
-                Done
-              </button>
-            </div>
+              </div>
+            )}
           </div>
         );
       })}

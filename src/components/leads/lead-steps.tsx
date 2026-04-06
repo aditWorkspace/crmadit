@@ -19,10 +19,21 @@ const STAGE_DATE_FIELDS: Partial<Record<LeadStage, keyof Lead>> = {
   active_user: 'product_access_granted_at',
 };
 
-type DisplayStage = Exclude<LeadStage, 'paused'>;
+// Stage descriptions shown below the label in the stepper
+const STAGE_DESCRIPTIONS: Partial<Record<LeadStage, string>> = {
+  replied: 'They replied to our cold email — now in active dialogue',
+  scheduling: 'Going back and forth to book the discovery call',
+  scheduled: 'Discovery call is confirmed',
+  call_completed: 'Discovery call happened — send demo now',
+  demo_sent: 'Product access sent — schedule feedback call',
+  feedback_call: 'Second call to collect product feedback',
+  active_user: 'Recurring weekly calls',
+};
+
+type DisplayStage = Exclude<LeadStage, 'paused' | 'post_call'>;
 
 export function LeadSteps({ lead, onStageChange, onDateChange }: LeadStepsProps) {
-  const displayStages = ACTIVE_STAGES.filter((s): s is DisplayStage => s !== 'paused');
+  const displayStages = ACTIVE_STAGES.filter((s): s is DisplayStage => s !== 'paused' && s !== 'post_call');
   const currentIdx = displayStages.indexOf(lead.stage as DisplayStage);
 
   return (
@@ -63,7 +74,7 @@ export function LeadSteps({ lead, onStageChange, onDateChange }: LeadStepsProps)
                 <button
                   onClick={() => isPending && onStageChange(stage)}
                   className={cn(
-                    'text-sm font-medium',
+                    'text-sm font-medium text-left',
                     isCompleted && 'text-gray-500',
                     isCurrent && 'text-blue-700',
                     isPending && 'text-gray-400 hover:text-gray-600 cursor-pointer'
@@ -72,6 +83,9 @@ export function LeadSteps({ lead, onStageChange, onDateChange }: LeadStepsProps)
                 >
                   {STAGE_LABELS[stage]}
                 </button>
+                {isCurrent && STAGE_DESCRIPTIONS[stage] && (
+                  <p className="text-xs text-gray-400 mt-0.5">{STAGE_DESCRIPTIONS[stage]}</p>
+                )}
               </div>
 
               <div className="flex items-center gap-4 text-xs text-gray-400">
@@ -100,7 +114,7 @@ export function LeadSteps({ lead, onStageChange, onDateChange }: LeadStepsProps)
         })}
       </div>
 
-      {(lead.stage === 'paused' || lead.stage === 'dead') && (
+      {(lead.stage === 'paused' || lead.stage === 'dead' || lead.stage === 'post_call') && (
         <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 text-sm text-gray-500">
           Stage: <span className="font-medium capitalize">{lead.stage}</span>
           {lead.paused_until && ` — resumes ${formatDate(lead.paused_until)}`}

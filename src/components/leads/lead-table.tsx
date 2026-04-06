@@ -35,9 +35,10 @@ import {
   ChevronRight,
   Download,
   X,
+  Users,
 } from 'lucide-react';
 
-type Preset = 'all' | 'my_leads' | 'awaiting_response' | 'awaiting_demo' | 'stale';
+type Preset = 'all' | 'my_leads' | 'awaiting_response' | 'awaiting_demo' | 'stale' | 'calls';
 type SortDir = 'asc' | 'desc';
 
 const PRESET_LABELS: Record<Preset, string> = {
@@ -46,6 +47,7 @@ const PRESET_LABELS: Record<Preset, string> = {
   awaiting_response: 'Awaiting Response',
   awaiting_demo: 'Awaiting Demo',
   stale: 'Stale',
+  calls: 'Calls',
 };
 
 export function LeadTable() {
@@ -119,7 +121,7 @@ export function LeadTable() {
   }, [fetchLeads]);
 
   // Realtime updates
-  useLeadRealtime(fetchLeads);
+  useLeadRealtime(fetchLeads, 'leads-table');
 
   // Keyboard shortcuts
   useKeyboardShortcuts({
@@ -202,25 +204,31 @@ export function LeadTable() {
   // ── Bulk actions ───────────────────────────────────────────────────
   const bulkPatch = async (body: Record<string, unknown>) => {
     if (!user) return;
-    try {
-      await Promise.all(
-        [...selectedIds].map((id) =>
-          fetch(`/api/leads/${id}`, {
-            method: 'PATCH',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-team-member-id': user.team_member_id,
-            },
-            body: JSON.stringify(body),
-          })
-        )
-      );
-      toast.success(`Updated ${selectedIds.size} lead(s)`);
-      setSelectedIds(new Set());
-      fetchLeads();
-    } catch {
-      toast.error('Some updates failed');
+    const ids = [...selectedIds];
+    const results = await Promise.allSettled(
+      ids.map(async (id) => {
+        const res = await fetch(`/api/leads/${id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-team-member-id': user.team_member_id,
+          },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(`Failed to update lead ${id}: ${res.status}`);
+      })
+    );
+    const fulfilled = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.length - fulfilled;
+    if (failed === 0) {
+      toast.success(`Updated ${fulfilled} lead(s)`);
+    } else if (fulfilled === 0) {
+      toast.error(`Failed to update all ${failed} lead(s)`);
+    } else {
+      toast.warning(`${fulfilled} of ${ids.length} leads updated; ${failed} failed`);
     }
+    setSelectedIds(new Set());
+    fetchLeads();
   };
 
   // ── CSV Export ─────────────────────────────────────────────────────
@@ -682,11 +690,3 @@ export function LeadTable() {
   );
 }
 
-// Re-export Users icon used inside JSX above
-function Users({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-1a4 4 0 00-5.197-3.796M9 20H4v-1a4 4 0 015.197-3.796M15 8a4 4 0 11-8 0 4 4 0 018 0zM21 8a3 3 0 11-6 0 3 3 0 016 0z" />
-    </svg>
-  );
-}

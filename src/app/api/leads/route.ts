@@ -62,15 +62,18 @@ export async function GET(req: NextRequest) {
   } else if (preset === 'awaiting_response') {
     query = query.in('stage', ['replied']);
   } else if (preset === 'awaiting_demo') {
-    query = query.in('stage', ['call_completed', 'post_call']).is('demo_sent_at', null);
+    query = query.in('stage', ['call_completed']).is('demo_sent_at', null);
+  } else if (preset === 'calls') {
+    query = query.in('stage', ['scheduled', 'call_completed', 'feedback_call']);
   } else if (preset === 'stale') {
     const now = Date.now();
     const stageConditions = [
       { stages: ['replied'], hours: 4 },
       { stages: ['scheduling', 'scheduled'], hours: 48 },
-      { stages: ['call_completed', 'post_call'], hours: 24 },
-      { stages: ['demo_sent'], hours: 5 * 24 },
-      { stages: ['active_user'], hours: 14 * 24 },
+      { stages: ['call_completed'], hours: 6 },
+      { stages: ['demo_sent'], hours: 3 * 24 },
+      { stages: ['feedback_call'], hours: 7 * 24 },
+      { stages: ['active_user'], hours: 7 * 24 },
     ];
 
     const orParts = stageConditions.flatMap(({ stages, hours }) => {
@@ -140,7 +143,7 @@ export async function POST(req: NextRequest) {
       contact_role,
       owned_by: owned_by || session.id,
       sourced_by: sourced_by || session.id,
-      stage: 'replied',
+      stage: rest.stage || 'replied',
       ...rest,
     })
     .select()

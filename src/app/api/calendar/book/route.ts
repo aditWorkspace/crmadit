@@ -38,11 +38,10 @@ export async function POST(req: NextRequest) {
   }
 
   const start = new Date(startTime);
-  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
-
   if (isNaN(start.getTime())) {
     return NextResponse.json({ error: 'Invalid startTime' }, { status: 400 });
   }
+  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
 
   // Must be at least 2 hours from now
   if (start.getTime() < Date.now() + 2 * 60 * 60 * 1000) {

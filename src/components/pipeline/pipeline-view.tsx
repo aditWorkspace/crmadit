@@ -41,10 +41,9 @@ export function PipelineView() {
     if (stored === 'board') setViewMode('board');
   }, []);
 
-  const toggleView = () => {
-    const next: ViewMode = viewMode === 'list' ? 'board' : 'list';
-    setViewMode(next);
-    localStorage.setItem('proxi-pipeline-view', next);
+  const setView = (mode: ViewMode) => {
+    setViewMode(mode);
+    localStorage.setItem('proxi-pipeline-view', mode);
   };
 
   const fetchLeads = useCallback(async () => {
@@ -95,7 +94,7 @@ export function PipelineView() {
       {/* View toggle bar */}
       <div className="flex-shrink-0 flex items-center gap-1 px-3 pt-2 pb-0">
         <button
-          onClick={toggleView}
+          onClick={() => setView('list')}
           className={cn(
             'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors',
             viewMode === 'list'
@@ -107,7 +106,7 @@ export function PipelineView() {
           List
         </button>
         <button
-          onClick={toggleView}
+          onClick={() => setView('board')}
           className={cn(
             'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors',
             viewMode === 'board'

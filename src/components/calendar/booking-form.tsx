@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { format } from 'date-fns';
 import { Loader2, ArrowLeft } from 'lucide-react';
 
 interface BookingFormProps {
@@ -9,6 +8,23 @@ interface BookingFormProps {
   durationMinutes: 15 | 30;
   onBack: () => void;
   onConfirm: (data: { name: string; email: string; note: string }) => Promise<void>;
+}
+
+function formatPTFull(iso: string): string {
+  const date = new Date(iso);
+  const datePart = date.toLocaleString('en-US', {
+    timeZone: 'America/Los_Angeles',
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+  });
+  const timePart = date.toLocaleString('en-US', {
+    timeZone: 'America/Los_Angeles',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+  return `${datePart} · ${timePart}`;
 }
 
 export function BookingForm({ startTime, durationMinutes, onBack, onConfirm }: BookingFormProps) {
@@ -36,7 +52,7 @@ export function BookingForm({ startTime, durationMinutes, onBack, onConfirm }: B
     <div className="space-y-5">
       <div className="border border-gray-700 rounded-lg px-4 py-3 text-sm text-gray-300">
         <div className="font-medium text-white">
-          {format(new Date(startTime), 'EEEE, MMMM d · h:mm a')}
+          {formatPTFull(startTime)}
         </div>
         <div className="text-gray-400 mt-0.5">{durationMinutes} min · Google Meet</div>
       </div>

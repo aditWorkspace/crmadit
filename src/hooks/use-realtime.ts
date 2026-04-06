@@ -1,18 +1,23 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 
-export function useLeadRealtime(callback: () => void): void {
+export function useLeadRealtime(callback: () => void, channelName = 'leads-realtime'): void {
+  const callbackRef = useRef(callback);
+  useEffect(() => {
+    callbackRef.current = callback;
+  });
+
   useEffect(() => {
     const supabase = createClient();
     const channel = supabase
-      .channel('leads-realtime')
+      .channel(channelName)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'leads' },
         () => {
-          callback();
+          callbackRef.current();
         }
       )
       .subscribe();
@@ -20,7 +25,5 @@ export function useLeadRealtime(callback: () => void): void {
     return () => {
       supabase.removeChannel(channel);
     };
-  // callback is intentionally excluded — callers should memoize it
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [channelName]);
 }

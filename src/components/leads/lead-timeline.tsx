@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Interaction, ActivityLog } from '@/types';
-import { formatDateTime, cn } from '@/lib/utils';
+import { formatDateTime, cn, stripHtml } from '@/lib/utils';
 import { RelativeTime } from '@/components/ui/relative-time';
 import {
   Mail, MessageSquare, Phone, Star, ArrowRight, RefreshCw, Send, Zap
@@ -19,12 +19,24 @@ const INTERACTION_ICONS: Record<string, React.ComponentType<{ className?: string
   other: RefreshCw,
 };
 
+interface ReplyContext {
+  threadId: string;
+  subject: string;
+}
+
 interface LeadTimelineProps {
   interactions: Interaction[];
   activities: ActivityLog[];
+  onReply?: (ctx: ReplyContext) => void;
 }
 
-function InteractionEntry({ item }: { item: Interaction & { team_member?: { name: string } } }) {
+function InteractionEntry({
+  item,
+  onReply,
+}: {
+  item: Interaction & { team_member?: { name: string } };
+  onReply?: (ctx: ReplyContext) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const Icon = INTERACTION_ICONS[item.type] || MessageSquare;
   const isEmail = item.type === 'email_inbound' || item.type === 'email_outbound';
@@ -60,24 +72,37 @@ function InteractionEntry({ item }: { item: Interaction & { team_member?: { name
         )}
 
         {/* Body / preview */}
-        {item.body && (
-          <div className="mt-1">
-            <p className={cn(
-              'text-sm text-gray-600 whitespace-pre-wrap',
-              isEmail && !expanded && 'line-clamp-2'
-            )}>
-              {item.body}
-            </p>
-            {isEmail && item.body.length > 150 && (
-              <button
-                onClick={() => setExpanded(!expanded)}
-                className="text-xs text-blue-600 hover:underline mt-1"
-              >
-                {expanded ? 'Show less' : 'Show more'}
-              </button>
-            )}
-          </div>
-        )}
+        {item.body && (() => {
+          const cleaned = isEmail ? stripHtml(item.body) : item.body;
+          return (
+            <div className="mt-1">
+              <p className={cn(
+                'text-sm text-gray-600 whitespace-pre-wrap dark:text-gray-400',
+                isEmail && !expanded && 'line-clamp-2'
+              )}>
+                {cleaned}
+              </p>
+              <div className="flex items-center gap-3 mt-1">
+                {isEmail && cleaned.length > 150 && (
+                  <button
+                    onClick={() => setExpanded(!expanded)}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    {expanded ? 'Show less' : 'Show more'}
+                  </button>
+                )}
+                {isEmail && onReply && item.gmail_thread_id && (
+                  <button
+                    onClick={() => onReply({ threadId: item.gmail_thread_id!, subject: item.subject || '' })}
+                    className="text-xs text-gray-400 hover:text-gray-700 flex items-center gap-1"
+                  >
+                    ↩ Reply
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -94,7 +119,7 @@ function formatActivityText(activity: ActivityLog): string {
   }
 }
 
-export function LeadTimeline({ interactions, activities }: LeadTimelineProps) {
+export function LeadTimeline({ interactions, activities, onReply }: LeadTimelineProps) {
   const entries = [
     ...interactions.map(i => ({ ...i, _source: 'interaction' as const, _sortKey: i.occurred_at })),
     ...activities
@@ -108,7 +133,7 @@ export function LeadTimeline({ interactions, activities }: LeadTimelineProps) {
         _sortKey: a.created_at,
         metadata: {} as Record<string, unknown>,
       })),
-  ].sort((a, b) => new Date(b._sortKey).getTime() - new Date(a._sortKey).getTime());
+  ].sort((a, b) => new Date(a._sortKey).getTime() - new Date(b._sortKey).getTime()); // oldest first
 
   if (entries.length === 0) {
     return (
@@ -121,7 +146,11 @@ export function LeadTimeline({ interactions, activities }: LeadTimelineProps) {
   return (
     <div className="divide-y divide-gray-50">
       {entries.map((entry) => (
-        <InteractionEntry key={`${entry._source}-${entry.id}`} item={entry as Interaction & { team_member?: { name: string } }} />
+        <InteractionEntry
+          key={`${entry._source}-${entry.id}`}
+          item={entry as Interaction & { team_member?: { name: string } }}
+          onReply={onReply}
+        />
       ))}
     </div>
   );
