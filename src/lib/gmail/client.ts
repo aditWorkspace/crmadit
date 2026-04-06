@@ -30,12 +30,14 @@ export async function getGmailClientForMember(teamMemberId: string): Promise<Gma
     const refreshed = await refreshAccessToken(member.gmail_refresh_token);
     accessToken = refreshed.access_token;
 
-    // Update stored access token + expiry
+    // Update stored access token, refresh token (rotation), and expiry
     const encryptedAccess = encryptToken(refreshed.access_token);
+    const encryptedRefresh = encryptToken(refreshed.refresh_token);
     await supabase
       .from('team_members')
       .update({
         gmail_access_token: encryptedAccess,
+        gmail_refresh_token: encryptedRefresh,
         gmail_token_expiry: refreshed.expiry_date
           ? new Date(refreshed.expiry_date).toISOString()
           : null,

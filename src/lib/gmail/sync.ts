@@ -341,7 +341,8 @@ async function processMessage(
     metadata: {},
   });
 
-  // Error code 23505 = unique_violation — expected when deduplicating
+  // 23505 = unique_violation: expected from idx_interactions_gmail_msg partial unique index
+  // This is intentional ON CONFLICT DO NOTHING semantics for email deduplication
   if (!interactionErr || (interactionErr as { code?: string }).code === '23505') {
     if (!interactionErr) result.synced++;
   } else {

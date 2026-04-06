@@ -76,6 +76,22 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
 
       const messageBody = item.message_template || `${FOLLOWUP_TEMPLATE}\n${member.name}`;
 
+      // Fetch last inbound message ID for In-Reply-To threading header
+      // Note: gmail_message_id is the Gmail API ID, not the RFC 2822 Message-ID header.
+      // We wrap it as a best-effort fallback: <id@gmail.com>
+      const { data: lastInbound } = await supabase
+        .from('interactions')
+        .select('gmail_message_id')
+        .eq('lead_id', item.lead_id)
+        .eq('type', 'email_inbound')
+        .order('occurred_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const inReplyToMessageId = lastInbound?.gmail_message_id
+        ? `${lastInbound.gmail_message_id}@gmail.com`
+        : undefined;
+
       // Send reply in thread
       const sentMessageId = await sendReplyInThread({
         teamMemberId: member.id,
@@ -83,6 +99,7 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
         to: lead.contact_email,
         subject: `product prioritization at ${lead.company_name}`,
         body: messageBody,
+        inReplyToMessageId,
       });
 
       const now = new Date().toISOString();
@@ -143,7 +160,7 @@ export async function enqueueAutoFollowups(): Promise<void> {
     // Check last inbound email
     const { data: lastInbound } = await supabase
       .from('interactions')
-      .select('id, occurred_at, gmail_thread_id')
+      .select('id, occurred_at, gmail_thread_id, gmail_message_id')
       .eq('lead_id', lead.id)
       .eq('type', 'email_inbound')
       .order('occurred_at', { ascending: false })

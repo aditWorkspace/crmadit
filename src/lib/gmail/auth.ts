@@ -120,7 +120,8 @@ export async function refreshAccessToken(encryptedRefreshToken: string): Promise
   const data = await res.json();
   return {
     access_token: data.access_token,
-    refresh_token: refreshToken,
+    // Use the new refresh token from Google if provided (token rotation), otherwise keep existing
+    refresh_token: data.refresh_token || refreshToken,
     expiry_date: data.expires_in ? Date.now() + data.expires_in * 1000 : undefined,
   };
 }

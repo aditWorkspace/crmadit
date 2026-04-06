@@ -7,5 +7,5 @@ export function isOutreachThread(subject: string): boolean {
 export function extractCompanyFromSubject(subject: string): string | null {
   const match = subject.match(OUTREACH_PATTERN);
   if (!match) return null;
-  return match[1].trim() || null;
+  return match[1].trim().replace(/[?.!,;]+$/, '') || null;
 }

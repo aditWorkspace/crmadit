@@ -6,12 +6,14 @@ export async function sendReplyInThread({
   to,
   subject,
   body,
+  inReplyToMessageId,
 }: {
   teamMemberId: string;
   threadId: string;
   to: string;
   subject: string;
   body: string;
+  inReplyToMessageId?: string;
 }): Promise<string> {
   const { gmail } = await getGmailClientForMember(teamMemberId);
 
@@ -24,9 +26,14 @@ export async function sendReplyInThread({
     `Subject: ${replySubject}`,
     'Content-Type: text/plain; charset=utf-8',
     'MIME-Version: 1.0',
-    '',
-    body,
   ];
+
+  if (inReplyToMessageId) {
+    emailLines.push(`In-Reply-To: <${inReplyToMessageId}>`);
+    emailLines.push(`References: <${inReplyToMessageId}>`);
+  }
+
+  emailLines.push('', body);
   const raw = emailLines.join('\r\n');
 
   // Base64url encode
