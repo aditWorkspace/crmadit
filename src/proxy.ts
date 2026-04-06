@@ -16,6 +16,7 @@ export function proxy(request: NextRequest) {
     '/api/cron/',
     '/api/calendar/availability', // public — used by /book page (no session)
     '/api/calendar/book',         // public — used by /book page (no session)
+    '/api/team/members',          // public — used by user selector before login
   ];
 
   const isAllowed = allowedWithoutSession.some(p => pathname.startsWith(p));

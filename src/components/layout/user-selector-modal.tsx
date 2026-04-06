@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useSession } from '@/hooks/use-session';
-import { createClient } from '@/lib/supabase/client';
 import { TeamMember } from '@/types';
 import { Loader2, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 
@@ -25,14 +24,10 @@ export function UserSelectorModal() {
   const confirmRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    createClient()
-      .from('team_members')
-      .select('id, name, email, gmail_connected')
-      .order('name')
-      .then(({ data }) => {
-        setMembers((data as TeamMember[]) || []);
-        setFetching(false);
-      });
+    fetch('/api/team/members')
+      .then(r => r.json())
+      .then(d => setMembers(d.members || []))
+      .finally(() => setFetching(false));
   }, []);
 
   useEffect(() => {
