@@ -1,13 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest, requireSession } from '@/lib/session';
-import { getISOWeek, getISOWeekYear, subDays, format } from 'date-fns';
+import { getISOWeek, getISOWeekYear, subDays } from 'date-fns';
 
 interface InteractionRow {
   id: string;
   lead_id: string;
   team_member_id: string;
-  direction: string | null;
   occurred_at: string;
   type: string;
 }
@@ -27,9 +26,9 @@ export async function GET(req: NextRequest) {
     await Promise.all([
       supabase
         .from('interactions')
-        .select('id, lead_id, team_member_id, direction, occurred_at, type')
+        .select('id, lead_id, team_member_id, occurred_at, type')
         .gte('occurred_at', since)
-        .in('type', ['email', 'call'])
+        .in('type', ['email_inbound', 'email_outbound'])
         .order('lead_id')
         .order('occurred_at', { ascending: true }),
       supabase.from('team_members').select('id, name'),
@@ -53,7 +52,7 @@ export async function GET(req: NextRequest) {
     for (let i = 1; i < leadRows.length; i++) {
       const curr = leadRows[i];
       const prev = leadRows[i - 1];
-      if (curr.direction === 'outbound' && prev.direction === 'inbound') {
+      if (curr.type === 'email_outbound' && prev.type === 'email_inbound') {
         const outDate = new Date(curr.occurred_at);
         const inDate = new Date(prev.occurred_at);
         const hours = (outDate.getTime() - inDate.getTime()) / (1000 * 60 * 60);

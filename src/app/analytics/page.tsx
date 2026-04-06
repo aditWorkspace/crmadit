@@ -239,7 +239,7 @@ export default function AnalyticsPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <section className="rounded-xl border border-gray-200 bg-white p-5">
           <h2 className="text-sm font-semibold text-gray-700 mb-4">
-            Lead Source Performance
+            Pipeline Depth by Owner
           </h2>
           <SourceChart data={sourceData} loading={loading.source} />
         </section>

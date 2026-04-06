@@ -1,5 +1,7 @@
 'use client';
 
+import { STAGE_LABELS } from '@/lib/constants';
+
 interface RetroData {
   leads_moved_forward: { contact_name: string; company_name: string; from_stage: string; to_stage: string }[];
   new_leads: { contact_name: string; company_name: string }[];
@@ -14,18 +16,6 @@ interface Props {
   data: RetroData | null;
   loading: boolean;
 }
-
-const STAGE_LABELS: Record<string, string> = {
-  replied: 'Replied',
-  scheduling: 'Scheduling',
-  scheduled: 'Scheduled',
-  call_completed: 'Call Completed',
-  post_call: 'Post Call',
-  demo_sent: 'Demo Sent',
-  active_user: 'Active User',
-  paused: 'Paused',
-  dead: 'Dead',
-};
 
 export function WeeklyRetro({ data, loading }: Props) {
   if (loading) {

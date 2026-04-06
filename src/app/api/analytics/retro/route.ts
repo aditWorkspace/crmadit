@@ -31,11 +31,11 @@ export async function GET(req: NextRequest) {
       .order('created_at', { ascending: false })
       .limit(100),
 
-    // Leads with first_reply_at in last 7 days
+    // Leads added in last 7 days
     supabase
       .from('leads')
-      .select('contact_name, company_name, first_reply_at')
-      .gte('first_reply_at', weekAgo)
+      .select('contact_name, company_name, created_at')
+      .gte('created_at', weekAgo)
       .eq('is_archived', false)
       .limit(100),
 

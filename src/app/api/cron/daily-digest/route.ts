@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Build digest
-  const { subject, html } = await buildDailyDigest();
+  const { subject, html, text } = await buildDailyDigest();
 
   // Fetch team member emails
   const supabase = createAdminClient();
@@ -48,6 +48,7 @@ export async function POST(req: NextRequest) {
           to: [email],
           subject,
           html,
+          text,
         }),
       });
 

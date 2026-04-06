@@ -75,7 +75,7 @@ export async function buildDailyDigest(): Promise<{
   const { data: newLeadsData } = await supabase
     .from('leads')
     .select('contact_name, company_name, owned_by_member:team_members!leads_owned_by_fkey(name)')
-    .gte('first_reply_at', yesterday)
+    .gte('created_at', yesterday)
     .eq('is_archived', false)
     .limit(50);
 
