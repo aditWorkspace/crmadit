@@ -15,6 +15,11 @@ export async function POST(req: NextRequest) {
 
   if (!leadId) return NextResponse.json({ error: 'lead_id required' }, { status: 400 });
 
+  const VALID_SOURCE_TYPES = ['txt_upload', 'granola_link', 'paste'];
+  if (!VALID_SOURCE_TYPES.includes(sourceType)) {
+    return NextResponse.json({ error: 'Invalid source_type' }, { status: 400 });
+  }
+
   const supabase = createAdminClient();
   let filePath: string | null = null;
   let transcriptText = rawText;

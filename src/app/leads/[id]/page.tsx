@@ -372,7 +372,6 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
         leadId={id}
         onClose={() => setShowUploadModal(false)}
         onSuccess={() => {
-          setShowUploadModal(false);
           createClient()
             .from('transcripts')
             .select('*')

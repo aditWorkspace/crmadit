@@ -128,6 +128,13 @@ export interface Transcript {
   ai_pain_points?: AiPainPoint[];
   ai_product_feedback?: AiProductFeedback[];
   ai_follow_up_suggestions?: AiFollowUpSuggestion[];
+  ai_contact_info_extracted?: {
+    name: string | null;
+    role: string | null;
+    company: string | null;
+    team_size: string | null;
+    product_category: string | null;
+  };
   processing_status: TranscriptStatus;
   processed_at?: string;
   created_at: string;

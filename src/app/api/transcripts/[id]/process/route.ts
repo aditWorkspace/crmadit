@@ -42,6 +42,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         ai_pain_points: analysis.pain_points,
         ai_product_feedback: analysis.product_feedback,
         ai_follow_up_suggestions: analysis.follow_up_suggestions,
+        ai_contact_info_extracted: analysis.contact_info_extracted,
         processing_status: 'completed',
         processed_at: new Date().toISOString(),
       })

@@ -31,6 +31,7 @@ interface ReviewData {
   sentiment: string;
   interest_level: string;
   action_items: Array<{
+    _uid: string;
     text: string;
     assigned_to: string | null;
     due_date: string;
@@ -100,6 +101,7 @@ export function TranscriptUploadModal({ open, leadId, onClose, onSuccess, member
         sentiment: analysis.sentiment || 'neutral',
         interest_level: analysis.interest_level || 'medium',
         action_items: (analysis.action_items || []).map((item: AiActionItem) => ({
+          _uid: crypto.randomUUID(),
           text: item.text,
           assigned_to: null,
           due_date: item.suggested_due_date || '',
@@ -319,7 +321,7 @@ export function TranscriptUploadModal({ open, leadId, onClose, onSuccess, member
             <div className="space-y-2">
               <Label>Action Items ({review.action_items.length})</Label>
               {review.action_items.map((item, i) => (
-                <div key={i} className="flex gap-2 items-start p-3 rounded-lg border border-gray-100 bg-gray-50/50">
+                <div key={item._uid} className="flex gap-2 items-start p-3 rounded-lg border border-gray-100 bg-gray-50/50">
                   <div className="flex-1 space-y-2">
                     <Input
                       value={item.text}
@@ -387,7 +389,7 @@ export function TranscriptUploadModal({ open, leadId, onClose, onSuccess, member
               <button
                 onClick={() => setReview(r => r ? {
                   ...r,
-                  action_items: [...r.action_items, { text: '', assigned_to: null, due_date: '', urgency: 'medium' }]
+                  action_items: [...r.action_items, { _uid: crypto.randomUUID(), text: '', assigned_to: null, due_date: '', urgency: 'medium' }]
                 } : r)}
                 className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-700 mt-1"
               >
