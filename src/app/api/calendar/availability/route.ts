@@ -12,6 +12,9 @@ function overlaps(
 }
 
 export async function GET(req: NextRequest) {
+  // No auth check — this route is intentionally public.
+  // Used by both the internal /calendar page (with session) and the public /book page (no session).
+
   const start = req.nextUrl.searchParams.get('start');
   const end = req.nextUrl.searchParams.get('end');
   if (!start || !end) {
@@ -22,6 +25,10 @@ export async function GET(req: NextRequest) {
   const timeMax = new Date(end);
   if (isNaN(timeMin.getTime()) || isNaN(timeMax.getTime())) {
     return NextResponse.json({ error: 'Invalid date format' }, { status: 400 });
+  }
+
+  if (timeMin >= timeMax) {
+    return NextResponse.json({ error: 'start must be before end' }, { status: 400 });
   }
 
   const supabase = createAdminClient();
@@ -40,11 +47,13 @@ export async function GET(req: NextRequest) {
   );
 
   const busyByMember: Record<string, { start: string; end: string }[]> = {};
-  results.forEach((r, i) => {
+  const failedCount = results.reduce((acc, r, i) => {
     if (r.status === 'fulfilled') {
       busyByMember[members[i].id] = r.value.busy;
+      return acc;
     }
-  });
+    return acc + 1;
+  }, 0);
 
   // Build 30-min slots across the full range
   const slots: { start: string; end: string; busyCount: number }[] = [];
@@ -62,5 +71,10 @@ export async function GET(req: NextRequest) {
     cursor.setTime(cursor.getTime() + 30 * 60 * 1000);
   }
 
-  return NextResponse.json({ slots, connectedCount: members.length, timezone: 'America/Los_Angeles' });
+  return NextResponse.json({
+    slots,
+    connectedCount: members.length,
+    connectedSuccessfully: members.length - failedCount,
+    timezone: 'America/Los_Angeles',
+  });
 }
