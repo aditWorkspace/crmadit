@@ -88,7 +88,7 @@ function formatActivityText(activity: ActivityLog): string {
 
 export function LeadTimeline({ interactions, activities }: LeadTimelineProps) {
   const entries = [
-    ...interactions.map(i => ({ ...i, _sortKey: i.occurred_at })),
+    ...interactions.map(i => ({ ...i, _source: 'interaction' as const, _sortKey: i.occurred_at })),
     ...activities
       .filter(a => !['lead_created', 'lead_updated'].includes(a.action))
       .map(a => ({
@@ -96,6 +96,7 @@ export function LeadTimeline({ interactions, activities }: LeadTimelineProps) {
         occurred_at: a.created_at,
         type: 'other' as const,
         body: formatActivityText(a),
+        _source: 'activity' as const,
         _sortKey: a.created_at,
         metadata: {} as Record<string, unknown>,
       })),
@@ -112,7 +113,7 @@ export function LeadTimeline({ interactions, activities }: LeadTimelineProps) {
   return (
     <div className="divide-y divide-gray-50">
       {entries.map((entry, i) => (
-        <InteractionEntry key={entry.id + i} item={entry as Interaction & { team_member?: { name: string } }} />
+        <InteractionEntry key={`${entry._source}-${entry.id}`} item={entry as Interaction & { team_member?: { name: string } }} />
       ))}
     </div>
   );

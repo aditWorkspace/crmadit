@@ -42,27 +42,31 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   useEffect(() => {
     if (!user) return;
     const headers: Record<string, string> = { 'x-team-member-id': user.team_member_id, 'Content-Type': 'application/json' };
-    Promise.all([
-      fetch(`/api/leads/${id}`, { headers }).then(r => r.json()),
-      fetch(`/api/leads/${id}/action-items`, { headers }).then(r => r.json()),
-      fetch(`/api/leads/${id}/interactions`, { headers }).then(r => r.json()),
-      createClient()
-        .from('activity_log')
-        .select('*, team_member:team_members(id, name)')
-        .eq('lead_id', id)
-        .order('created_at', { ascending: false })
-        .limit(50),
-      createClient()
-        .from('team_members')
-        .select('id, name, email, gmail_connected, created_at'),
-    ]).then(([leadRes, aiRes, intRes, actRes, memRes]) => {
-      if (leadRes.lead) setLead(leadRes.lead);
-      if (aiRes.action_items) setActionItems(aiRes.action_items);
-      if (intRes.interactions) setInteractions(intRes.interactions);
-      if (actRes.data) setActivities(actRes.data as ActivityLog[]);
-      if (memRes.data) setMembers(memRes.data as TeamMember[]);
-      setLoading(false);
-    });
+    (async () => {
+      try {
+        const [leadRes, aiRes, intRes, actRes, memRes] = await Promise.all([
+          fetch(`/api/leads/${id}`, { headers }).then(r => r.json()),
+          fetch(`/api/leads/${id}/action-items`, { headers }).then(r => r.json()),
+          fetch(`/api/leads/${id}/interactions`, { headers }).then(r => r.json()),
+          createClient()
+            .from('activity_log')
+            .select('*, team_member:team_members(id, name)')
+            .eq('lead_id', id)
+            .order('created_at', { ascending: false })
+            .limit(50),
+          createClient()
+            .from('team_members')
+            .select('id, name, email, gmail_connected, created_at'),
+        ]);
+        if (leadRes.lead) setLead(leadRes.lead);
+        if (aiRes.action_items) setActionItems(aiRes.action_items);
+        if (intRes.interactions) setInteractions(intRes.interactions);
+        if (actRes.data) setActivities(actRes.data as ActivityLog[]);
+        if (memRes.data) setMembers(memRes.data as TeamMember[]);
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, [id, user]);
 
   const updateLead = async (updates: Partial<Lead>) => {

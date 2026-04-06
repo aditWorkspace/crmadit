@@ -32,6 +32,10 @@ export function InlineEdit({
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
 
   useEffect(() => {
+    if (!editing) setDraft(value);
+  }, [value, editing]);
+
+  useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
 

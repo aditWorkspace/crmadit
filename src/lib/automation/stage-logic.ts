@@ -48,9 +48,6 @@ type StageTrigger = {
 const stageRegistry: Record<string, StageTrigger> = {
   replied: {
     onEnter: async (lead, memberId) => {
-      if (!lead.first_reply_at) {
-        await updateLead(lead.id, { first_reply_at: new Date().toISOString() });
-      }
       await createActionItem({
         lead_id: lead.id,
         text: `Respond to ${lead.contact_name}'s reply`,
@@ -95,10 +92,6 @@ const stageRegistry: Record<string, StageTrigger> = {
 
   call_completed: {
     onEnter: async (lead, memberId) => {
-      const now = new Date().toISOString();
-      if (!lead.call_completed_at) {
-        await updateLead(lead.id, { call_completed_at: now });
-      }
       await createActionItem({
         lead_id: lead.id,
         text: 'Upload call transcript',
@@ -118,10 +111,6 @@ const stageRegistry: Record<string, StageTrigger> = {
 
   demo_sent: {
     onEnter: async (lead) => {
-      const now = new Date().toISOString();
-      if (!lead.demo_sent_at) {
-        await updateLead(lead.id, { demo_sent_at: now });
-      }
       await createFollowUp({
         lead_id: lead.id,
         assigned_to: lead.owned_by,
@@ -134,7 +123,6 @@ const stageRegistry: Record<string, StageTrigger> = {
 
   active_user: {
     onEnter: async (lead) => {
-      await updateLead(lead.id, { product_access_granted_at: new Date().toISOString() });
       await createFollowUp({
         lead_id: lead.id,
         assigned_to: lead.owned_by,
@@ -142,6 +130,13 @@ const stageRegistry: Record<string, StageTrigger> = {
         reason: 'Weekly check-in with active user',
         due_at: addDays(new Date(), 7).toISOString(),
       });
+    },
+  },
+
+  post_call: {
+    onEnter: async (_lead, _memberId) => {
+      // No automated side-effects for post_call stage.
+      // Founders manually handle follow-up actions in this stage.
     },
   },
 
