@@ -2,18 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
 import { LeadStage } from '@/types';
-
-const VALID_STAGES: LeadStage[] = [
-  'replied',
-  'scheduling',
-  'scheduled',
-  'call_completed',
-  'post_call',
-  'demo_sent',
-  'active_user',
-  'paused',
-  'dead',
-];
+import { STAGE_ORDER } from '@/lib/constants';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSessionFromRequest(req);
@@ -21,7 +10,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
 
   const { stage } = await req.json();
-  if (!VALID_STAGES.includes(stage)) {
+  if (!STAGE_ORDER.includes(stage as LeadStage)) {
     return NextResponse.json({ error: 'Invalid stage' }, { status: 400 });
   }
 
@@ -46,7 +35,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (stage === 'demo_sent' && !lead.demo_sent_at) updates.demo_sent_at = now;
   if (stage === 'active_user' && !lead.product_access_granted_at) updates.product_access_granted_at = now;
 
-  await supabase.from('leads').update(updates).eq('id', id);
+  const { error: updateError } = await supabase.from('leads').update(updates).eq('id', id);
+  if (updateError) return NextResponse.json({ error: updateError.message }, { status: 500 });
   await supabase.from('activity_log').insert({
     lead_id: id,
     team_member_id: session.id,

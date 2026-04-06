@@ -47,6 +47,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     .select()
     .single();
 
+  if (error?.code === 'PGRST116') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   // Log field changes
@@ -94,5 +97,13 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     .eq('id', id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  await supabase.from('activity_log').insert({
+    lead_id: id,
+    team_member_id: session.id,
+    action: 'lead_archived',
+    details: {},
+  });
+
   return NextResponse.json({ success: true });
 }

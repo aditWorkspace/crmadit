@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
 
+function sanitizeSearch(s: string): string {
+  return s.replace(/[,()'"]/g, '').trim();
+}
+
 export async function GET(req: NextRequest) {
   const session = await getSessionFromRequest(req);
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -35,8 +39,9 @@ export async function GET(req: NextRequest) {
 
   // Full-text search (ilike fallback)
   if (search) {
+    const safeSearch = sanitizeSearch(search);
     query = query.or(
-      `contact_name.ilike.%${search}%,company_name.ilike.%${search}%,call_notes.ilike.%${search}%,call_summary.ilike.%${search}%`
+      `contact_name.ilike.%${safeSearch}%,company_name.ilike.%${safeSearch}%,call_notes.ilike.%${safeSearch}%,call_summary.ilike.%${safeSearch}%`
     );
   }
 
@@ -59,10 +64,21 @@ export async function GET(req: NextRequest) {
   } else if (preset === 'awaiting_demo') {
     query = query.in('stage', ['call_completed', 'post_call']).is('demo_sent_at', null);
   } else if (preset === 'stale') {
-    const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-    query = query
-      .in('stage', ['replied', 'scheduling', 'scheduled', 'call_completed', 'post_call'])
-      .lt('last_contact_at', cutoff);
+    const now = Date.now();
+    const stageConditions = [
+      { stages: ['replied'], hours: 4 },
+      { stages: ['scheduling', 'scheduled'], hours: 48 },
+      { stages: ['call_completed', 'post_call'], hours: 24 },
+      { stages: ['demo_sent'], hours: 5 * 24 },
+      { stages: ['active_user'], hours: 14 * 24 },
+    ];
+
+    const orParts = stageConditions.flatMap(({ stages, hours }) => {
+      const cutoff = new Date(now - hours * 60 * 60 * 1000).toISOString();
+      return stages.map(s => `and(stage.eq.${s},last_contact_at.lt.${cutoff})`);
+    }).join(',');
+
+    query = query.or(orParts).not('stage', 'in', '("paused","dead")');
   }
 
   // Sort
@@ -103,11 +119,14 @@ export async function POST(req: NextRequest) {
   const supabase = createAdminClient();
 
   // Duplicate detection
+  const safeEmail = sanitizeSearch(contact_email);
+  const safeName = sanitizeSearch(contact_name);
+  const safeCompany = sanitizeSearch(company_name);
   const { data: existing } = await supabase
     .from('leads')
     .select('id, contact_name, company_name')
     .or(
-      `contact_email.eq.${contact_email},and(contact_name.eq.${contact_name},company_name.eq.${company_name})`
+      `contact_email.eq.${safeEmail},and(contact_name.eq.${safeName},company_name.eq.${safeCompany})`
     )
     .eq('is_archived', false)
     .limit(1);
