@@ -18,7 +18,6 @@ export async function POST(req: NextRequest) {
     startTime: string;
     durationMinutes: number;
     note?: string;
-    timezone?: string;
   };
 
   try {
@@ -51,6 +50,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Must be within 9am–5pm PT on a weekday
+  // Slots must start within 9am–5pm PT (ptHour >= 17 rejects 5pm starts — last valid start is 4:30pm)
   const ptHour = parseInt(
     new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false })
   );
