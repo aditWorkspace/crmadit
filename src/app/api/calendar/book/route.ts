@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
 
   const { name, email, startTime, durationMinutes, note } = body;
 
-  if (!name?.trim() || !email?.trim() || !startTime || ![15, 30].includes(durationMinutes)) {
+  if (!name?.trim() || !email?.trim() || !startTime || ![20, 30].includes(durationMinutes)) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
@@ -59,21 +59,23 @@ export async function POST(req: NextRequest) {
   }
 
   const supabase = createAdminClient();
-  const { data: members } = await supabase
-    .from('team_members')
-    .select('id, name, email')
-    .eq('gmail_connected', true);
 
-  if (!members?.length) {
-    return NextResponse.json({ error: 'No team members available' }, { status: 503 });
+  // Get ALL team members for attendee list, but only connected ones for freebusy
+  const [{ data: allMembers }, { data: connectedMembers }] = await Promise.all([
+    supabase.from('team_members').select('id, name, email'),
+    supabase.from('team_members').select('id, name, email').eq('gmail_connected', true),
+  ]);
+
+  if (!connectedMembers?.length) {
+    return NextResponse.json({ error: 'No calendar connected — please connect Google in Settings' }, { status: 503 });
   }
 
-  // Re-validate: check that ≥2 members are still free
+  // Re-validate: check that at least 1 connected member is still free
   const results = await Promise.allSettled(
-    members.map(m => getFreeBusy(m.id, start, end))
+    connectedMembers.map(m => getFreeBusy(m.id, start, end))
   );
 
-  const freeMembers = members.filter((_, i) => {
+  const freeMembers = connectedMembers.filter((_, i) => {
     const r = results[i];
     return r.status === 'fulfilled' && !overlaps(start, end, r.value.busy);
   });
@@ -86,8 +88,9 @@ export async function POST(req: NextRequest) {
   }
 
   // Create the event on the first free member's calendar.
-  // All founders + prospect are added as attendees — Google sends invites automatically.
-  const allEmails = [...members.map(m => m.email), email];
+  // Always invite ALL founders (even those not yet OAuth-connected) + the prospect.
+  const founderEmails = (allMembers ?? connectedMembers).map(m => m.email);
+  const allEmails = [...new Set([...founderEmails, email])];
 
   const event = await createMeetingEvent(freeMembers[0].id, {
     summary: `Quick call — ${name.trim()} × Proxi AI`,

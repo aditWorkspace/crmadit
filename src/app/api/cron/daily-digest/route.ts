@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          from: 'Proxi CRM <digest@proxi.ai>',
+          from: process.env.DIGEST_FROM_EMAIL || 'Proxi CRM <digest@proxi.ai>',
           to: [email],
           subject,
           html,

@@ -65,6 +65,9 @@ export async function GET(req: NextRequest) {
     query = query.in('stage', ['call_completed']).is('demo_sent_at', null);
   } else if (preset === 'calls') {
     query = query.in('stage', ['scheduled', 'call_completed', 'feedback_call']);
+  } else if (preset === 'snoozed') {
+    const now = new Date().toISOString();
+    query = query.gt('paused_until', now);
   } else if (preset === 'stale') {
     const now = Date.now();
     const stageConditions = [

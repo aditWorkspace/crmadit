@@ -10,10 +10,19 @@ interface Slot {
   busyCount: number;
 }
 
+interface CalendarEvent {
+  id: string;
+  summary: string;
+  start: string;
+  end: string;
+  isProxi: boolean;
+}
+
 interface AvailabilityGridProps {
   slots: Slot[];
   weekStart: Date;
   connectedCount: number;
+  events?: CalendarEvent[];
 }
 
 // PT hours to display: 8am–8pm = 24 half-hour rows
@@ -41,17 +50,41 @@ function getDateKey(iso: string): string {
   return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }); // YYYY-MM-DD
 }
 
-const BUSY_COLORS: Record<number, string> = {
+function roundDownToSlot(iso: string): string {
+  const d = new Date(iso);
+  const m = d.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', minute: '2-digit' });
+  const min = parseInt(m);
+  const slotMin = min < 30 ? 0 : 30;
+  // Return a date key + slot key for this rounded slot
+  const h = getPTHour(iso);
+  const dateKey = getDateKey(iso);
+  return `${dateKey}:${String(h).padStart(2, '0')}:${slotMin === 0 ? '00' : '30'}`;
+}
+
+// How many 30-min steps does this event span?
+function eventSlotCount(start: string, end: string): number {
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  return Math.max(1, Math.ceil(ms / (30 * 60 * 1000)));
+}
+
+interface EventSlotInfo {
+  summary: string;
+  isProxi: boolean;
+  isFirstSlot: boolean;
+  spanCount: number; // total slots the event spans (for height hint)
+}
+
+const NON_PROXI_BUSY: Record<number, string> = {
   0: 'bg-white hover:bg-blue-50 cursor-pointer',
   1: 'bg-gray-100',
-  2: 'bg-gray-400',
-  3: 'bg-gray-800',
+  2: 'bg-gray-300',
+  3: 'bg-gray-500',
 };
 
-export function AvailabilityGrid({ slots, weekStart, connectedCount }: AvailabilityGridProps) {
+export function AvailabilityGrid({ slots, weekStart, connectedCount, events = [] }: AvailabilityGridProps) {
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
-  // Build lookup: "YYYY-MM-DD:HH:mm" → busyCount
+  // Build busy-count lookup: "YYYY-MM-DD:HH:mm" → busyCount
   const slotMap = useMemo(() => {
     const map: Record<string, number> = {};
     for (const s of slots) {
@@ -64,6 +97,57 @@ export function AvailabilityGrid({ slots, weekStart, connectedCount }: Availabil
     }
     return map;
   }, [slots]);
+
+  // Build event slot lookup: slotKey → EventSlotInfo
+  const eventSlotMap = useMemo(() => {
+    const map: Record<string, EventSlotInfo> = {};
+
+    for (const ev of events) {
+      if (!ev.start || !ev.end) continue;
+      const totalSpan = eventSlotCount(ev.start, ev.end);
+
+      // Walk through slots this event covers
+      const evStart = new Date(ev.start);
+      const evEnd = new Date(ev.end);
+      const cursor = new Date(evStart);
+      // Round cursor down to nearest 30-min slot boundary (keep hour, snap minutes)
+      const ptMin = getPTMinute(evStart.toISOString());
+      cursor.setMinutes(ptMin, 0, 0);
+
+      let slotIndex = 0;
+      while (cursor < evEnd) {
+        const h = getPTHour(cursor.toISOString());
+        if (h >= START_HOUR && h < END_HOUR) {
+          const key = roundDownToSlot(cursor.toISOString());
+          if (!map[key]) {
+            map[key] = {
+              summary: ev.summary,
+              isProxi: ev.isProxi,
+              isFirstSlot: slotIndex === 0,
+              spanCount: totalSpan,
+            };
+          }
+        }
+        cursor.setTime(cursor.getTime() + 30 * 60 * 1000);
+        slotIndex++;
+      }
+
+      // Ensure the first slot is marked — fallback if cursor logic missed it
+      const firstKey = roundDownToSlot(evStart.toISOString());
+      if (!map[firstKey]) {
+        const h = getPTHour(evStart.toISOString());
+        if (h >= START_HOUR && h < END_HOUR) {
+          map[firstKey] = {
+            summary: ev.summary,
+            isProxi: ev.isProxi,
+            isFirstSlot: true,
+            spanCount: totalSpan,
+          };
+        }
+      }
+    }
+    return map;
+  }, [events]);
 
   const timeRows = useMemo(() => {
     const rows: { label: string; hour: number; minute: number }[] = [];
@@ -98,12 +182,46 @@ export function AvailabilityGrid({ slots, weekStart, connectedCount }: Availabil
               const dateKey = format(d, 'yyyy-MM-dd');
               const key = `${dateKey}:${String(row.hour).padStart(2, '0')}:${row.minute === 0 ? '00' : '30'}`;
               const busyCount = slotMap[key] ?? 0;
+              const evInfo = eventSlotMap[key];
+
+              if (evInfo?.isProxi) {
+                // Proxi event: all founders in a meeting with a prospect → blue
+                return (
+                  <div
+                    key={key}
+                    className={cn(
+                      'h-5 border-b border-r transition-colors overflow-hidden',
+                      'bg-blue-500 border-blue-400',
+                    )}
+                    title={evInfo.summary}
+                  >
+                    {evInfo.isFirstSlot && (
+                      <span className="text-[9px] text-white font-medium px-0.5 truncate block leading-5">
+                        {evInfo.summary}
+                      </span>
+                    )}
+                  </div>
+                );
+              }
+
+              if (evInfo && !evInfo.isProxi) {
+                // Personal/non-Proxi event → gray regardless of busy count
+                return (
+                  <div
+                    key={key}
+                    className="h-5 border-b border-r border-gray-100 bg-gray-200 transition-colors"
+                    title={`Personal: ${evInfo.summary}`}
+                  />
+                );
+              }
+
+              // No event — use freebusy heatmap
               return (
                 <div
                   key={key}
                   className={cn(
                     'h-5 border-b border-r border-gray-50 transition-colors',
-                    BUSY_COLORS[Math.min(busyCount, connectedCount)] ?? 'bg-gray-800'
+                    NON_PROXI_BUSY[Math.min(busyCount, connectedCount)] ?? 'bg-gray-500'
                   )}
                   title={busyCount === 0 ? 'All free' : `${busyCount} busy`}
                 />
@@ -113,15 +231,23 @@ export function AvailabilityGrid({ slots, weekStart, connectedCount }: Availabil
         ))}
 
         {/* Legend */}
-        <div className="flex items-center gap-4 pt-4 px-2 text-xs text-gray-500">
-          <span className="font-medium">Busy founders:</span>
+        <div className="flex items-center gap-4 pt-4 px-2 text-xs text-gray-500 flex-wrap">
+          <span className="font-medium">Legend:</span>
+          <div className="flex items-center gap-1">
+            <div className="h-3 w-5 rounded-sm bg-blue-500" />
+            <span>Proxi meeting</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="h-3 w-5 rounded-sm bg-gray-200" />
+            <span>Personal busy</span>
+          </div>
           {[
-            { count: 0, label: 'None', cls: 'bg-white border border-gray-200' },
-            { count: 1, label: '1', cls: 'bg-gray-100' },
-            { count: 2, label: '2', cls: 'bg-gray-400' },
-            { count: 3, label: '3', cls: 'bg-gray-800' },
-          ].map(({ count, label, cls }) => (
-            <div key={count} className="flex items-center gap-1">
+            { label: 'Free', cls: 'bg-white border border-gray-200' },
+            { label: '1 busy', cls: 'bg-gray-100' },
+            { label: '2 busy', cls: 'bg-gray-300' },
+            { label: '3 busy', cls: 'bg-gray-500' },
+          ].map(({ label, cls }) => (
+            <div key={label} className="flex items-center gap-1">
               <div className={cn('h-3 w-5 rounded-sm', cls)} />
               <span>{label}</span>
             </div>

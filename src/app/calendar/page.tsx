@@ -13,13 +13,22 @@ interface Slot {
   busyCount: number;
 }
 
+interface CalendarEvent {
+  id: string;
+  summary: string;
+  start: string;
+  end: string;
+  isProxi: boolean;
+}
+
 export default function CalendarPage() {
   const { user } = useSession();
   const [weekStart, setWeekStart] = useState<Date>(() =>
     startOfWeek(new Date(), { weekStartsOn: 1 }) // Monday
   );
   const [slots, setSlots] = useState<Slot[]>([]);
-  const [connectedCount, setConnectedCount] = useState(3);
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [connectedCount, setConnectedCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   const fetchAvailability = useCallback(async () => {
@@ -34,6 +43,7 @@ export default function CalendarPage() {
       );
       const data = await res.json();
       setSlots(data.slots ?? []);
+      setEvents(data.events ?? []);
       setConnectedCount(data.connectedCount ?? 3);
     } catch {
       // keep stale data
@@ -102,7 +112,7 @@ export default function CalendarPage() {
             <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
           </div>
         ) : (
-          <AvailabilityGrid slots={slots} weekStart={weekStart} connectedCount={connectedCount} />
+          <AvailabilityGrid slots={slots} weekStart={weekStart} connectedCount={connectedCount} events={events} />
         )}
       </div>
     </div>

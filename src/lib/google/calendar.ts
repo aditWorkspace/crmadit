@@ -132,6 +132,58 @@ export interface FreeBusyResult {
   busy: { start: string; end: string }[];
 }
 
+export interface RawCalendarEvent {
+  id: string;
+  summary: string;
+  start: string;
+  end: string;
+  attendeeEmails: string[];
+  isAllDay: boolean;
+}
+
+/**
+ * Fetch all calendar events for a member in the given time range.
+ * Used to classify Proxi vs personal events in the availability grid.
+ */
+export async function getEventsInRange(
+  teamMemberId: string,
+  timeMin: Date,
+  timeMax: Date
+): Promise<RawCalendarEvent[]> {
+  const calendar = await getCalendarClientForMember(teamMemberId);
+  const events: RawCalendarEvent[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 250,
+      pageToken,
+    });
+    for (const ev of res.data.items || []) {
+      if (ev.status === 'cancelled') continue;
+      events.push({
+        id: ev.id || '',
+        summary: ev.summary || '(No title)',
+        start: ev.start?.dateTime || ev.start?.date || '',
+        end: ev.end?.dateTime || ev.end?.date || '',
+        attendeeEmails: (ev.attendees || [])
+          .filter(a => a.responseStatus !== 'declined')
+          .map(a => a.email?.toLowerCase() || '')
+          .filter(Boolean),
+        isAllDay: !ev.start?.dateTime,
+      });
+    }
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return events;
+}
+
 /**
  * Query Google Calendar freebusy API for a single member.
  * Returns busy blocks in the given time range.

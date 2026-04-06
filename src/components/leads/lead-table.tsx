@@ -36,9 +36,11 @@ import {
   Download,
   X,
   Users,
+  BellOff,
+  Clock,
 } from 'lucide-react';
 
-type Preset = 'all' | 'my_leads' | 'awaiting_response' | 'awaiting_demo' | 'stale' | 'calls';
+type Preset = 'all' | 'my_leads' | 'awaiting_response' | 'awaiting_demo' | 'stale' | 'calls' | 'snoozed';
 type SortDir = 'asc' | 'desc';
 
 const PRESET_LABELS: Record<Preset, string> = {
@@ -48,6 +50,7 @@ const PRESET_LABELS: Record<Preset, string> = {
   awaiting_demo: 'Awaiting Demo',
   stale: 'Stale',
   calls: 'Calls',
+  snoozed: 'Snoozed (OOO)',
 };
 
 export function LeadTable() {
@@ -167,6 +170,24 @@ export function LeadTable() {
     }
     toast.success(`Stage changed to ${STAGE_LABELS[stage]}`);
     fetchLeads();
+  };
+
+  const handleSnooze = async (leadId: string, days: number | null) => {
+    if (!user) return;
+    const paused_until = days === null
+      ? null
+      : new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    const res = await fetch(`/api/leads/${leadId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'x-team-member-id': user.team_member_id },
+      body: JSON.stringify({ paused_until }),
+    });
+    if (res.ok) {
+      toast.success(days === null ? 'Unsnoozed' : `Snoozed for ${days} day${days > 1 ? 's' : ''}`);
+      fetchLeads();
+    } else {
+      toast.error('Failed to snooze');
+    }
   };
 
   const daysSince = (date: string | null | undefined): number | null => {
@@ -471,7 +492,7 @@ export function LeadTable() {
 
       {/* Loading skeleton */}
       {loading ? (
-        <SkeletonTable cols={11} rows={5} />
+        <SkeletonTable cols={12} rows={5} />
       ) : (
         <>
           {/* Desktop Table */}
@@ -498,6 +519,7 @@ export function LeadTable() {
                       { key: '_days', label: 'Days Since', noSort: true },
                       { key: 'next_followup_at', label: 'Next Follow-up' },
                       { key: 'poc_status', label: 'POC', noSort: true },
+                      { key: '_snooze', label: '', noSort: true },
                     ].map((col) => (
                       <th
                         key={col.key}
@@ -518,7 +540,7 @@ export function LeadTable() {
                 <tbody className="divide-y divide-gray-50">
                   {leads.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="px-4 py-16 text-center">
+                      <td colSpan={12} className="px-4 py-16 text-center">
                         <div className="flex flex-col items-center gap-3 text-gray-400">
                           <Users className="h-10 w-10 text-gray-200" />
                           <p className="font-medium text-sm">No leads found</p>
@@ -554,7 +576,18 @@ export function LeadTable() {
                             />
                           </td>
                           <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">
-                            {lead.contact_name}
+                            <span className="flex items-center gap-1.5">
+                              {lead.contact_name}
+                              {lead.paused_until && new Date(lead.paused_until) > new Date() && (
+                                <span
+                                  className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium"
+                                  title={`Snoozed until ${new Date(lead.paused_until).toLocaleDateString()}`}
+                                >
+                                  <BellOff className="h-2.5 w-2.5" />
+                                  OOO
+                                </span>
+                              )}
+                            </span>
                           </td>
                           <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
                             {lead.company_name}
@@ -602,6 +635,55 @@ export function LeadTable() {
                           </td>
                           <td className="px-4 py-3 text-gray-500 whitespace-nowrap capitalize">
                             {lead.poc_status?.replace('_', ' ') || '—'}
+                          </td>
+                          <td
+                            className="px-4 py-3 text-right"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <DropdownMenu>
+                              <DropdownMenuTrigger
+                                className={cn(
+                                  'opacity-0 group-hover:opacity-100 transition-opacity',
+                                  'inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium',
+                                  lead.paused_until && new Date(lead.paused_until) > new Date()
+                                    ? 'opacity-100 text-amber-600 bg-amber-50 border border-amber-200'
+                                    : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                                )}
+                                title={
+                                  lead.paused_until && new Date(lead.paused_until) > new Date()
+                                    ? `Snoozed until ${new Date(lead.paused_until).toLocaleDateString()}`
+                                    : 'Snooze'
+                                }
+                              >
+                                <BellOff className="h-3 w-3" />
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-40">
+                                <div className="px-2 py-1 text-xs text-gray-500 font-medium">Snooze (OOO)</div>
+                                {[
+                                  { label: '3 days', days: 3 },
+                                  { label: '7 days', days: 7 },
+                                  { label: '14 days', days: 14 },
+                                  { label: '30 days', days: 30 },
+                                ].map(({ label, days }) => (
+                                  <DropdownMenuItem
+                                    key={days}
+                                    onClick={() => handleSnooze(lead.id, days)}
+                                  >
+                                    <Clock className="h-3 w-3 mr-1.5 text-gray-400" />
+                                    {label}
+                                  </DropdownMenuItem>
+                                ))}
+                                {lead.paused_until && new Date(lead.paused_until) > new Date() && (
+                                  <DropdownMenuItem
+                                    onClick={() => handleSnooze(lead.id, null)}
+                                    className="text-red-600"
+                                  >
+                                    <X className="h-3 w-3 mr-1.5" />
+                                    Unsnooze
+                                  </DropdownMenuItem>
+                                )}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </td>
                         </tr>
                       );

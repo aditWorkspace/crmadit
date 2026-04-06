@@ -4,7 +4,7 @@ import { getGmailClientForMember } from '@/lib/gmail/client';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { isOutreachThread, extractCompanyFromSubject } from '@/lib/gmail/matcher';
 
-const TEAM_DOMAIN = 'proxi.ai';
+const TEAM_DOMAIN = process.env.TEAM_EMAIL_DOMAIN || 'proxi.ai';
 const LOOKBACK_DAYS = 7;
 const FUTURE_DAYS = 30;
 

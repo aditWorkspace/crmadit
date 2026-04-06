@@ -19,8 +19,8 @@ interface Slot {
 
 type Step = 'calendar' | 'slots' | 'form';
 
-const DURATION_OPTIONS: { value: 15 | 30; label: string }[] = [
-  { value: 15, label: '15m' },
+const DURATION_OPTIONS: { value: 20 | 30; label: string }[] = [
+  { value: 20, label: '20m' },
   { value: 30, label: '30m' },
 ];
 
@@ -44,7 +44,7 @@ export default function BookPage() {
   const [month, setMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
-  const [duration, setDuration] = useState<15 | 30>(30);
+  const [duration, setDuration] = useState<20 | 30>(20);
   const [slots, setSlots] = useState<Slot[]>([]);
   const [step, setStep] = useState<Step>('calendar');
   const [loadingSlots, setLoadingSlots] = useState(false);

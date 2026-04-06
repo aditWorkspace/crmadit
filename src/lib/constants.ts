@@ -98,4 +98,6 @@ export const STALE_THRESHOLDS: Partial<Record<LeadStage, number>> = {
   active_user: 7 * 24,     // 7 days — weekly calls, so alert if no contact in a week
 };
 
+// Team names are seeded in the DB — do not add business logic that depends on these strings.
+// Kept only as a reference for the initial DB seed.
 export const TEAM_NAMES = ['Adit', 'Srijay', 'Asim'] as const;

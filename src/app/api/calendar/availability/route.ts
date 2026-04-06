@@ -1,7 +1,7 @@
 // src/app/api/calendar/availability/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { getFreeBusy } from '@/lib/google/calendar';
+import { getFreeBusy, getEventsInRange } from '@/lib/google/calendar';
 
 function overlaps(
   slotStart: Date,
@@ -34,33 +34,34 @@ export async function GET(req: NextRequest) {
   const supabase = createAdminClient();
   const { data: members } = await supabase
     .from('team_members')
-    .select('id, name')
+    .select('id, name, email')
     .eq('gmail_connected', true);
 
-  if (!members?.length) {
-    return NextResponse.json({ slots: [], connectedCount: 0, timezone: 'America/Los_Angeles' });
+  // Fetch freebusy for all connected members in parallel; skip failures gracefully
+  const busyByMember: Record<string, { start: string; end: string }[]> = {};
+  let failedCount = 0;
+
+  if (members?.length) {
+    const results = await Promise.allSettled(
+      members.map(m => getFreeBusy(m.id, timeMin, timeMax))
+    );
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.status === 'fulfilled') {
+        busyByMember[members[i].id] = r.value.busy;
+      } else {
+        failedCount++;
+      }
+    }
   }
 
-  // Fetch freebusy for all members in parallel; skip failures gracefully
-  const results = await Promise.allSettled(
-    members.map(m => getFreeBusy(m.id, timeMin, timeMax))
-  );
-
-  const busyByMember: Record<string, { start: string; end: string }[]> = {};
-  const failedCount = results.reduce((acc, r, i) => {
-    if (r.status === 'fulfilled') {
-      busyByMember[members[i].id] = r.value.busy;
-      return acc;
-    }
-    return acc + 1;
-  }, 0);
-
-  // Build 30-min slots across the full range
+  // Build 30-min slots across the full range.
+  // If no members are connected, busyCount defaults to 0 (assume everyone free).
   const slots: { start: string; end: string; busyCount: number }[] = [];
   const cursor = new Date(timeMin);
   while (cursor < timeMax) {
     const slotEnd = new Date(cursor.getTime() + 30 * 60 * 1000);
-    const busyCount = members.filter(
+    const busyCount = (members ?? []).filter(
       m => busyByMember[m.id] && overlaps(cursor, slotEnd, busyByMember[m.id])
     ).length;
     slots.push({
@@ -71,8 +72,39 @@ export async function GET(req: NextRequest) {
     cursor.setTime(cursor.getTime() + 30 * 60 * 1000);
   }
 
+  // Fetch events for the requesting member to classify Proxi vs personal busy time
+  const requestingMemberId = req.headers.get('x-team-member-id');
+  interface ClassifiedEvent {
+    id: string;
+    summary: string;
+    start: string;
+    end: string;
+    isProxi: boolean;
+  }
+  let calendarEvents: ClassifiedEvent[] = [];
+
+  if (requestingMemberId) {
+    try {
+      const rawEvents = await getEventsInRange(requestingMemberId, timeMin, timeMax);
+      const teamEmailSet = new Set(members.map(m => (m.email || '').toLowerCase()));
+
+      calendarEvents = rawEvents
+        .filter(ev => !ev.isAllDay && ev.start)
+        .map(ev => {
+          const attendeeSet = new Set(ev.attendeeEmails);
+          // Proxi event: every connected team member is an attendee
+          const isProxi = teamEmailSet.size > 0 &&
+            [...teamEmailSet].every(email => attendeeSet.has(email));
+          return { id: ev.id, summary: ev.summary, start: ev.start, end: ev.end, isProxi };
+        });
+    } catch {
+      // Non-fatal: show heatmap only without event overlay
+    }
+  }
+
   return NextResponse.json({
     slots,
+    events: calendarEvents,
     connectedCount: members.length,
     connectedSuccessfully: members.length - failedCount,
     timezone: 'America/Los_Angeles',

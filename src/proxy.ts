@@ -14,6 +14,8 @@ export function proxy(request: NextRequest) {
     '/api/gmail/connect',
     '/api/gmail/callback',
     '/api/cron/',
+    '/api/calendar/availability', // public — used by /book page (no session)
+    '/api/calendar/book',         // public — used by /book page (no session)
   ];
 
   const isAllowed = allowedWithoutSession.some(p => pathname.startsWith(p));
