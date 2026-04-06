@@ -83,12 +83,11 @@ export function LeadTable() {
     if (!user) return;
     setLoading(true);
     const params = new URLSearchParams();
-    if (preset !== 'all' && preset !== 'awaiting_response') params.set('preset', preset);
+    if (preset !== 'all') params.set('preset', preset);
     if (debouncedSearch) params.set('q', debouncedSearch);
     selectedStages.forEach((s) => params.append('stage', s));
     if (selectedPriority) params.set('priority', selectedPriority);
     if (selectedOwner) params.set('owned_by', selectedOwner);
-    if (preset === 'awaiting_response') params.append('stage', 'replied');
     params.set('sort_by', sortBy);
     params.set('sort_dir', sortDir);
     params.set('page', String(page));

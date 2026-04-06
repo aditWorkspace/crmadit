@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   const { data } = await supabase
     .from('leads')
     .select('id, contact_name, company_name, stage, contact_email')
-    .or(`contact_name.ilike.%${q}%,company_name.ilike.%${q}%`)
+    .or(`contact_name.ilike.%${q}%,company_name.ilike.%${q}%,contact_email.ilike.%${q}%`)
     .eq('is_archived', false)
     .limit(10);
 

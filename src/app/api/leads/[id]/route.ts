@@ -31,7 +31,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const body = await req.json();
   // Never allow patching these fields directly via this route
-  const { id: _id, created_at: _created_at, sourced_by: _sourced_by, is_archived: _is_archived, ...updateData } = body;
+  const { id: _id, created_at: _created_at, is_archived: _is_archived, ...updateData } = body;
 
   const supabase = createAdminClient();
 
