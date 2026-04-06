@@ -86,7 +86,7 @@ export async function GET(req: NextRequest) {
   if (requestingMemberId) {
     try {
       const rawEvents = await getEventsInRange(requestingMemberId, timeMin, timeMax);
-      const teamEmailSet = new Set(members.map(m => (m.email || '').toLowerCase()));
+      const teamEmailSet = new Set((members ?? []).map(m => (m.email || '').toLowerCase()));
 
       calendarEvents = rawEvents
         .filter(ev => !ev.isAllDay && ev.start)
@@ -105,8 +105,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     slots,
     events: calendarEvents,
-    connectedCount: members.length,
-    connectedSuccessfully: members.length - failedCount,
+    connectedCount: members?.length ?? 0,
+    connectedSuccessfully: (members?.length ?? 0) - failedCount,
     timezone: 'America/Los_Angeles',
   });
 }

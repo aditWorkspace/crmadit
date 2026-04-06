@@ -11,7 +11,7 @@ interface Slot {
 interface TimeSlotListProps {
   slots: Slot[];           // already filtered to selected date + business hours
   selectedSlot: string | null;
-  durationMinutes: 15 | 30;
+  durationMinutes: 20 | 30;
   onSelect: (start: string) => void;
 }
 
