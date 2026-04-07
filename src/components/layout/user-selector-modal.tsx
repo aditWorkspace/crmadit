@@ -15,6 +15,7 @@ export function UserSelectorModal() {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -52,7 +53,14 @@ export function UserSelectorModal() {
       if (!res.ok) {
         setPin('');
         setError((data.error ?? 'Incorrect PIN') + (data.debug ? ` (${data.debug})` : ''));
-        inputRef.current?.focus();
+        // 3-second cooldown before next attempt
+        setCooldown(3);
+        const interval = setInterval(() => {
+          setCooldown(prev => {
+            if (prev <= 1) { clearInterval(interval); inputRef.current?.focus(); return 0; }
+            return prev - 1;
+          });
+        }, 1000);
         return;
       }
       setUser({ team_member_id: selected!.id, name: selected!.name });
@@ -139,10 +147,10 @@ export function UserSelectorModal() {
 
         <button
           onClick={handleVerify}
-          disabled={loading || pin.length < 4}
+          disabled={loading || pin.length < 4 || cooldown > 0}
           className="w-full mt-5 py-3.5 rounded-xl bg-gray-900 text-white font-semibold hover:bg-gray-800 disabled:opacity-40 transition-colors flex items-center justify-center gap-2 text-sm"
         >
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Unlock'}
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : cooldown > 0 ? `Try again in ${cooldown}s` : 'Unlock'}
         </button>
       </div>
     </div>
