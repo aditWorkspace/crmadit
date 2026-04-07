@@ -599,15 +599,22 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
   const [suggestingAction, setSuggestingAction] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
+  // Track which leadId we last fetched so auto-switch (which changes `user`)
+  // doesn't trigger a redundant re-fetch and briefly blank the panel
+  const fetchedLeadId = useRef<string | null>(null);
+  const userRef = useRef(user);
+  useEffect(() => { userRef.current = user; }, [user]);
 
   const headers = useCallback((): Record<string, string> => ({
     'Content-Type': 'application/json',
-    ...(user ? { 'x-team-member-id': user.team_member_id } : {}),
-  }), [user]);
+    ...(userRef.current ? { 'x-team-member-id': userRef.current.team_member_id } : {}),
+  }), []);
 
-  // Fetch all data when leadId changes
+  // Fetch all data when leadId changes (not when user changes — auto-switch must not re-fetch)
   useEffect(() => {
     if (!user || !leadId) return;
+    if (fetchedLeadId.current === leadId) return;
+    fetchedLeadId.current = leadId;
     setLoading(true);
     setLead(null);
     setInteractions([]);

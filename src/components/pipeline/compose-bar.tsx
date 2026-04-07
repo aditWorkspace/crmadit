@@ -22,6 +22,8 @@ export function ComposeBar({ leadId, toEmail, threadId, teamMemberId, aiSuggesti
   const [drafting, setDrafting] = useState(false);
   const [connectedMembers, setConnectedMembers] = useState<ConnectedMember[]>([]);
   const [senderId, setSenderId] = useState(teamMemberId);
+  // Keep sender in sync when auto-switch changes teamMemberId (e.g. opening a lead)
+  useEffect(() => { setSenderId(teamMemberId); }, [teamMemberId]);
   const [showSenderMenu, setShowSenderMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
