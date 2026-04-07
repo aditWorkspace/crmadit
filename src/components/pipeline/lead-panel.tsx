@@ -628,9 +628,10 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
     ]).then(([leadRes, intRes, aiRes, actRes, memRes, transcriptRes]) => {
       if (leadRes.lead) {
         setLead(leadRes.lead);
-        // Auto-switch "Sending as" to the lead's owner when opening a lead
-        if (leadRes.lead.owned_by && memRes.data) {
-          const owner = (memRes.data as TeamMember[]).find((m: TeamMember) => m.id === leadRes.lead.owned_by);
+        // Auto-switch session to lead owner (fall back to sourced_by) when opening a lead
+        const ownerId = leadRes.lead.owned_by || leadRes.lead.sourced_by;
+        if (ownerId && memRes.data) {
+          const owner = (memRes.data as TeamMember[]).find((m: TeamMember) => m.id === ownerId);
           if (owner) setUser({ team_member_id: owner.id, name: owner.name });
         }
       }
