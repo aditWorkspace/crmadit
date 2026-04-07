@@ -36,19 +36,19 @@ function StageBar({ lead, onStageChange }: { lead: Lead; onStageChange: (s: Lead
         return (
           <div key={stage} className="flex items-center flex-shrink-0">
             <button
-              onClick={() => future && onStageChange(stage)}
-              disabled={done || active}
+              onClick={() => !active && onStageChange(stage)}
+              disabled={active}
               title={STAGE_LABELS[stage]}
               className={cn(
                 'flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors',
-                done && 'text-gray-400',
+                done && 'text-gray-400 hover:text-gray-600 cursor-pointer hover:bg-gray-100',
                 active && 'text-blue-700 font-semibold bg-blue-50 rounded',
                 future && 'text-gray-400 hover:text-gray-600 cursor-pointer hover:bg-gray-100 rounded'
               )}
             >
               <span className={cn(
                 'h-1.5 w-1.5 rounded-full flex-shrink-0',
-                done && 'bg-gray-300',
+                done && 'bg-green-400',
                 active && 'bg-blue-500',
                 future && 'bg-gray-200'
               )} />

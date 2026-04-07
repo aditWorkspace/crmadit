@@ -1,5 +1,7 @@
 'use client';
 
+import { useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { Lead, LeadStage } from '@/types';
@@ -7,7 +9,6 @@ import { PRIORITY_COLORS, STALE_THRESHOLDS } from '@/lib/constants';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { differenceInHours } from 'date-fns';
 import { Flame } from 'lucide-react';
-import Link from 'next/link';
 
 interface KanbanCardProps {
   lead: Lead;
@@ -27,6 +28,9 @@ function isStale(lead: Lead): boolean {
 }
 
 export function KanbanCard({ lead, isDragging }: KanbanCardProps) {
+  const router = useRouter();
+  const pointerStartRef = useRef({ x: 0, y: 0 });
+
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: lead.id,
     data: { lead },
@@ -45,8 +49,23 @@ export function KanbanCard({ lead, isDragging }: KanbanCardProps) {
     <div
       ref={setNodeRef}
       style={style}
-      {...listeners}
       {...attributes}
+      {...listeners}
+      // Override onPointerDown to track start position for click detection
+      onPointerDown={(e) => {
+        pointerStartRef.current = { x: e.clientX, y: e.clientY };
+        // Forward to dnd-kit's drag handler
+        const dndHandler = listeners?.onPointerDown;
+        if (dndHandler) (dndHandler as Function)(e);
+      }}
+      // Detect clicks: if pointer barely moved, treat as a click and navigate
+      onPointerUp={(e) => {
+        const dx = Math.abs(e.clientX - pointerStartRef.current.x);
+        const dy = Math.abs(e.clientY - pointerStartRef.current.y);
+        if (dx < 5 && dy < 5) {
+          router.push(`/leads/${lead.id}`);
+        }
+      }}
       className={cn(
         'rounded-lg border bg-white p-3 shadow-sm cursor-grab active:cursor-grabbing select-none',
         'hover:shadow-md transition-shadow',
@@ -57,13 +76,9 @@ export function KanbanCard({ lead, isDragging }: KanbanCardProps) {
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <Link
-            href={`/leads/${lead.id}`}
-            onClick={e => e.stopPropagation()}
-            className="text-sm font-medium text-gray-900 hover:text-blue-600 line-clamp-1"
-          >
+          <p className="text-sm font-medium text-gray-900 hover:text-blue-600 line-clamp-1">
             {lead.contact_name}
-          </Link>
+          </p>
           <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">
             {lead.company_name}
             {lead.contact_role ? ` · ${lead.contact_role}` : ''}
