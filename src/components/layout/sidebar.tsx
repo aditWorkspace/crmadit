@@ -7,10 +7,13 @@ import { useSession } from '@/hooks/use-session';
 import { useTheme } from '@/hooks/use-theme';
 import { HelpPanel } from './help-panel';
 import { cn } from '@/lib/utils';
+import { TeamMember } from '@/types';
 import {
   LayoutDashboard, BarChart3, Settings,
   LogOut, Menu, X, Moon, Sun, CalendarDays,
 } from 'lucide-react';
+
+const AVATAR_COLORS = ['bg-blue-500', 'bg-violet-500', 'bg-emerald-500'];
 
 const NAV_ITEMS = [
   { href: '/', label: 'Pipeline', icon: LayoutDashboard },
@@ -23,6 +26,13 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
   const pathname = usePathname();
   const { user, setUser } = useSession();
   const { theme, toggle } = useTheme();
+  const [members, setMembers] = useState<TeamMember[]>([]);
+
+  useEffect(() => {
+    fetch('/api/team/members')
+      .then(r => r.json())
+      .then(d => setMembers(d.members || []));
+  }, []);
 
   // "/" matches pipeline; also match "/?id=..."
   const isActive = (href: string) => {
@@ -71,17 +81,35 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
             {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </button>
         </div>
-        {user && (
-          <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
-            <div className="h-7 w-7 rounded-full bg-gray-900 flex items-center justify-center text-white text-xs font-medium flex-shrink-0">
-              {user.name[0]?.toUpperCase()}
+        {user && members.length > 0 && (
+          <div className="px-2 py-1.5">
+            <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-2">Sending as</p>
+            <div className="flex items-center gap-1.5">
+              {members.map((member, i) => {
+                const active = member.id === user.team_member_id;
+                return (
+                  <button
+                    key={member.id}
+                    onClick={() => setUser({ team_member_id: member.id, name: member.name })}
+                    title={member.name}
+                    className={cn(
+                      'h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold text-white transition-all',
+                      AVATAR_COLORS[i % AVATAR_COLORS.length],
+                      active ? 'ring-2 ring-offset-1 ring-gray-900 scale-110' : 'opacity-40 hover:opacity-80'
+                    )}
+                  >
+                    {member.name[0]?.toUpperCase()}
+                  </button>
+                );
+              })}
+              <button
+                onClick={() => setUser(null)}
+                className="ml-auto text-gray-400 hover:text-gray-600"
+                title="Log out"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-900 truncate">{user.name}</p>
-            </div>
-            <button onClick={() => setUser(null)} className="text-gray-400 hover:text-gray-600" title="Switch user">
-              <LogOut className="h-4 w-4" />
-            </button>
           </div>
         )}
       </div>
