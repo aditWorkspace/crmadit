@@ -322,14 +322,14 @@ async function processCalendarAttendee({
 }) {
   const now = new Date();
 
-  // Check if lead already exists — scoped to this founder so each owner gets their own record
+  // Check if lead already exists — globally across ALL owners to prevent duplicates
   const { data: existingLead } = await supabase
     .from('leads')
-    .select('id, stage, call_scheduled_for, call_completed_at')
+    .select('id, stage, call_scheduled_for, call_completed_at, owned_by')
     .eq('contact_email', contactEmail)
-    .eq('owned_by', member.id)
     .eq('is_archived', false)
     .not('stage', 'in', '("dead")')
+    .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
@@ -393,9 +393,30 @@ async function processCalendarAttendee({
 
   // ── No existing lead — create one ─────────────────────────────────────────
 
-  // Search ALL connected founders' Gmails for threads with this contact
-  const outreach = await findOutreachThread(gmail, contactEmail);
-  const threadId = outreach?.threadId ?? await findAnyRecentThread(gmail, contactEmail);
+  // Search ALL connected founders' Gmails for outreach threads with this contact
+  // to determine the true owner (whoever actually emailed the prospect)
+  let trueOwnerId = member.id;
+  let outreach = await findOutreachThread(gmail, contactEmail);
+  let threadId = outreach?.threadId ?? null;
+
+  // If current member doesn't have an outreach thread, check other founders
+  if (!outreach) {
+    for (const { gmail: g, memberId } of allGmailClients) {
+      if (memberId === member.id) continue;
+      const otherOutreach = await findOutreachThread(g, contactEmail);
+      if (otherOutreach) {
+        outreach = otherOutreach;
+        threadId = otherOutreach.threadId;
+        trueOwnerId = memberId; // this founder is the real owner
+        break;
+      }
+    }
+  }
+
+  if (!threadId) {
+    threadId = await findAnyRecentThread(gmail, contactEmail);
+  }
+
   const companyName = outreach?.company ?? companyFromDomain(contactEmail) ?? 'Unknown Company';
   const contactName = attendeeDisplayName || nameFromEmail(contactEmail);
 
@@ -409,8 +430,8 @@ async function processCalendarAttendee({
       contact_name: contactName,
       contact_email: contactEmail,
       company_name: companyName,
-      owned_by: member.id,
-      sourced_by: member.id,
+      owned_by: trueOwnerId,
+      sourced_by: trueOwnerId,
       stage,
       priority: 'high',
       heat_score: 60,

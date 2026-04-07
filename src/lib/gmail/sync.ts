@@ -102,7 +102,7 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
   do {
     const listRes = await gmail.users.messages.list({
       userId: 'me',
-      q: 'subject:"product prioritization at" newer_than:7d -from:me',
+      q: 'subject:"product prioritization at" newer_than:14d -from:me',
       maxResults: 100,
       pageToken,
     });
@@ -246,21 +246,22 @@ export async function runIncrementalSync(teamMemberId: string): Promise<SyncResu
 }
 
 /**
- * Find a lead by the prospect's email address (for manually-added leads
- * that don't have the outreach subject pattern in their emails).
+ * Find a lead by the prospect's email address — searches globally across
+ * ALL owners so that shared calendar invites / CC'd emails don't create
+ * duplicates. Returns the lead id if found.
  */
 async function findLeadByContactEmail(
   supabase: ReturnType<typeof import('@/lib/supabase/admin').createAdminClient>,
   contactEmail: string,
-  memberId: string
+  _memberId?: string          // kept for call-site compat; no longer used
 ): Promise<string | null> {
   const { data } = await supabase
     .from('leads')
     .select('id')
     .eq('contact_email', contactEmail)
-    .eq('owned_by', memberId)
     .eq('is_archived', false)
     .not('stage', 'in', '("dead")')
+    .order('updated_at', { ascending: false })   // prefer most-recently-active lead
     .limit(1)
     .maybeSingle();
   return data?.id ?? null;
@@ -288,7 +289,6 @@ async function processMessage(
         .from('leads')
         .select('id, stage')
         .eq('company_name', company)
-        .eq('owned_by', member.id)
         .eq('is_archived', false)
         .not('stage', 'in', '("dead","active_user")')
         .limit(1)
@@ -375,12 +375,13 @@ async function processMessage(
 
     let leadId: string | null = null;
 
+    // Check globally — any owner — to prevent duplicates from shared threads
     const { data: existingLead } = await supabase
       .from('leads')
-      .select('id, stage, first_reply_at, our_first_response_at')
+      .select('id, stage, first_reply_at, our_first_response_at, owned_by')
       .eq('company_name', company)
-      .eq('owned_by', member.id)
       .eq('is_archived', false)
+      .order('updated_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
