@@ -25,7 +25,7 @@ function formatPT(iso: string): string {
 }
 
 export function TimeSlotList({ slots, selectedSlot, durationMinutes: _durationMinutes, onSelect }: TimeSlotListProps) {
-  const bookableSlots = slots.filter(s => s.busyCount <= 1); // ≥2 of 3 are free
+  const bookableSlots = slots.filter(s => s.busyCount <= 1); // ≥2 of 3 founders free
 
   if (bookableSlots.length === 0) {
     return (
@@ -35,6 +35,7 @@ export function TimeSlotList({ slots, selectedSlot, durationMinutes: _durationMi
 
   return (
     <div className="space-y-2 overflow-y-auto max-h-[480px] pr-1">
+      <p className="text-[11px] text-gray-500 px-1 mb-3">All times in Pacific Time (PT)</p>
       {bookableSlots.map(slot => {
         const selected = selectedSlot === slot.start;
         return (
@@ -49,7 +50,7 @@ export function TimeSlotList({ slots, selectedSlot, durationMinutes: _durationMi
             )}
           >
             <span className={cn('h-2 w-2 rounded-full flex-shrink-0', selected ? 'bg-green-500' : 'bg-green-400')} />
-            {formatPT(slot.start)}
+            {formatPT(slot.start)} PT
           </button>
         );
       })}

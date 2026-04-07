@@ -9,6 +9,25 @@ type Screen = 'pick' | 'create-pin' | 'enter-pin';
 
 const AVATAR_COLORS = ['bg-blue-500', 'bg-violet-500', 'bg-emerald-500'];
 
+/** SHA-256 hash of the PIN, returned as hex string. Runs in the browser via Web Crypto. */
+async function hashPin(pin: string): Promise<string> {
+  const encoded = new TextEncoder().encode(pin);
+  const hashBuf = await crypto.subtle.digest('SHA-256', encoded);
+  return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function pinStorageKey(memberId: string) {
+  return `proxi_crm_pin_${memberId}`;
+}
+
+function getStoredPinHash(memberId: string): string | null {
+  try { return localStorage.getItem(pinStorageKey(memberId)); } catch { return null; }
+}
+
+function storePinHash(memberId: string, hash: string) {
+  try { localStorage.setItem(pinStorageKey(memberId), hash); } catch { /* ignore */ }
+}
+
 export function UserSelectorModal() {
   const { user, setUser, isLoading } = useSession();
   const [members, setMembers] = useState<TeamMember[]>([]);
@@ -38,21 +57,13 @@ export function UserSelectorModal() {
 
   const reset = () => { setScreen('pick'); setError(''); setPin(''); setConfirmPin(''); setSelected(null); };
 
-  const handleSelectMember = async (member: TeamMember) => {
+  const handleSelectMember = (member: TeamMember) => {
     setSelected(member);
     setError('');
     setPin('');
     setConfirmPin('');
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/auth/pin-status?member_id=${member.id}`);
-      const data = await res.json();
-      setScreen(data.has_pin ? 'enter-pin' : 'create-pin');
-    } catch {
-      setError('Connection error. Try again.');
-    } finally {
-      setLoading(false);
-    }
+    const stored = getStoredPinHash(member.id);
+    setScreen(stored ? 'enter-pin' : 'create-pin');
   };
 
   const handleCreatePin = async () => {
@@ -61,15 +72,11 @@ export function UserSelectorModal() {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/set-pin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ member_id: selected!.id, pin }),
-      });
-      if (!res.ok) { const d = await res.json(); setError(d.error || 'Failed to set PIN'); return; }
+      const hash = await hashPin(pin);
+      storePinHash(selected!.id, hash);
       setUser({ team_member_id: selected!.id, name: selected!.name });
     } catch {
-      setError('Connection error. Try again.');
+      setError('Something went wrong. Try again.');
     } finally {
       setLoading(false);
     }
@@ -80,15 +87,18 @@ export function UserSelectorModal() {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/verify-pin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ member_id: selected!.id, pin }),
-      });
-      if (!res.ok) { setPin(''); setError('Incorrect PIN. Try again.'); pinRef.current?.focus(); return; }
+      const stored = getStoredPinHash(selected!.id);
+      if (!stored) { setScreen('create-pin'); return; }
+      const hash = await hashPin(pin);
+      if (hash !== stored) {
+        setPin('');
+        setError('Incorrect PIN. Try again.');
+        pinRef.current?.focus();
+        return;
+      }
       setUser({ team_member_id: selected!.id, name: selected!.name });
     } catch {
-      setError('Connection error. Try again.');
+      setError('Something went wrong. Try again.');
     } finally {
       setLoading(false);
     }
@@ -120,8 +130,7 @@ export function UserSelectorModal() {
               <button
                 key={member.id}
                 onClick={() => handleSelectMember(member)}
-                disabled={loading}
-                className="flex flex-col items-center gap-3 rounded-2xl border border-gray-200 p-8 hover:border-gray-400 hover:shadow-lg transition-all cursor-pointer w-40 group disabled:opacity-50"
+                className="flex flex-col items-center gap-3 rounded-2xl border border-gray-200 p-8 hover:border-gray-400 hover:shadow-lg transition-all cursor-pointer w-40 group"
               >
                 <div className={`h-16 w-16 rounded-full ${AVATAR_COLORS[i % AVATAR_COLORS.length]} flex items-center justify-center text-2xl font-semibold text-white group-hover:scale-105 transition-transform shadow-md`}>
                   {member.name[0]}
@@ -130,7 +139,6 @@ export function UserSelectorModal() {
               </button>
             ))}
           </div>
-          {loading && <div className="flex justify-center mt-8"><Loader2 className="h-5 w-5 animate-spin text-gray-400" /></div>}
         </div>
       </div>
     );
@@ -199,7 +207,7 @@ export function UserSelectorModal() {
         </button>
 
         {!isCreate && (
-          <p className="text-xs text-gray-400 text-center mt-4">Forgot your PIN? Ask another founder to reset it in Settings.</p>
+          <p className="text-xs text-gray-400 text-center mt-4">Forgot your PIN? Clear your browser data to reset it.</p>
         )}
       </div>
     </div>

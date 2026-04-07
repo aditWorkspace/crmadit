@@ -48,14 +48,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Please book at least 2 hours in advance' }, { status: 400 });
   }
 
-  // Must be within 9am–5pm PT on a weekday
-  // Slots must start within 9am–5pm PT (ptHour >= 17 rejects 5pm starts — last valid start is 4:30pm)
+  // Must be within 9am–2:00pm PT on a weekday (last slot starts at 2:00pm, ends at 2:30pm max)
   const ptHour = parseInt(
     new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false })
   );
+  const ptMin = parseInt(
+    new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', minute: '2-digit' })
+  );
   const ptDay = new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short' });
-  if (['Sat', 'Sun'].includes(ptDay) || ptHour < 9 || ptHour >= 17) {
-    return NextResponse.json({ error: 'Slot is outside booking hours (Mon–Fri, 9am–5pm PT)' }, { status: 400 });
+  const pastCutoff = ptHour > 14 || (ptHour === 14 && ptMin >= 30);
+  if (['Sat', 'Sun'].includes(ptDay) || ptHour < 9 || pastCutoff) {
+    return NextResponse.json({ error: 'Slot is outside booking hours (Mon–Fri, 9am–2pm PT)' }, { status: 400 });
   }
 
   const supabase = createAdminClient();
@@ -70,17 +73,32 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No calendar connected — please connect Google in Settings' }, { status: 503 });
   }
 
-  // Re-validate: check that at least 1 connected member is still free
+  // Re-validate availability at booking time.
+  // Require at least 2 confirmed-free members when calendars are reachable.
+  // If a member's token is broken/expired we skip them rather than blocking all bookings
+  // (the real fix is for that member to reconnect in Settings).
   const results = await Promise.allSettled(
     connectedMembers.map(m => getFreeBusy(m.id, start, end))
   );
+
+  const successfulFetches = results.filter(r => r.status === 'fulfilled').length;
+
+  if (successfulFetches === 0) {
+    // Can't verify anyone's availability — fail gracefully
+    return NextResponse.json(
+      { error: 'Calendar unavailable right now — please try again or contact us directly at hello@proxi.ai' },
+      { status: 503 }
+    );
+  }
 
   const freeMembers = connectedMembers.filter((_, i) => {
     const r = results[i];
     return r.status === 'fulfilled' && !overlaps(start, end, r.value.busy);
   });
 
-  if (freeMembers.length < 2) {
+  // Require 2 free if we can verify 2+ calendars, otherwise require all verified ones to be free
+  const required = Math.min(2, successfulFetches);
+  if (freeMembers.length < required) {
     return NextResponse.json(
       { error: 'Slot no longer available — please pick another time' },
       { status: 409 }
@@ -101,6 +119,57 @@ export async function POST(req: NextRequest) {
     endTime: end,
     attendeeEmails: allEmails,
   });
+
+  // Send confirmation email to booker via Resend
+  const resendApiKey = process.env.RESEND_API_KEY;
+  if (resendApiKey) {
+    const formattedDate = start.toLocaleString('en-US', {
+      timeZone: 'America/Los_Angeles',
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const formattedTime = start.toLocaleString('en-US', {
+      timeZone: 'America/Los_Angeles',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    const meetSection = event.meetLink
+      ? `<p style="margin:16px 0;"><a href="${event.meetLink}" style="display:inline-block;background:#000;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">Join Google Meet</a></p>`
+      : '';
+
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${resendApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: 'Proxi AI <onboarding@resend.dev>',
+        to: [email],
+        subject: `Confirmed: Quick call with Proxi AI — ${formattedDate}`,
+        html: `
+<div style="font-family:sans-serif;max-width:480px;margin:0 auto;color:#111;">
+  <h2 style="font-size:20px;font-weight:700;margin-bottom:4px;">You're confirmed!</h2>
+  <p style="color:#666;margin-top:0;">Your call with Proxi AI is scheduled.</p>
+
+  <div style="background:#f9f9f9;border:1px solid #e5e5e5;border-radius:10px;padding:16px;margin:20px 0;">
+    <p style="margin:0 0 8px;font-size:14px;"><strong>When:</strong> ${formattedDate} at ${formattedTime} PT</p>
+    <p style="margin:0 0 8px;font-size:14px;"><strong>Duration:</strong> ${durationMinutes} minutes</p>
+    <p style="margin:0;font-size:14px;"><strong>Format:</strong> Google Meet (video)</p>
+  </div>
+
+  ${meetSection}
+
+  <p style="font-size:13px;color:#888;margin-top:24px;">A calendar invite has also been sent to your email. All times are in Pacific Time (PT).</p>
+  <p style="font-size:13px;color:#aaa;">— The Proxi AI team</p>
+</div>`,
+      }),
+    }).catch(() => { /* non-fatal — calendar invite still sent */ });
+  }
 
   return NextResponse.json({
     meetLink: event.meetLink,

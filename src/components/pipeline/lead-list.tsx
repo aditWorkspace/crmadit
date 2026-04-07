@@ -55,6 +55,12 @@ const GROUP_META: Record<string, { label: string; icon: React.ComponentType<{ cl
 
 function timeAgo(dateStr: string): { label: string; color: string } {
   const hrs = (Date.now() - new Date(dateStr).getTime()) / 3600000;
+  if (hrs < 0) {
+    const abs = Math.abs(hrs);
+    if (abs < 1) return { label: `in ${Math.round(abs * 60)}m`, color: 'text-blue-500' };
+    if (abs < 24) return { label: `in ${Math.round(abs)}h`, color: 'text-blue-500' };
+    return { label: `in ${Math.round(abs / 24)}d`, color: 'text-blue-500' };
+  }
   if (hrs < 1) return { label: `${Math.round(hrs * 60)}m`, color: 'text-green-600' };
   if (hrs < 2) return { label: `${Math.round(hrs)}h`, color: 'text-green-600' };
   if (hrs < 8) return { label: `${Math.round(hrs)}h`, color: 'text-yellow-600' };

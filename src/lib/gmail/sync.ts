@@ -1,6 +1,6 @@
 import type { gmail_v1 } from 'googleapis';
 import { getGmailClientForMember } from './client';
-import { isOutreachThread, extractCompanyFromSubject } from './matcher';
+import { isOutreachThread, extractCompanyFromSubject, isBounceEmail } from './matcher';
 import { parseCalendarInvite } from './calendar-parser';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { syncCalendarLeads } from '@/lib/google/calendar-sync';
@@ -278,6 +278,38 @@ async function processMessage(
   const toEmail = extractEmail(headers.to);
   const isOutbound = fromEmail === gmailEmail;
   const contactEmail = isOutbound ? toEmail : fromEmail;
+
+  // ── Bounce/NDR detection — skip entirely, and dead any matched lead ────────
+  if (isBounceEmail(headers.subject)) {
+    // Try to find and mark the lead dead so it's not worked further
+    const company = extractCompanyFromSubject(headers.subject);
+    if (company) {
+      const { data: bouncedLead } = await supabase
+        .from('leads')
+        .select('id, stage')
+        .eq('company_name', company)
+        .eq('owned_by', member.id)
+        .eq('is_archived', false)
+        .not('stage', 'in', '("dead","active_user")')
+        .limit(1)
+        .maybeSingle();
+
+      if (bouncedLead) {
+        await supabase.from('leads').update({ stage: 'dead', updated_at: new Date().toISOString() }).eq('id', bouncedLead.id);
+        await supabase.from('interactions').insert({
+          lead_id: bouncedLead.id,
+          team_member_id: member.id,
+          type: 'note',
+          subject: 'Email bounced — undeliverable',
+          body: `NDR received: ${headers.subject}`,
+          gmail_message_id: message.id,
+          occurred_at: message.internalDate ? new Date(parseInt(message.internalDate)).toISOString() : new Date().toISOString(),
+          metadata: { bounce: true },
+        }).then(() => {});
+      }
+    }
+    return;
+  }
 
   // ── Path 1: Calendar invite detection ─────────────────────────────────────
   const calendarEvent = parseCalendarInvite(message);

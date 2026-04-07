@@ -26,9 +26,11 @@ export function diffHours(from: string | Date | null | undefined, to: string | D
 export { addHours, addDays };
 
 export function formatHours(hrs: number): string {
-  if (hrs < 1) return `${Math.round(hrs * 60)}m`;
-  if (hrs < 24) return `${hrs.toFixed(1)}h`;
-  return `${(hrs / 24).toFixed(1)}d`;
+  const abs = Math.abs(hrs);
+  const prefix = hrs < 0 ? '-' : '';
+  if (abs < 1) return `${prefix}${Math.round(abs * 60)}m`;
+  if (abs < 24) return `${prefix}${abs.toFixed(1)}h`;
+  return `${prefix}${(abs / 24).toFixed(1)}d`;
 }
 
 export function getInitials(name: string): string {

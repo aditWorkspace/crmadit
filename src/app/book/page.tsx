@@ -4,7 +4,8 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   startOfMonth, endOfMonth, addMonths, subMonths,
-  startOfWeek, addDays, isSameMonth, isToday, format, isSameDay, parseISO
+  startOfWeek, addDays, isSameMonth, isToday, isBefore, startOfDay,
+  format, isSameDay, parseISO
 } from 'date-fns';
 import { ChevronLeft, ChevronRight, Video, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -34,9 +35,29 @@ function getPTHour(iso: string): number {
   );
 }
 
+function getPTMinute(iso: string): number {
+  return parseInt(
+    new Date(iso).toLocaleString('en-US', {
+      timeZone: 'America/Los_Angeles',
+      minute: '2-digit',
+    })
+  );
+}
+
+/** Last slot that can start: 2:00 PM PT (ends at 2:30 for 30m or 2:20 for 20m). */
+function isBookableHour(iso: string): boolean {
+  const h = getPTHour(iso);
+  const m = getPTMinute(iso);
+  return h >= 9 && (h < 14 || (h === 14 && m === 0));
+}
+
 function isWeekday(date: Date): boolean {
   const day = date.getDay();
   return day !== 0 && day !== 6;
+}
+
+function todayPT(): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
 }
 
 export default function BookPage() {
@@ -59,6 +80,9 @@ export default function BookPage() {
       );
       const data = await res.json();
       setSlots(data.slots ?? []);
+      if (data.failedCount > 0) {
+        console.warn(`[booking] ${data.failedCount}/${data.connectedCount} calendar fetches failed — those members treated as busy`);
+      }
     } catch {
       // keep stale
     } finally {
@@ -70,11 +94,12 @@ export default function BookPage() {
 
   const daysWithSlots = useMemo(() => {
     const days = new Set<string>();
+    const today = todayPT();
     for (const s of slots) {
-      if (s.busyCount > 1) continue;
-      const h = getPTHour(s.start);
-      if (h < 9 || h >= 17) continue;
+      if (s.busyCount > 1) continue; // need ≥2 of 3 free
+      if (!isBookableHour(s.start)) continue; // outside 9am–2:00pm PT
       const date = new Date(s.start).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+      if (date < today) continue; // skip past dates
       const d = parseISO(date);
       if (isWeekday(d)) days.add(date);
     }
@@ -85,9 +110,8 @@ export default function BookPage() {
     if (!selectedDate) return [];
     const dateKey = format(selectedDate, 'yyyy-MM-dd');
     return slots.filter(s => {
-      const h = getPTHour(s.start);
       const slotDateKey = new Date(s.start).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-      return slotDateKey === dateKey && h >= 9 && h < 17;
+      return slotDateKey === dateKey && isBookableHour(s.start);
     });
   }, [slots, selectedDate]);
 
@@ -186,7 +210,8 @@ export default function BookPage() {
             <div className="flex items-center gap-1">
               <button
                 onClick={() => setMonth(m => subMonths(m, 1))}
-                className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+                disabled={isBefore(startOfDay(subMonths(month, 1)), startOfDay(new Date()))}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors disabled:opacity-30 disabled:cursor-default"
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>

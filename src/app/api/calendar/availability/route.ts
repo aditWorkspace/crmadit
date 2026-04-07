@@ -37,8 +37,11 @@ export async function GET(req: NextRequest) {
     .select('id, name, email')
     .eq('gmail_connected', true);
 
-  // Fetch freebusy for all connected members in parallel; skip failures gracefully
+  // Fetch freebusy for all connected members in parallel.
+  // IMPORTANT: treat failed fetches as BUSY (fail-closed).
+  // If we can't confirm someone is free, we must not allow bookings during that time.
   const busyByMember: Record<string, { start: string; end: string }[]> = {};
+  const fetchedMemberIds = new Set<string>();
   let failedCount = 0;
 
   if (members?.length) {
@@ -49,21 +52,27 @@ export async function GET(req: NextRequest) {
       const r = results[i];
       if (r.status === 'fulfilled') {
         busyByMember[members[i].id] = r.value.busy;
+        fetchedMemberIds.add(members[i].id);
       } else {
         failedCount++;
+        // Do NOT add to busyByMember — absence = treated as fully busy below
       }
     }
   }
 
   // Build 30-min slots across the full range.
-  // If no members are connected, busyCount defaults to 0 (assume everyone free).
+  // busyCount = members who are confirmed busy OR whose status is unknown (failed fetch).
+  // Slot is bookable when busyCount <= 1 (i.e. ≥2 confirmed free).
   const slots: { start: string; end: string; busyCount: number }[] = [];
   const cursor = new Date(timeMin);
   while (cursor < timeMax) {
     const slotEnd = new Date(cursor.getTime() + 30 * 60 * 1000);
-    const busyCount = (members ?? []).filter(
-      m => busyByMember[m.id] && overlaps(cursor, slotEnd, busyByMember[m.id])
-    ).length;
+    const busyCount = (members ?? []).filter(m => {
+      // Member whose freebusy fetch failed → treat as busy (fail-closed)
+      if (!fetchedMemberIds.has(m.id)) return true;
+      // Member with confirmed freebusy → check if they overlap this slot
+      return overlaps(cursor, slotEnd, busyByMember[m.id]);
+    }).length;
     slots.push({
       start: cursor.toISOString(),
       end: slotEnd.toISOString(),
@@ -107,6 +116,7 @@ export async function GET(req: NextRequest) {
     events: calendarEvents,
     connectedCount: members?.length ?? 0,
     connectedSuccessfully: (members?.length ?? 0) - failedCount,
+    failedCount,
     timezone: 'America/Los_Angeles',
   });
 }

@@ -162,7 +162,7 @@ export function AvailabilityGrid({ slots, weekStart, connectedCount, events = []
     <div className="overflow-auto">
       <div className="min-w-[600px]">
         {/* Header row */}
-        <div className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-gray-100">
+        <div className="grid grid-cols-[72px_repeat(7,1fr)] border-b border-gray-100">
           <div />
           {days.map(d => (
             <div key={d.toISOString()} className="text-center py-2">
@@ -174,8 +174,8 @@ export function AvailabilityGrid({ slots, weekStart, connectedCount, events = []
 
         {/* Time rows */}
         {timeRows.map(row => (
-          <div key={`${row.hour}:${row.minute}`} className="grid grid-cols-[60px_repeat(7,1fr)]">
-            <div className="text-right pr-2 text-xs text-gray-400 leading-none pt-1">
+          <div key={`${row.hour}:${row.minute}`} className="grid grid-cols-[72px_repeat(7,1fr)]">
+            <div className="text-right pr-2 text-xs text-gray-400 leading-none pt-1 whitespace-nowrap">
               {row.label}
             </div>
             {days.map(d => {
