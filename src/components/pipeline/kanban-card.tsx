@@ -1,6 +1,5 @@
 'use client';
 
-import { useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
@@ -29,7 +28,6 @@ function isStale(lead: Lead): boolean {
 
 export function KanbanCard({ lead, isDragging }: KanbanCardProps) {
   const router = useRouter();
-  const pointerStartRef = useRef({ x: 0, y: 0 });
 
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: lead.id,
@@ -51,23 +49,9 @@ export function KanbanCard({ lead, isDragging }: KanbanCardProps) {
       style={style}
       {...attributes}
       {...listeners}
-      // Override onPointerDown to track start position for click detection
-      onPointerDown={(e) => {
-        pointerStartRef.current = { x: e.clientX, y: e.clientY };
-        // Forward to dnd-kit's drag handler
-        const dndHandler = listeners?.onPointerDown;
-        if (dndHandler) (dndHandler as Function)(e);
-      }}
-      // Detect clicks: if pointer barely moved, treat as a click and navigate
-      onPointerUp={(e) => {
-        const dx = Math.abs(e.clientX - pointerStartRef.current.x);
-        const dy = Math.abs(e.clientY - pointerStartRef.current.y);
-        if (dx < 5 && dy < 5) {
-          router.push(`/leads/${lead.id}`);
-        }
-      }}
+      onClick={() => router.push(`/leads/${lead.id}`)}
       className={cn(
-        'rounded-lg border bg-white p-3 shadow-sm cursor-grab active:cursor-grabbing select-none',
+        'rounded-lg border bg-white p-3 shadow-sm cursor-pointer select-none',
         'hover:shadow-md transition-shadow',
         isDragging && 'opacity-50 shadow-lg rotate-1',
         stale && 'border-red-200',

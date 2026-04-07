@@ -36,7 +36,7 @@ export function KanbanBoard() {
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      activationConstraint: { distance: 8 }, // prevent accidental drags
+      activationConstraint: { delay: 200, tolerance: 5 }, // hold 200ms to drag; quick clicks pass through
     })
   );
 
