@@ -1,8 +1,7 @@
 'use client';
 
 import { useSearchParams } from 'next/navigation';
-import { Suspense } from 'react';
-import { format } from 'date-fns';
+import { Suspense, useEffect, useState } from 'react';
 import { CheckCircle, Video, Calendar } from 'lucide-react';
 
 function ConfirmationContent() {
@@ -12,7 +11,26 @@ function ConfirmationContent() {
   const name = params.get('name');
   const durationMinutes = params.get('durationMinutes');
 
+  const [userTz, setUserTz] = useState('America/Los_Angeles');
+  useEffect(() => {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) setUserTz(tz);
+  }, []);
+
   const start = startTime ? new Date(startTime) : null;
+
+  function formatInTz(date: Date, tz: string) {
+    const datePart = date.toLocaleString('en-US', {
+      timeZone: tz, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    });
+    const timePart = date.toLocaleString('en-US', {
+      timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true,
+    });
+    const tzAbbr = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, timeZoneName: 'short',
+    }).formatToParts(date).find(p => p.type === 'timeZoneName')?.value ?? '';
+    return `${datePart} at ${timePart} ${tzAbbr}`;
+  }
 
   return (
     <div className="min-h-screen bg-[#111] flex items-center justify-center p-6">
@@ -23,7 +41,7 @@ function ConfirmationContent() {
           </div>
           <h1 className="text-2xl font-bold text-white">You&apos;re confirmed!</h1>
           <p className="text-gray-400 mt-2">
-            A calendar invite has been sent to your email.
+            A calendar invite and Google Meet link have been sent to your email.
           </p>
         </div>
 
@@ -36,7 +54,7 @@ function ConfirmationContent() {
           {start && (
             <div className="text-sm text-gray-300">
               <span className="text-gray-500">When: </span>
-              {format(start, 'EEEE, MMMM d, yyyy')} at {format(start, 'h:mm a')} PT
+              {formatInTz(start, userTz)}
             </div>
           )}
           {durationMinutes && (

@@ -9,23 +9,33 @@ interface Slot {
 }
 
 interface TimeSlotListProps {
-  slots: Slot[];           // already filtered to selected date + business hours
+  slots: Slot[];
   selectedSlot: string | null;
   durationMinutes: 20 | 30;
+  timezone: string; // IANA timezone string from visitor's browser
   onSelect: (start: string) => void;
 }
 
-function formatPT(iso: string): string {
+function formatInTz(iso: string, tz: string): string {
   return new Date(iso).toLocaleString('en-US', {
-    timeZone: 'America/Los_Angeles',
+    timeZone: tz,
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
   });
 }
 
-export function TimeSlotList({ slots, selectedSlot, durationMinutes: _durationMinutes, onSelect }: TimeSlotListProps) {
-  const bookableSlots = slots.filter(s => s.busyCount <= 1); // ≥2 of 3 founders free
+function getTzAbbr(tz: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    timeZoneName: 'short',
+  }).formatToParts(new Date());
+  return parts.find(p => p.type === 'timeZoneName')?.value ?? tz;
+}
+
+export function TimeSlotList({ slots, selectedSlot, durationMinutes: _dur, timezone, onSelect }: TimeSlotListProps) {
+  const bookableSlots = slots.filter(s => s.busyCount <= 1);
+  const tzAbbr = getTzAbbr(timezone);
 
   if (bookableSlots.length === 0) {
     return (
@@ -35,7 +45,12 @@ export function TimeSlotList({ slots, selectedSlot, durationMinutes: _durationMi
 
   return (
     <div className="space-y-2 overflow-y-auto max-h-[480px] pr-1">
-      <p className="text-[11px] text-gray-500 px-1 mb-3">All times in Pacific Time (PT)</p>
+      <p className="text-[11px] text-gray-500 px-1 mb-3">
+        Times shown in <span className="text-gray-300 font-medium">{tzAbbr}</span>
+        {timezone !== 'America/Los_Angeles' && (
+          <span className="text-gray-600"> · booking enforced in PT</span>
+        )}
+      </p>
       {bookableSlots.map(slot => {
         const selected = selectedSlot === slot.start;
         return (
@@ -50,7 +65,7 @@ export function TimeSlotList({ slots, selectedSlot, durationMinutes: _durationMi
             )}
           >
             <span className={cn('h-2 w-2 rounded-full flex-shrink-0', selected ? 'bg-green-500' : 'bg-green-400')} />
-            {formatPT(slot.start)} PT
+            {formatInTz(slot.start, timezone)} {tzAbbr}
           </button>
         );
       })}

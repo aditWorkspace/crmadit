@@ -74,11 +74,12 @@ interface EventSlotInfo {
   spanCount: number; // total slots the event spans (for height hint)
 }
 
+// Traffic-light palette: green = bookable, amber = 1 busy, orange = 2 busy, red = all busy
 const NON_PROXI_BUSY: Record<number, string> = {
-  0: 'bg-white hover:bg-blue-50 cursor-pointer',
-  1: 'bg-gray-100',
-  2: 'bg-gray-300',
-  3: 'bg-gray-500',
+  0: 'bg-emerald-50 border-emerald-100',       // all free
+  1: 'bg-amber-100 border-amber-200',           // 1 busy — still bookable
+  2: 'bg-orange-200 border-orange-300',         // 2 busy — not bookable
+  3: 'bg-red-300 border-red-400',               // all busy
 };
 
 export function AvailabilityGrid({ slots, weekStart, connectedCount, events = [] }: AvailabilityGridProps) {
@@ -238,14 +239,14 @@ export function AvailabilityGrid({ slots, weekStart, connectedCount, events = []
             <span>Proxi meeting</span>
           </div>
           <div className="flex items-center gap-1">
-            <div className="h-3 w-5 rounded-sm bg-gray-200" />
+            <div className="h-3 w-5 rounded-sm bg-gray-200 border border-gray-300" />
             <span>Personal busy</span>
           </div>
           {[
-            { label: 'Free', cls: 'bg-white border border-gray-200' },
-            { label: '1 busy', cls: 'bg-gray-100' },
-            { label: '2 busy', cls: 'bg-gray-300' },
-            { label: '3 busy', cls: 'bg-gray-500' },
+            { label: 'All free', cls: 'bg-emerald-50 border border-emerald-200' },
+            { label: '1 busy — bookable', cls: 'bg-amber-100 border border-amber-200' },
+            { label: '2 busy — blocked', cls: 'bg-orange-200 border border-orange-300' },
+            { label: 'All busy', cls: 'bg-red-300 border border-red-400' },
           ].map(({ label, cls }) => (
             <div key={label} className="flex items-center gap-1">
               <div className={cn('h-3 w-5 rounded-sm', cls)} />

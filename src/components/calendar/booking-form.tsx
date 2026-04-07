@@ -6,28 +6,34 @@ import { Loader2, ArrowLeft } from 'lucide-react';
 interface BookingFormProps {
   startTime: string;
   durationMinutes: 20 | 30;
+  timezone: string;
   onBack: () => void;
   onConfirm: (data: { name: string; email: string; note: string }) => Promise<void>;
 }
 
-function formatPTFull(iso: string): string {
+function formatInTz(iso: string, tz: string): string {
   const date = new Date(iso);
   const datePart = date.toLocaleString('en-US', {
-    timeZone: 'America/Los_Angeles',
+    timeZone: tz,
     weekday: 'long',
     month: 'long',
     day: 'numeric',
   });
   const timePart = date.toLocaleString('en-US', {
-    timeZone: 'America/Los_Angeles',
+    timeZone: tz,
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
   });
-  return `${datePart} · ${timePart}`;
+  const tzAbbr = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    timeZoneName: 'short',
+  }).formatToParts(date).find(p => p.type === 'timeZoneName')?.value ?? '';
+
+  return `${datePart} · ${timePart} ${tzAbbr}`;
 }
 
-export function BookingForm({ startTime, durationMinutes, onBack, onConfirm }: BookingFormProps) {
+export function BookingForm({ startTime, durationMinutes, timezone, onBack, onConfirm }: BookingFormProps) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [note, setNote] = useState('');
@@ -52,7 +58,7 @@ export function BookingForm({ startTime, durationMinutes, onBack, onConfirm }: B
     <div className="space-y-5">
       <div className="border border-gray-700 rounded-lg px-4 py-3 text-sm text-gray-300">
         <div className="font-medium text-white">
-          {formatPTFull(startTime)}
+          {formatInTz(startTime, timezone)}
         </div>
         <div className="text-gray-400 mt-0.5">{durationMinutes} min · Google Meet</div>
       </div>

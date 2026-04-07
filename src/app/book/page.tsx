@@ -69,6 +69,12 @@ export default function BookPage() {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [step, setStep] = useState<Step>('calendar');
   const [loadingSlots, setLoadingSlots] = useState(false);
+  // Detect browser timezone on mount; default to PT while hydrating
+  const [userTz, setUserTz] = useState('America/Los_Angeles');
+  useEffect(() => {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) setUserTz(tz);
+  }, []);
 
   const fetchSlots = useCallback(async () => {
     setLoadingSlots(true);
@@ -196,7 +202,7 @@ export default function BookPage() {
           </div>
           <div className="flex items-center gap-2 text-gray-500 text-xs">
             <Globe className="h-3.5 w-3.5" />
-            America/Los_Angeles
+            {userTz}
           </div>
         </div>
 
@@ -275,6 +281,7 @@ export default function BookPage() {
                 slots={slotsForDay}
                 selectedSlot={selectedSlot}
                 durationMinutes={duration}
+                timezone={userTz}
                 onSelect={handleSlotSelect}
               />
             )}
@@ -283,6 +290,7 @@ export default function BookPage() {
               <BookingForm
                 startTime={selectedSlot}
                 durationMinutes={duration}
+                timezone={userTz}
                 onBack={() => setStep('slots')}
                 onConfirm={handleBook}
               />
