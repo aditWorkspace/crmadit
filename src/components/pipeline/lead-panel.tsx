@@ -433,7 +433,7 @@ function ProfileSidebar({
           <DropdownMenu>
             <DropdownMenuTrigger render={
               <button className="text-xs text-gray-700 hover:text-gray-900 flex items-center gap-1">
-                {members.find(m => m.id === lead.owned_by)?.name || '—'}
+                {(lead.owned_by_member as { name: string } | null)?.name || members.find(m => m.id === lead.owned_by)?.name || '—'}
                 <ChevronRight className="h-3 w-3 rotate-90 text-gray-400" />
               </button>
             } />
@@ -588,7 +588,7 @@ interface LeadPanelProps {
 }
 
 export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
-  const { user, setUser } = useSession();
+  const { user } = useSession();
   const [lead, setLead] = useState<Lead | null>(null);
   const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [activities, setActivities] = useState<ActivityLog[]>([]);
@@ -599,22 +599,15 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
   const [suggestingAction, setSuggestingAction] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
-  // Track which leadId we last fetched so auto-switch (which changes `user`)
-  // doesn't trigger a redundant re-fetch and briefly blank the panel
-  const fetchedLeadId = useRef<string | null>(null);
-  const userRef = useRef(user);
-  useEffect(() => { userRef.current = user; }, [user]);
 
   const headers = useCallback((): Record<string, string> => ({
     'Content-Type': 'application/json',
-    ...(userRef.current ? { 'x-team-member-id': userRef.current.team_member_id } : {}),
-  }), []);
+    ...(user ? { 'x-team-member-id': user.team_member_id } : {}),
+  }), [user]);
 
-  // Fetch all data when leadId changes (not when user changes — auto-switch must not re-fetch)
+  // Fetch all data when leadId changes
   useEffect(() => {
     if (!user || !leadId) return;
-    if (fetchedLeadId.current === leadId) return;
-    fetchedLeadId.current = leadId;
     setLoading(true);
     setLead(null);
     setInteractions([]);
@@ -633,15 +626,7 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
       supabase.from('team_members').select('id, name, email, gmail_connected, created_at'),
       supabase.from('transcripts').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }),
     ]).then(([leadRes, intRes, aiRes, actRes, memRes, transcriptRes]) => {
-      if (leadRes.lead) {
-        setLead(leadRes.lead);
-        // Auto-switch session to lead owner (fall back to sourced_by) when opening a lead
-        const ownerId = leadRes.lead.owned_by || leadRes.lead.sourced_by;
-        if (ownerId && memRes.data) {
-          const owner = (memRes.data as TeamMember[]).find((m: TeamMember) => m.id === ownerId);
-          if (owner) setUser({ team_member_id: owner.id, name: owner.name });
-        }
-      }
+      if (leadRes.lead) setLead(leadRes.lead);
       if (intRes.interactions) setInteractions(intRes.interactions);
       if (aiRes.action_items) setActionItems(aiRes.action_items);
       if (actRes.data) setActivities(actRes.data as ActivityLog[]);
@@ -814,13 +799,13 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
           <NoteInput onAdd={handleAddNote} />
         </div>
 
-        {/* Compose bar (pinned bottom) */}
+        {/* Compose bar (pinned bottom) — always send from the lead's owner */}
         {user && (
           <ComposeBar
             leadId={leadId}
             toEmail={lead.contact_email}
             threadId={latestThread?.gmail_thread_id ?? null}
-            teamMemberId={user.team_member_id}
+            teamMemberId={lead.owned_by || lead.sourced_by || user.team_member_id}
             aiSuggestion={lead.ai_next_action}
             onSent={(interaction) => {
               if (interaction) setInteractions(prev => [...prev, interaction as Interaction]);
