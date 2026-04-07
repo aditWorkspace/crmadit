@@ -93,12 +93,12 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
                     onClick={() => setUser({ team_member_id: member.id, name: member.name })}
                     title={member.name}
                     className={cn(
-                      'h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold text-white transition-all',
+                      'h-9 w-9 rounded-full flex items-center justify-center text-[11px] font-bold text-white transition-all',
                       AVATAR_COLORS[i % AVATAR_COLORS.length],
                       active ? 'ring-2 ring-offset-1 ring-gray-900 scale-110' : 'opacity-40 hover:opacity-80'
                     )}
                   >
-                    {member.name[0]?.toUpperCase()}
+                    {member.name.slice(0, 2).toUpperCase()}
                   </button>
                 );
               })}

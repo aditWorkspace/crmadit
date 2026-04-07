@@ -80,9 +80,17 @@ export function KanbanCard({ lead, isDragging }: KanbanCardProps) {
           {daysInStage === 0 ? 'Today' : `${daysInStage}d in stage`}
           {stale && ' · STALE'}
         </span>
-        <span className="text-gray-400">
-          {(lead.owned_by_member as { name: string } | undefined)?.name || '—'}
-        </span>
+        {(() => {
+          const ownerName = (lead.owned_by_member as { name: string } | undefined)?.name;
+          if (!ownerName) return null;
+          const colors: Record<string, string> = { Srijay: 'bg-emerald-100 text-emerald-700', Adit: 'bg-blue-100 text-blue-700', Asim: 'bg-violet-100 text-violet-700' };
+          const cls = colors[ownerName] ?? 'bg-gray-100 text-gray-600';
+          return (
+            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${cls}`}>
+              {ownerName}
+            </span>
+          );
+        })()}
       </div>
 
       {lead.next_followup_at && (

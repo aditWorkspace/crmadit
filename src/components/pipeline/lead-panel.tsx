@@ -588,7 +588,7 @@ interface LeadPanelProps {
 }
 
 export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
-  const { user } = useSession();
+  const { user, setUser } = useSession();
   const [lead, setLead] = useState<Lead | null>(null);
   const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [activities, setActivities] = useState<ActivityLog[]>([]);
@@ -626,7 +626,14 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
       supabase.from('team_members').select('id, name, email, gmail_connected, created_at'),
       supabase.from('transcripts').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }),
     ]).then(([leadRes, intRes, aiRes, actRes, memRes, transcriptRes]) => {
-      if (leadRes.lead) setLead(leadRes.lead);
+      if (leadRes.lead) {
+        setLead(leadRes.lead);
+        // Auto-switch "Sending as" to the lead's owner when opening a lead
+        if (leadRes.lead.owned_by && memRes.data) {
+          const owner = (memRes.data as TeamMember[]).find((m: TeamMember) => m.id === leadRes.lead.owned_by);
+          if (owner) setUser({ team_member_id: owner.id, name: owner.name });
+        }
+      }
       if (intRes.interactions) setInteractions(intRes.interactions);
       if (aiRes.action_items) setActionItems(aiRes.action_items);
       if (actRes.data) setActivities(actRes.data as ActivityLog[]);
