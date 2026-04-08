@@ -176,7 +176,7 @@ export async function syncCalendarLeads(teamMemberId: string): Promise<CalendarS
   const member = allMembers?.find(m => m.id === teamMemberId);
   if (!member?.gmail_connected) return result;
 
-  // A meeting is a "Proxi call" only if ALL other founders are also attending.
+  // Build set of all team emails so we can exclude them from "external attendees"
   const otherTeamEmails = new Set<string>();
   const otherMemberIds: string[] = [];
   for (const m of allMembers || []) {
@@ -246,15 +246,6 @@ export async function syncCalendarLeads(teamMemberId: string): Promise<CalendarS
     const eventStart = new Date(event.start.dateTime);
     const eventId = event.id || '';
     const isPast = eventStart < now;
-
-    const allAttendeeEmails = (event.attendees || []).map(
-      (a: calendar_v3.Schema$EventAttendee) => a.email?.toLowerCase() || ''
-    );
-
-    // Only treat this as a Proxi call if ALL other founders are co-attending
-    const allFoundersPresent = otherMemberIds.length > 0 &&
-      [...otherTeamEmails].every(email => allAttendeeEmails.includes(email));
-    if (!allFoundersPresent) continue;
 
     // Get external (non-team) attendees — these are the prospects
     const externalAttendees = (event.attendees || []).filter((a: calendar_v3.Schema$EventAttendee) => {
@@ -353,8 +344,15 @@ async function processCalendarAttendee({
       if (['replied', 'scheduling', 'scheduled'].includes(existingLead.stage)) {
         updates.stage = 'call_completed';
       }
-    } else if (!event.isPast && !existingLead.call_scheduled_for) {
-      updates.call_scheduled_for = event.startTime.toISOString();
+    } else if (!event.isPast) {
+      // Always update call_scheduled_for — handles reschedules (time changes)
+      const existingTime = existingLead.call_scheduled_for
+        ? new Date(existingLead.call_scheduled_for).getTime()
+        : 0;
+      const newTime = event.startTime.getTime();
+      if (existingTime !== newTime) {
+        updates.call_scheduled_for = event.startTime.toISOString();
+      }
       if (['replied', 'scheduling'].includes(existingLead.stage)) {
         updates.stage = 'scheduled';
         updates.priority = 'high';

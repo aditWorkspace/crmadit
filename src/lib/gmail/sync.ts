@@ -6,6 +6,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { syncCalendarLeads } from '@/lib/google/calendar-sync';
 import { callAI } from '@/lib/ai/openrouter';
 import { QWEN_FREE_MODEL } from '@/lib/constants';
+import { classifyReplyIntent } from './reply-classifier';
 
 interface EmailHeader {
   from: string;
@@ -67,6 +68,7 @@ function getBodyPreview(message: gmail_v1.Schema$Message): string {
 export interface SyncResult {
   synced: number;
   created_leads: number;
+  filtered_not_interested: number;
   errors: string[];
   duration_ms: number;
   calendar_events_detected: number;
@@ -76,7 +78,7 @@ export interface SyncResult {
 
 export async function runInitialSync(teamMemberId: string): Promise<SyncResult> {
   const start = Date.now();
-  const result: SyncResult = { synced: 0, created_leads: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
+  const result: SyncResult = { synced: 0, created_leads: 0, filtered_not_interested: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
 
   const { gmail } = await getGmailClientForMember(teamMemberId);
   const supabase = createAdminClient();
@@ -167,7 +169,7 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
 
 export async function runIncrementalSync(teamMemberId: string): Promise<SyncResult> {
   const start = Date.now();
-  const result: SyncResult = { synced: 0, created_leads: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
+  const result: SyncResult = { synced: 0, created_leads: 0, filtered_not_interested: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
 
   const supabase = createAdminClient();
   const { data: member } = await supabase
@@ -240,6 +242,17 @@ export async function runIncrementalSync(teamMemberId: string): Promise<SyncResu
         );
     }
   } while (pageToken);
+
+  // Calendar sync: scan Google Calendar for meetings with prospects
+  try {
+    const calResult = await syncCalendarLeads(teamMemberId);
+    result.calendar_leads_created = calResult.leads_created;
+    result.calendar_leads_updated = calResult.leads_updated;
+    result.calendar_events_detected += calResult.events_scanned;
+    result.errors.push(...calResult.errors.map(e => `[calendar] ${e}`));
+  } catch (err) {
+    result.errors.push(`[calendar] ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   result.duration_ms = Date.now() - start;
   return result;
@@ -399,6 +412,13 @@ async function processMessage(
 
       await supabase.from('leads').update(updates).eq('id', leadId);
     } else if (!isOutbound) {
+      // ── Classify reply intent before creating a lead ──
+      const intent = await classifyReplyIntent(headers.subject, bodyPreview);
+      if (intent === 'not_interested') {
+        result.filtered_not_interested++;
+        return;
+      }
+
       const { data: newLead, error: createErr } = await supabase
         .from('leads')
         .insert({
@@ -440,9 +460,11 @@ async function processMessage(
     return;
   }
 
-  // ── Path 3: Contact-email match (manually-added leads) ───────────────────
-  // Only link inbound emails — outbound from us doesn't need linkage here
-  if (!isOutbound) {
+  // ── Path 3: Contact-email match (any email to/from a known lead) ─────────
+  // Links both inbound AND outbound emails to existing leads, regardless of
+  // subject. This captures out-of-thread conversations like reschedule emails,
+  // Calendly confirmations, or separate follow-up threads.
+  {
     const leadId = await findLeadByContactEmail(supabase, contactEmail, member.id);
     if (!leadId) return;
 
@@ -460,7 +482,7 @@ async function processMessage(
       .single();
 
     const updates: Record<string, unknown> = { last_contact_at: occurredAt };
-    if (lead && !lead.first_reply_at) {
+    if (!isOutbound && lead && !lead.first_reply_at) {
       updates.first_reply_at = occurredAt;
       updates.stage = 'replied';
     }
@@ -469,7 +491,7 @@ async function processMessage(
     await upsertInteraction(supabase, {
       lead_id: leadId,
       team_member_id: member.id,
-      type: 'email_inbound',
+      type: isOutbound ? 'email_outbound' : 'email_inbound',
       subject: headers.subject,
       body: bodyPreview,
       gmail_message_id: message.id ?? undefined,
