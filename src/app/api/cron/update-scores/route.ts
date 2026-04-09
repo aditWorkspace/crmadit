@@ -1,3 +1,5 @@
+export const maxDuration = 60;
+
 import { NextRequest, NextResponse } from 'next/server';
 import { runBulkScoring } from '@/lib/automation/lead-scoring';
 

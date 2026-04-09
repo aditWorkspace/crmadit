@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
+import { normalizeName } from '@/lib/name-utils';
 
 function sanitizeSearch(s: string): string {
   return s.replace(/[,()'"]/g, '').trim();
@@ -140,9 +141,9 @@ export async function POST(req: NextRequest) {
   const { data, error } = await supabase
     .from('leads')
     .insert({
-      contact_name,
-      contact_email,
-      company_name,
+      contact_name: normalizeName(contact_name),
+      contact_email: contact_email.toLowerCase().trim(),
+      company_name: normalizeName(company_name, true),
       contact_role,
       owned_by: owned_by || session.id,
       sourced_by: sourced_by || session.id,

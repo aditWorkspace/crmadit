@@ -85,6 +85,12 @@ Analyze the transcript and return a JSON object with these fields:
   }
 }
 
+IMPORTANT — Standard action items to ALWAYS include for every discovery call:
+1. "Generate demographic agents for [company name]" — urgency: high, due: tomorrow
+2. "Send product demo to [contact name]" — urgency: high, due: tomorrow
+3. "Send follow-up email with call summary to [contact name]" — urgency: medium, due: today
+Use the actual company name and contact name from the transcript. Include these IN ADDITION to any call-specific action items you extract.
+
 Every action item must have a due date. Return ONLY valid JSON, no markdown fences.`;
 
 export async function processTranscript(rawText: string): Promise<TranscriptAnalysis> {
@@ -95,6 +101,7 @@ export async function processTranscript(rawText: string): Promise<TranscriptAnal
     systemPrompt: SYSTEM_PROMPT,
     userMessage,
     jsonMode: true,
+    maxTokens: 4000,
   });
 
   return JSON.parse(raw) as TranscriptAnalysis;

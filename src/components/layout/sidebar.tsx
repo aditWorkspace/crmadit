@@ -9,14 +9,16 @@ import { HelpPanel } from './help-panel';
 import { cn } from '@/lib/utils';
 import { TeamMember } from '@/types';
 import {
-  LayoutDashboard, BarChart3, Settings,
+  LayoutDashboard, BarChart3, Settings, BookOpen, Send,
   LogOut, Menu, X, Moon, Sun, CalendarDays,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Pipeline', icon: LayoutDashboard },
   { href: '/calendar', label: 'Calendar', icon: CalendarDays },
+  { href: '/mass-email', label: 'Outreach', icon: Send },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
+  { href: '/insights', label: 'Insights', icon: BookOpen },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 

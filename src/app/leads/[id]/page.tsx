@@ -70,19 +70,14 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
           supabase
             .from('team_members')
             .select('id, name, email, gmail_connected, created_at'),
-          supabase
-            .from('transcripts')
-            .select('*')
-            .eq('lead_id', id)
-            .order('created_at', { ascending: false })
-            .limit(1),
+          fetch(`/api/leads/${id}/transcripts`, { headers }).then(r => r.json()),
         ]);
         if (leadRes.lead) setLead(leadRes.lead);
         if (aiRes.action_items) setActionItems(aiRes.action_items);
         if (intRes.interactions) setInteractions(intRes.interactions);
         if (actRes.data) setActivities(actRes.data as ActivityLog[]);
         if (memRes.data) setMembers(memRes.data as TeamMember[]);
-        if (transcriptRes.data?.[0]) setTranscript(transcriptRes.data[0] as Transcript);
+        if (transcriptRes.transcripts?.[0]) setTranscript(transcriptRes.transcripts[0] as Transcript);
       } finally {
         setLoading(false);
       }
@@ -501,13 +496,10 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
         leadId={id}
         onClose={() => setShowUploadModal(false)}
         onSuccess={() => {
-          createClient()
-            .from('transcripts')
-            .select('*')
-            .eq('lead_id', id)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .then(({ data }) => { if (data?.[0]) setTranscript(data[0] as Transcript); });
+          const h: Record<string, string> = user ? { 'x-team-member-id': user.team_member_id } : {};
+          fetch(`/api/leads/${id}/transcripts`, { headers: h })
+            .then(r => r.json())
+            .then(data => { if (data.transcripts?.[0]) setTranscript(data.transcripts[0] as Transcript); });
         }}
         members={members}
       />

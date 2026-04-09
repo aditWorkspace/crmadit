@@ -3,6 +3,8 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
 import { changeStage } from '@/lib/automation/stage-logic';
 import { addDays } from '@/lib/utils';
+import { appendToKnowledgeDocs } from '@/lib/ai/knowledge-doc-updater';
+import { format } from 'date-fns';
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSessionFromRequest(req);
@@ -20,6 +22,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { id } = await params;
 
+  let knowledgeDocsUpdated = false;
   const body = await req.json();
   const {
     summary, next_steps, sentiment, interest_level,
@@ -28,8 +31,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const supabase = createAdminClient();
 
-  // Get transcript to find lead_id
-  const { data: transcript } = await supabase.from('transcripts').select('lead_id').eq('id', id).single();
+  // Get transcript to find lead_id + AI fields for knowledge doc updates
+  const { data: transcript } = await supabase.from('transcripts')
+    .select('lead_id, ai_pain_points, ai_product_feedback, ai_key_quotes, ai_follow_up_suggestions')
+    .eq('id', id).single();
   if (!transcript) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   // Update transcript with reviewed AI results
@@ -108,6 +113,29 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
           follow_ups_count: follow_up_suggestions?.length || 0,
         },
       });
+
+      // Update knowledge docs (synchronous — guarantees docs stay fresh)
+      try {
+        const { data: leadInfo } = await supabase.from('leads')
+          .select('contact_name, company_name')
+          .eq('id', leadId).single();
+
+        if (leadInfo) {
+          await appendToKnowledgeDocs({
+            leadName: leadInfo.contact_name,
+            companyName: leadInfo.company_name,
+            date: format(new Date(), 'yyyy-MM-dd'),
+            painPoints: transcript.ai_pain_points || [],
+            productFeedback: transcript.ai_product_feedback || [],
+            keyQuotes: transcript.ai_key_quotes || [],
+            followUpSuggestions: transcript.ai_follow_up_suggestions || [],
+          });
+          knowledgeDocsUpdated = true;
+        }
+      } catch (kdErr) {
+        console.error('[knowledge-docs] Failed to update:', kdErr);
+        // Non-fatal — lead update still succeeded
+      }
     } catch (err) {
       return NextResponse.json({
         error: 'Failed to apply transcript to lead',
@@ -115,6 +143,27 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       }, { status: 500 });
     }
   }
+
+  return NextResponse.json({ success: true, knowledge_docs_updated: knowledgeDocsUpdated });
+}
+
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const session = await getSessionFromRequest(req);
+  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const { id } = await params;
+
+  const supabase = createAdminClient();
+
+  // Delete any Supabase Storage file associated with this transcript
+  const { data: transcript } = await supabase.from('transcripts').select('file_path').eq('id', id).single();
+  if (!transcript) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+  if (transcript.file_path) {
+    await supabase.storage.from('transcripts').remove([transcript.file_path]);
+  }
+
+  const { error } = await supabase.from('transcripts').delete().eq('id', id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   return NextResponse.json({ success: true });
 }

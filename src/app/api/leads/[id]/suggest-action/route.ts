@@ -1,3 +1,5 @@
+export const maxDuration = 30;
+
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/session';
 import { scoreAndSuggestForLead } from '@/lib/automation/lead-scoring';

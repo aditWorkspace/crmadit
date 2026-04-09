@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { Lead, LeadStage } from '@/types';
 import { addHours, addDays } from '@/lib/utils';
+import { generateCallPrep } from '@/lib/ai/call-research';
 
 async function updateLead(leadId: string, updates: Partial<Lead>) {
   const supabase = createAdminClient();
@@ -114,6 +115,19 @@ const stageRegistry: Record<string, StageTrigger> = {
         reason: `Discovery call with ${lead.contact_name} at ${lead.company_name}`,
         due_at: addHours(new Date(lead.call_scheduled_for!), -1).toISOString(),
       });
+
+      // Auto-generate pre-call research (fire-and-forget)
+      generateCallPrep({
+        leadId: lead.id,
+        contactName: lead.contact_name,
+        contactEmail: lead.contact_email || '',
+        contactRole: lead.contact_role || undefined,
+        companyName: lead.company_name,
+        companyUrl: lead.company_url || undefined,
+        companyStage: lead.company_stage || undefined,
+        companySize: lead.company_size || undefined,
+        callScheduledFor: lead.call_scheduled_for || undefined,
+      }).catch((err) => console.error('[stage-logic] Auto research failed:', err));
     },
   },
 

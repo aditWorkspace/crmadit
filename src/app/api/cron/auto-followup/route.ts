@@ -1,3 +1,5 @@
+export const maxDuration = 60;
+
 import { NextRequest, NextResponse } from 'next/server';
 import { runAutoFollowup } from '@/lib/automation/auto-followup';
 

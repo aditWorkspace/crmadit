@@ -3,9 +3,10 @@ import { getCalendarClientForMember } from './calendar';
 import { getGmailClientForMember } from '@/lib/gmail/client';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { isOutreachThread, extractCompanyFromSubject } from '@/lib/gmail/matcher';
+import { normalizeName } from '@/lib/name-utils';
 
 const TEAM_DOMAIN = process.env.TEAM_EMAIL_DOMAIN || 'proxi.ai';
-const LOOKBACK_DAYS = 7;
+const LOOKBACK_DAYS = 30;
 const FUTURE_DAYS = 30;
 
 // Common personal email domains — don't use their domain as a company name
@@ -180,8 +181,9 @@ export async function syncCalendarLeads(teamMemberId: string): Promise<CalendarS
   const otherTeamEmails = new Set<string>();
   const otherMemberIds: string[] = [];
   for (const m of allMembers || []) {
-    if (m.id === teamMemberId) continue;
+    // Add ALL members' DB emails (including current member) to exclusion set
     if (m.email) otherTeamEmails.add(m.email.toLowerCase());
+    if (m.id === teamMemberId) continue;
     otherMemberIds.push(m.id);
   }
 
@@ -195,13 +197,16 @@ export async function syncCalendarLeads(teamMemberId: string): Promise<CalendarS
     gmailClient = gmail;
     const profile = await gmail.users.getProfile({ userId: 'me' });
     const gmailEmail = profile.data.emailAddress?.toLowerCase() || member.email.toLowerCase();
+    otherTeamEmails.add(gmailEmail); // Ensure Gmail profile email is also excluded
     allGmailClients.push({ memberId: teamMemberId, gmail, email: gmailEmail });
     // Try to add other connected founders for thread import
     for (const m of (allMembers || []).filter(m => m.id !== teamMemberId && m.gmail_connected)) {
       try {
         const { gmail: g } = await getGmailClientForMember(m.id);
         const p = await g.users.getProfile({ userId: 'me' });
-        allGmailClients.push({ memberId: m.id, gmail: g, email: p.data.emailAddress?.toLowerCase() || m.email.toLowerCase() });
+        const profileEmail = p.data.emailAddress?.toLowerCase() || m.email.toLowerCase();
+        otherTeamEmails.add(profileEmail); // Ensure other members' Gmail profile emails are excluded
+        allGmailClients.push({ memberId: m.id, gmail: g, email: profileEmail });
       } catch { /* non-fatal */ }
     }
   } catch (err) {
@@ -389,104 +394,7 @@ async function processCalendarAttendee({
     return;
   }
 
-  // ── No existing lead — create one ─────────────────────────────────────────
-
-  // Search ALL connected founders' Gmails for outreach threads with this contact
-  // to determine the true owner (whoever actually emailed the prospect)
-  let trueOwnerId = member.id;
-  let outreach = await findOutreachThread(gmail, contactEmail);
-  let threadId = outreach?.threadId ?? null;
-
-  // If current member doesn't have an outreach thread, check other founders
-  if (!outreach) {
-    for (const { gmail: g, memberId } of allGmailClients) {
-      if (memberId === member.id) continue;
-      const otherOutreach = await findOutreachThread(g, contactEmail);
-      if (otherOutreach) {
-        outreach = otherOutreach;
-        threadId = otherOutreach.threadId;
-        trueOwnerId = memberId; // this founder is the real owner
-        break;
-      }
-    }
-  }
-
-  if (!threadId) {
-    threadId = await findAnyRecentThread(gmail, contactEmail);
-  }
-
-  const companyName = outreach?.company ?? companyFromDomain(contactEmail) ?? 'Unknown Company';
-  const contactName = attendeeDisplayName || nameFromEmail(contactEmail);
-
-  const stage = event.isPast ? 'call_completed' : 'scheduled';
-  const callScheduledFor = !event.isPast ? event.startTime.toISOString() : null;
-  const callCompletedAt = event.isPast ? event.startTime.toISOString() : null;
-
-  const { data: newLead, error: createErr } = await supabase
-    .from('leads')
-    .insert({
-      contact_name: contactName,
-      contact_email: contactEmail,
-      company_name: companyName,
-      owned_by: trueOwnerId,
-      sourced_by: trueOwnerId,
-      stage,
-      priority: 'high',
-      heat_score: 60,
-      tags: [],
-      poc_status: 'not_started',
-      is_archived: false,
-      call_scheduled_for: callScheduledFor,
-      call_completed_at: callCompletedAt,
-      first_reply_at: outreach ? event.startTime.toISOString() : null,
-      last_contact_at: event.startTime.toISOString(),
-    })
-    .select('id')
-    .single();
-
-  if (createErr || !newLead) {
-    // Could be a duplicate (race) — silently skip
-    if ((createErr as { code?: string })?.code === '23505') return;
-    throw new Error(createErr?.message || 'Failed to create lead');
-  }
-
-  result.leads_created++;
-
-  const interactionBody = [
-    event.isPast ? 'Call completed (imported from Google Calendar).' : 'Call scheduled (imported from Google Calendar).',
-    event.meetLink ? `Google Meet: ${event.meetLink}` : null,
-  ].filter(Boolean).join('\n');
-
-  await supabase.from('interactions').insert({
-    lead_id: newLead.id,
-    team_member_id: member.id,
-    type: 'other',
-    subject: event.summary || `Meeting on ${event.startTime.toLocaleDateString()}`,
-    body: interactionBody,
-    gmail_thread_id: threadId || undefined,
-    occurred_at: event.startTime.toISOString(),
-    metadata: {
-      calendar_event_id: event.id,
-      meet_link: event.meetLink,
-      source: 'calendar_sync',
-    },
-  });
-
-  await supabase.from('activity_log').insert({
-    lead_id: newLead.id,
-    team_member_id: member.id,
-    action: 'lead_created',
-    details: { source: 'calendar_sync', event_id: event.id, is_past: event.isPast },
-  });
-
-  // Import full email threads from ALL connected founders' Gmails
-  if (threadId) {
-    for (const { gmail: g, email: gEmail, memberId } of allGmailClients) {
-      // Find thread in this founder's Gmail with this contact
-      const theirThread = await findAnyRecentThread(g, contactEmail);
-      if (theirThread) {
-        await importThreadMessages(g, theirThread, newLead.id, memberId, gEmail, supabase);
-      }
-    }
-  }
+  // ── No existing lead — skip ────────────────────────────────────────────────
+  // Calendar sync only updates existing leads (created from email outreach).
+  // It never creates new leads — too many false positives from personal/academic events.
 }

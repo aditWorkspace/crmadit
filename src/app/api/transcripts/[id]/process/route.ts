@@ -1,3 +1,5 @@
+export const maxDuration = 60;
+
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
@@ -50,6 +52,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     if (updateError) throw new Error(updateError.message);
 
+    // Knowledge docs are updated in the PATCH route when the user clicks "Save & Apply"
     return NextResponse.json({ transcript: { ...transcript, ...analysis }, analysis });
   } catch (err) {
     await supabase

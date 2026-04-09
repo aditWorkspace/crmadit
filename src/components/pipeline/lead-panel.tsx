@@ -14,12 +14,118 @@ import { toast } from 'sonner';
 import {
   X, ChevronRight, Flame, ExternalLink, Mail, Link2,
   Sparkles, Loader2, Trash2, FileText, Upload, ChevronDown,
-  ChevronUp, AlertCircle, CheckCircle2, Clock, Tag,
+  ChevronUp, AlertCircle, CheckCircle2, Clock, Tag, BookOpen, RefreshCw,
 } from 'lucide-react';
 import Link from 'next/link';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import ReactMarkdown from 'react-markdown';
+
+/* ── Meeting Prep panel (for scheduled calls) ──────────────────────── */
+function MeetingPrep({ lead, headers }: { lead: Lead; headers: Record<string, string> }) {
+  const [notes, setNotes] = useState(lead.call_prep_notes || '');
+  const [status, setStatus] = useState(lead.call_prep_status || 'not_started');
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Sync state if lead prop changes (e.g. after background generation completes)
+  useEffect(() => {
+    if (lead.call_prep_notes && lead.call_prep_notes !== notes) setNotes(lead.call_prep_notes);
+    if (lead.call_prep_status && lead.call_prep_status !== status) setStatus(lead.call_prep_status);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lead.call_prep_notes, lead.call_prep_status]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setStatus('generating');
+    try {
+      const res = await fetch(`/api/leads/${lead.id}/research`, {
+        method: 'POST',
+        headers,
+      });
+      const data = await res.json();
+      if (data.notes) {
+        setNotes(data.notes);
+        setStatus('completed');
+      } else {
+        setStatus('failed');
+      }
+    } catch {
+      setStatus('failed');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Only show for scheduled/call_completed stages (or if research already exists)
+  if (!['scheduled', 'call_completed'].includes(lead.stage) && !notes) return null;
+
+  return (
+    <div className="mx-5 mb-3 rounded-lg border border-blue-100 bg-blue-50/50 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-blue-100">
+        <div className="flex items-center gap-1.5">
+          <BookOpen className="h-3.5 w-3.5 text-blue-500" />
+          <span className="text-xs font-semibold text-blue-700">Meeting Prep</span>
+          {status === 'completed' && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-[1px] rounded-full">Ready</span>}
+          {status === 'generating' && <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-[1px] rounded-full">Generating...</span>}
+          {status === 'failed' && <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-[1px] rounded-full">Failed</span>}
+        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="text-[11px] text-blue-600 hover:text-blue-800 disabled:opacity-40 flex items-center gap-1"
+        >
+          {refreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          {notes ? 'Refresh' : 'Generate'}
+        </button>
+      </div>
+
+      {/* Call time */}
+      {lead.call_scheduled_for && (
+        <div className="px-3 py-1.5 text-[11px] text-blue-600 border-b border-blue-100 flex items-center gap-1">
+          <Clock className="h-3 w-3" />
+          Call: {new Date(lead.call_scheduled_for).toLocaleString('en-US', {
+            weekday: 'long', month: 'long', day: 'numeric',
+            hour: 'numeric', minute: '2-digit'
+          })}
+        </div>
+      )}
+
+      {/* Research notes */}
+      {notes ? (
+        <div className="px-3 py-2 max-h-72 overflow-y-auto">
+          <ReactMarkdown
+            components={{
+              h1: ({ children }) => <h1 className="text-sm font-bold text-gray-900 mt-3 mb-1.5 first:mt-0">{children}</h1>,
+              h2: ({ children }) => <h2 className="text-[13px] font-semibold text-gray-800 mt-3 mb-1 first:mt-0 border-b border-gray-200 pb-1">{children}</h2>,
+              h3: ({ children }) => <h3 className="text-xs font-semibold text-gray-700 mt-2 mb-1">{children}</h3>,
+              p: ({ children }) => <p className="text-xs text-gray-600 leading-relaxed mb-1.5">{children}</p>,
+              ul: ({ children }) => <ul className="text-xs text-gray-600 space-y-1 mb-2 ml-3 list-disc">{children}</ul>,
+              ol: ({ children }) => <ol className="text-xs text-gray-600 space-y-1 mb-2 ml-3 list-decimal">{children}</ol>,
+              li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+              strong: ({ children }) => <strong className="font-semibold text-gray-800">{children}</strong>,
+              em: ({ children }) => <em className="italic text-gray-500">{children}</em>,
+              hr: () => <hr className="my-2 border-gray-200" />,
+              a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{children}</a>,
+              blockquote: ({ children }) => <blockquote className="border-l-2 border-blue-200 pl-2 my-1.5 text-xs text-gray-500 italic">{children}</blockquote>,
+            }}
+          >
+            {notes}
+          </ReactMarkdown>
+        </div>
+      ) : status !== 'generating' ? (
+        <div className="px-3 py-4 text-center text-xs text-gray-400">
+          No research generated yet. Click &ldquo;Generate&rdquo; to create a meeting brief.
+        </div>
+      ) : (
+        <div className="px-3 py-4 text-center text-xs text-amber-600 flex items-center justify-center gap-1.5">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Researching company and contact...
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ── Compact horizontal stage bar ───────────────────────────────────── */
 function StageBar({ lead, onStageChange }: { lead: Lead; onStageChange: (s: LeadStage) => void }) {
@@ -71,63 +177,73 @@ function StageBar({ lead, onStageChange }: { lead: Lead; onStageChange: (s: Lead
 }
 
 /* ── Transcript card ─────────────────────────────────────────────────── */
-function TranscriptCard({ transcript }: { transcript: Transcript }) {
+function TranscriptCard({ transcript, onDelete }: { transcript: Transcript; onDelete: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
+  const [showFullTranscript, setShowFullTranscript] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const sentimentColor = transcript.ai_sentiment === 'positive'
-    ? 'text-emerald-600 bg-emerald-50'
+    ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
     : transcript.ai_sentiment === 'negative'
-      ? 'text-red-600 bg-red-50'
-      : 'text-gray-600 bg-gray-100';
+      ? 'text-red-700 bg-red-50 border-red-200'
+      : 'text-gray-600 bg-gray-50 border-gray-200';
 
   const interestColor = transcript.ai_interest_level === 'high'
-    ? 'text-blue-700 bg-blue-50'
+    ? 'text-blue-700 bg-blue-50 border-blue-200'
     : transcript.ai_interest_level === 'low'
-      ? 'text-gray-500 bg-gray-100'
-      : 'text-amber-700 bg-amber-50';
+      ? 'text-gray-600 bg-gray-50 border-gray-200'
+      : 'text-amber-700 bg-amber-50 border-amber-200';
 
   return (
-    <div className="rounded-xl border border-gray-100 bg-white overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 border-b border-gray-100">
+    <div className="rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm">
+      {/* Header row */}
+      <div className="flex items-center justify-between px-3 py-2 bg-gray-50/80">
         <div className="flex items-center gap-2">
           <FileText className="h-3.5 w-3.5 text-gray-400" />
-          <span className="text-xs font-medium text-gray-600">
+          <span className="text-xs font-medium text-gray-700">
             {formatDate(transcript.created_at)}
           </span>
-        </div>
-        <div className="flex items-center gap-1.5">
           {transcript.processing_status === 'completed' && (
-            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+            <CheckCircle2 className="h-3 w-3 text-emerald-500" />
           )}
           {transcript.processing_status === 'processing' && (
-            <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin" />
+            <Loader2 className="h-3 w-3 text-blue-500 animate-spin" />
           )}
           {transcript.processing_status === 'failed' && (
-            <AlertCircle className="h-3.5 w-3.5 text-red-500" />
+            <AlertCircle className="h-3 w-3 text-red-500" />
           )}
-          {transcript.processing_status === 'pending' && (
-            <Clock className="h-3.5 w-3.5 text-gray-400" />
-          )}
-          <button onClick={() => setExpanded(v => !v)} className="text-gray-400 hover:text-gray-600">
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => { setDeleting(true); onDelete(transcript.id); }}
+            disabled={deleting}
+            className="p-1 text-gray-300 hover:text-red-500 transition-colors rounded"
+            title="Delete"
+          >
+            <Trash2 className="h-3 w-3" />
+          </button>
+          <button
+            onClick={() => setExpanded(v => !v)}
+            className="p-1 text-gray-400 hover:text-gray-700 transition-colors rounded"
+          >
             {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
           </button>
         </div>
       </div>
 
-      {/* AI summary (always visible if completed) */}
+      {/* Summary + badges */}
       {transcript.processing_status === 'completed' && transcript.ai_summary && (
         <div className="px-3 py-2.5">
-          <p className="text-xs text-gray-700 leading-relaxed">{transcript.ai_summary}</p>
-          <div className="flex gap-1.5 mt-2 flex-wrap">
+          <p className="text-[12px] text-gray-600 leading-relaxed">{transcript.ai_summary}</p>
+          <div className="flex gap-1.5 mt-2">
             {transcript.ai_sentiment && (
-              <span className={cn('text-[10px] font-medium px-1.5 py-0.5 rounded-full capitalize', sentimentColor)}>
+              <span className={cn('text-[10px] font-medium px-2 py-0.5 rounded-full border capitalize', sentimentColor)}>
                 {transcript.ai_sentiment}
               </span>
             )}
             {transcript.ai_interest_level && (
-              <span className={cn('text-[10px] font-medium px-1.5 py-0.5 rounded-full capitalize', interestColor)}>
-                {transcript.ai_interest_level} interest
+              <span className={cn('text-[10px] font-medium px-2 py-0.5 rounded-full border capitalize', interestColor)}>
+                {transcript.ai_interest_level} Interest
               </span>
             )}
           </div>
@@ -136,42 +252,42 @@ function TranscriptCard({ transcript }: { transcript: Transcript }) {
 
       {/* Expanded details */}
       {expanded && transcript.processing_status === 'completed' && (
-        <div className="border-t border-gray-100 px-3 py-2.5 space-y-3">
+        <div className="border-t border-gray-100">
           {/* Next steps */}
           {transcript.ai_next_steps && (
-            <div>
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Next Steps</p>
-              <p className="text-xs text-gray-600 whitespace-pre-wrap">{transcript.ai_next_steps}</p>
+            <div className="px-3 py-2.5 border-b border-gray-50">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Next Steps</p>
+              <p className="text-[12px] text-gray-600 leading-relaxed whitespace-pre-wrap">{transcript.ai_next_steps}</p>
             </div>
           )}
 
           {/* Pain points */}
           {transcript.ai_pain_points && transcript.ai_pain_points.length > 0 && (
-            <div>
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Pain Points</p>
-              <ul className="space-y-0.5">
+            <div className="px-3 py-2.5 border-b border-gray-50">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Pain Points</p>
+              <div className="space-y-1.5">
                 {transcript.ai_pain_points.map((p, i) => (
-                  <li key={i} className="flex items-start gap-1.5">
+                  <div key={i} className="flex items-start gap-2">
                     <span className={cn(
-                      'text-[10px] font-medium px-1 py-0.5 rounded mt-0.5 flex-shrink-0',
-                      p.severity === 'high' ? 'bg-red-50 text-red-600' :
-                        p.severity === 'medium' ? 'bg-amber-50 text-amber-600' : 'bg-gray-100 text-gray-500'
+                      'text-[9px] font-semibold px-1.5 py-0.5 rounded uppercase mt-0.5 flex-shrink-0',
+                      p.severity === 'high' ? 'bg-red-100 text-red-700' :
+                        p.severity === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'
                     )}>{p.severity}</span>
-                    <span className="text-xs text-gray-600">{p.pain_point}</span>
-                  </li>
+                    <span className="text-[12px] text-gray-600 leading-snug">{p.pain_point}</span>
+                  </div>
                 ))}
-              </ul>
+              </div>
             </div>
           )}
 
           {/* Key quotes */}
           {transcript.ai_key_quotes && transcript.ai_key_quotes.length > 0 && (
-            <div>
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Key Quotes</p>
-              <div className="space-y-1">
-                {transcript.ai_key_quotes.slice(0, 2).map((q, i) => (
-                  <blockquote key={i} className="border-l-2 border-gray-200 pl-2">
-                    <p className="text-xs text-gray-600 italic">&ldquo;{q.quote}&rdquo;</p>
+            <div className="px-3 py-2.5 border-b border-gray-50">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Key Quotes</p>
+              <div className="space-y-2">
+                {transcript.ai_key_quotes.slice(0, 3).map((q, i) => (
+                  <blockquote key={i} className="border-l-2 border-blue-200 pl-2.5 py-0.5">
+                    <p className="text-[12px] text-gray-600 italic leading-snug">&ldquo;{q.quote}&rdquo;</p>
                     <p className="text-[10px] text-gray-400 mt-0.5">— {q.speaker}</p>
                   </blockquote>
                 ))}
@@ -179,37 +295,55 @@ function TranscriptCard({ transcript }: { transcript: Transcript }) {
             </div>
           )}
 
-          {/* Action items */}
+          {/* Action items from transcript */}
           {transcript.ai_action_items && transcript.ai_action_items.length > 0 && (
-            <div>
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Action Items</p>
-              <ul className="space-y-0.5">
+            <div className="px-3 py-2.5 border-b border-gray-50">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Extracted Action Items</p>
+              <div className="space-y-1.5">
                 {transcript.ai_action_items.map((a, i) => (
-                  <li key={i} className="flex items-start gap-1.5">
+                  <div key={i} className="flex items-start gap-2">
                     <span className={cn(
-                      'text-[10px] font-medium px-1 py-0.5 rounded mt-0.5 flex-shrink-0',
-                      a.urgency === 'high' ? 'bg-red-50 text-red-600' :
-                        a.urgency === 'medium' ? 'bg-amber-50 text-amber-600' : 'bg-gray-100 text-gray-500'
+                      'text-[9px] font-semibold px-1.5 py-0.5 rounded uppercase mt-0.5 flex-shrink-0',
+                      a.urgency === 'high' ? 'bg-red-100 text-red-700' :
+                        a.urgency === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'
                     )}>{a.urgency}</span>
-                    <span className="text-xs text-gray-600">{a.text}</span>
-                  </li>
+                    <span className="text-[12px] text-gray-600 leading-snug">{a.text}</span>
+                  </div>
                 ))}
-              </ul>
+              </div>
+            </div>
+          )}
+
+          {/* View full transcript button */}
+          {transcript.raw_text && (
+            <div className="px-3 py-2">
+              <button
+                onClick={() => setShowFullTranscript(v => !v)}
+                className="w-full text-[11px] font-medium text-blue-600 hover:text-blue-800 py-1.5 rounded-md hover:bg-blue-50 transition-colors flex items-center justify-center gap-1.5"
+              >
+                <FileText className="h-3 w-3" />
+                {showFullTranscript ? 'Hide Full Transcript' : 'View Full Transcript'}
+              </button>
+              {showFullTranscript && (
+                <div className="mt-2 p-3 bg-gray-50 rounded-md border border-gray-100 max-h-80 overflow-y-auto">
+                  <p className="text-[11px] text-gray-600 leading-relaxed whitespace-pre-wrap font-mono">{transcript.raw_text}</p>
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
 
       {transcript.processing_status === 'processing' && (
-        <div className="px-3 py-3 flex items-center gap-2 text-xs text-gray-400">
+        <div className="px-3 py-3 flex items-center gap-2 text-xs text-gray-500">
           <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
-          AI is analyzing this transcript…
+          AI is analyzing this transcript...
         </div>
       )}
 
       {transcript.processing_status === 'failed' && (
         <div className="px-3 py-2.5 text-xs text-red-500">
-          Processing failed. Please try re-uploading.
+          Processing failed. Try re-uploading.
         </div>
       )}
     </div>
@@ -253,11 +387,32 @@ function TranscriptUpload({
       setOpen(false);
       toast.success('Transcript uploaded — processing…');
 
-      // Trigger AI processing (fire-and-forget, component re-renders when done)
+      // Trigger AI processing, then auto-apply to lead + knowledge docs
       fetch(`/api/transcripts/${transcript.id}/process`, { method: 'POST', headers })
         .then(r => r.json())
         .then(result => {
           if (result.transcript) onUploaded(result.transcript as Transcript);
+          if (result.analysis) {
+            // Auto-apply: update lead, create action items, write to knowledge docs
+            fetch(`/api/transcripts/${transcript.id}`, {
+              method: 'PATCH',
+              headers,
+              body: JSON.stringify({
+                summary: result.analysis.summary,
+                next_steps: result.analysis.next_steps,
+                sentiment: result.analysis.sentiment,
+                interest_level: result.analysis.interest_level,
+                action_items: result.analysis.action_items || [],
+                follow_up_suggestions: result.analysis.follow_up_suggestions || [],
+                apply_to_lead: true,
+              }),
+            })
+              .then(r => r.json())
+              .then(d => {
+                if (d.knowledge_docs_updated) toast.success('Insights added to knowledge docs');
+              })
+              .catch(() => { /* non-fatal */ });
+          }
         })
         .catch(() => { /* silent — transcript card shows 'failed' status */ });
     } finally {
@@ -269,16 +424,16 @@ function TranscriptUpload({
     return (
       <button
         onClick={() => setOpen(true)}
-        className="w-full flex items-center justify-center gap-2 text-xs text-gray-400 hover:text-gray-700 border border-dashed border-gray-200 hover:border-gray-300 rounded-xl py-3 transition-colors"
+        className="w-full flex items-center justify-center gap-2 text-[12px] text-gray-500 hover:text-gray-800 border border-dashed border-gray-200 hover:border-gray-400 rounded-lg py-3 transition-all hover:bg-gray-50"
       >
         <Upload className="h-3.5 w-3.5" />
-        Upload transcript
+        Add transcript
       </button>
     );
   }
 
   return (
-    <div className="rounded-xl border border-gray-200 overflow-hidden bg-white">
+    <div className="rounded-lg border border-gray-200 overflow-hidden bg-white shadow-sm">
       {/* Mode selector */}
       <div className="flex border-b border-gray-100">
         {(['paste', 'file'] as const).map(m => (
@@ -286,34 +441,39 @@ function TranscriptUpload({
             key={m}
             onClick={() => setMode(m)}
             className={cn(
-              'flex-1 text-xs py-2 font-medium transition-colors',
-              mode === m ? 'bg-gray-50 text-gray-800 border-b-2 border-gray-800' : 'text-gray-400 hover:text-gray-600'
+              'flex-1 text-[11px] py-2 font-medium transition-colors',
+              mode === m ? 'bg-white text-gray-900 border-b-2 border-blue-500' : 'bg-gray-50 text-gray-400 hover:text-gray-600'
             )}
           >
-            {m === 'paste' ? 'Paste text' : 'Upload .txt'}
+            {m === 'paste' ? 'Paste Text' : 'Upload File'}
           </button>
         ))}
       </div>
 
       <div className="p-3">
         {mode === 'paste' ? (
-          <textarea
-            value={text}
-            onChange={e => setText(e.target.value)}
-            placeholder="Paste your call transcript here…"
-            className="w-full text-xs text-gray-700 placeholder-gray-300 resize-none outline-none h-28 leading-relaxed"
-          />
+          <>
+            <textarea
+              value={text}
+              onChange={e => setText(e.target.value)}
+              placeholder="Paste your call transcript from Granola, Otter, or any other source..."
+              className="w-full text-[12px] text-gray-700 placeholder-gray-300 resize-none outline-none h-32 leading-relaxed border border-gray-100 rounded-md p-2 focus:border-blue-300 focus:ring-1 focus:ring-blue-100 transition-colors"
+            />
+            {text.length > 0 && (
+              <p className="text-[10px] text-gray-400 mt-1 text-right">{text.length.toLocaleString()} chars</p>
+            )}
+          </>
         ) : (
           <div
-            className="flex flex-col items-center justify-center gap-2 h-20 cursor-pointer text-gray-400 hover:text-gray-600"
+            className="flex flex-col items-center justify-center gap-2 h-24 cursor-pointer text-gray-400 hover:text-gray-600 border-2 border-dashed border-gray-200 hover:border-blue-300 rounded-lg transition-colors"
             onClick={() => fileRef.current?.click()}
           >
-            <Upload className="h-4 w-4" />
-            <span className="text-xs">Click to select .txt file</span>
+            <Upload className="h-5 w-5" />
+            <span className="text-[12px] font-medium">Click to select .txt or .md file</span>
             <input
               ref={fileRef}
               type="file"
-              accept=".txt,text/plain"
+              accept=".txt,.md,text/plain,text/markdown"
               className="hidden"
               onChange={e => {
                 const file = e.target.files?.[0];
@@ -323,10 +483,10 @@ function TranscriptUpload({
           </div>
         )}
 
-        <div className="flex items-center justify-between mt-2">
+        <div className="flex items-center justify-between mt-3">
           <button
-            onClick={() => setOpen(false)}
-            className="text-xs text-gray-400 hover:text-gray-600"
+            onClick={() => { setOpen(false); setText(''); }}
+            className="text-[11px] text-gray-400 hover:text-gray-600 px-2 py-1"
           >
             Cancel
           </button>
@@ -334,10 +494,10 @@ function TranscriptUpload({
             <button
               onClick={() => text.trim() && submit(text)}
               disabled={!text.trim() || uploading}
-              className="flex items-center gap-1.5 text-xs bg-gray-900 text-white px-3 py-1.5 rounded-lg disabled:opacity-40 hover:bg-gray-700 transition-colors"
+              className="flex items-center gap-1.5 text-[12px] bg-blue-600 text-white px-4 py-1.5 rounded-lg disabled:opacity-40 hover:bg-blue-700 transition-colors font-medium"
             >
               {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
-              {uploading ? 'Processing…' : 'Analyze'}
+              {uploading ? 'Analyzing...' : 'Analyze'}
             </button>
           )}
         </div>
@@ -359,6 +519,7 @@ function ProfileSidebar({
   onUpdateItem,
   onDeleteItem,
   onTranscriptUploaded,
+  onDeleteTranscript,
 }: {
   lead: Lead;
   members: TeamMember[];
@@ -371,52 +532,45 @@ function ProfileSidebar({
   onUpdateItem: (id: string, u: Partial<ActionItem>) => Promise<void>;
   onDeleteItem: (id: string) => Promise<void>;
   onTranscriptUploaded: (t: Transcript) => void;
+  onDeleteTranscript: (id: string) => void;
 }) {
   return (
     <div className="h-full overflow-y-auto bg-gray-50/40 border-l border-gray-100">
-      <div className="p-4 space-y-5 text-sm">
+      <div className="p-4 space-y-1 text-sm">
 
         {/* ── Pinned note ── */}
         {lead.pinned_note && (
-          <div className="rounded-xl bg-amber-50 border border-amber-100 px-3 py-2.5">
+          <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5 mb-3">
             <p className="text-[10px] font-semibold text-amber-600 uppercase tracking-wider mb-1">Pinned</p>
-            <p className="text-xs text-amber-800">{lead.pinned_note}</p>
+            <p className="text-[12px] text-amber-800 leading-relaxed">{lead.pinned_note}</p>
           </div>
         )}
 
-        {/* ── Contact ── */}
-        <div>
+        {/* ── Contact & Company (combined) ── */}
+        <div className="pb-3 border-b border-gray-100">
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Contact</p>
           <div className="space-y-1.5">
             {lead.contact_email && (
-              <a href={`mailto:${lead.contact_email}`} className="flex items-center gap-2 text-xs text-gray-600 hover:text-gray-900 truncate">
-                <Mail className="h-3.5 w-3.5 flex-shrink-0 text-gray-300" />
+              <a href={`mailto:${lead.contact_email}`} className="flex items-center gap-2 text-[12px] text-gray-600 hover:text-gray-900 truncate">
+                <Mail className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
                 {lead.contact_email}
               </a>
             )}
             {lead.contact_linkedin && (
-              <a href={lead.contact_linkedin} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-blue-500 hover:text-blue-700">
-                <Link2 className="h-3.5 w-3.5 flex-shrink-0 text-gray-300" />
+              <a href={lead.contact_linkedin} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-[12px] text-blue-600 hover:text-blue-800">
+                <Link2 className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
                 LinkedIn
               </a>
             )}
-            {!lead.contact_email && !lead.contact_linkedin && (
-              <p className="text-xs text-gray-300 italic">No contact info</p>
-            )}
-          </div>
-        </div>
-
-        {/* ── Company ── */}
-        <div>
-          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Company</p>
-          <div className="space-y-1.5">
             {lead.company_url && (
-              <a href={lead.company_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-gray-600 hover:text-gray-900 truncate">
-                <ExternalLink className="h-3 w-3 flex-shrink-0 text-gray-300" />
+              <a href={lead.company_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-[12px] text-gray-600 hover:text-gray-900 truncate">
+                <ExternalLink className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
                 {lead.company_url.replace(/^https?:\/\//, '')}
               </a>
             )}
-            <div className="flex flex-wrap gap-2">
+          </div>
+          {(lead.company_stage || lead.company_size) && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
               {lead.company_stage && (
                 <span className="text-[11px] text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">{lead.company_stage}</span>
               )}
@@ -424,53 +578,54 @@ function ProfileSidebar({
                 <span className="text-[11px] text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">{lead.company_size} emp.</span>
               )}
             </div>
+          )}
+        </div>
+
+        {/* ── Owner + Priority (inline row) ── */}
+        <div className="flex items-center justify-between py-3 border-b border-gray-100">
+          <div>
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Owner</p>
+            <DropdownMenu>
+              <DropdownMenuTrigger render={
+                <button className="text-[12px] text-gray-700 hover:text-gray-900 flex items-center gap-1 font-medium">
+                  {(lead.owned_by_member as { name: string } | null)?.name || members.find(m => m.id === lead.owned_by)?.name || '—'}
+                  <ChevronRight className="h-3 w-3 rotate-90 text-gray-400" />
+                </button>
+              } />
+              <DropdownMenuContent>
+                {members.map(m => (
+                  <DropdownMenuItem key={m.id} onClick={() => onUpdate({ owned_by: m.id })}>
+                    {m.name}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
-        </div>
-
-        {/* ── Owned by ── */}
-        <div>
-          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Owner</p>
-          <DropdownMenu>
-            <DropdownMenuTrigger render={
-              <button className="text-xs text-gray-700 hover:text-gray-900 flex items-center gap-1">
-                {(lead.owned_by_member as { name: string } | null)?.name || members.find(m => m.id === lead.owned_by)?.name || '—'}
-                <ChevronRight className="h-3 w-3 rotate-90 text-gray-400" />
-              </button>
-            } />
-            <DropdownMenuContent>
-              {members.map(m => (
-                <DropdownMenuItem key={m.id} onClick={() => onUpdate({ owned_by: m.id })}>
-                  {m.name}
-                </DropdownMenuItem>
+          <div>
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Priority</p>
+            <div className="flex gap-1">
+              {(['critical', 'high', 'medium', 'low'] as const).map(p => (
+                <button
+                  key={p}
+                  onClick={() => onUpdate({ priority: p })}
+                  title={PRIORITY_LABELS[p]}
+                  className={cn(
+                    'flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border transition-colors',
+                    lead.priority === p
+                      ? 'border-gray-400 bg-gray-100 text-gray-800 font-semibold'
+                      : 'border-transparent text-gray-300 hover:border-gray-200 hover:text-gray-500'
+                  )}
+                >
+                  <span className={cn('h-1.5 w-1.5 rounded-full', PRIORITY_COLORS[p])} />
+                  {lead.priority === p && PRIORITY_LABELS[p]}
+                </button>
               ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-
-        {/* ── Priority ── */}
-        <div>
-          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Priority</p>
-          <div className="flex gap-1.5 flex-wrap">
-            {(['critical', 'high', 'medium', 'low'] as const).map(p => (
-              <button
-                key={p}
-                onClick={() => onUpdate({ priority: p })}
-                className={cn(
-                  'flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border transition-colors',
-                  lead.priority === p
-                    ? 'border-gray-400 bg-gray-100 text-gray-800 font-semibold'
-                    : 'border-gray-200 text-gray-400 hover:border-gray-300 hover:text-gray-600'
-                )}
-              >
-                <span className={cn('h-1.5 w-1.5 rounded-full', PRIORITY_COLORS[p])} />
-                {PRIORITY_LABELS[p]}
-              </button>
-            ))}
+            </div>
           </div>
         </div>
 
         {/* ── Tags ── */}
-        <div>
+        <div className="py-3 border-b border-gray-100">
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Tags</p>
           <div className="flex flex-wrap gap-1 mb-1.5">
             {lead.tags.map(tag => (
@@ -491,33 +646,33 @@ function ProfileSidebar({
 
         {/* ── Call notes ── */}
         {(['call_completed', 'post_call', 'demo_sent', 'feedback_call', 'active_user'] as LeadStage[]).includes(lead.stage) && (
-          <div>
+          <div className="py-3 border-b border-gray-100">
             <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Call Notes</p>
             <InlineEdit
               value={lead.call_notes || ''}
               onSave={v => onUpdate({ call_notes: v })}
               multiline
-              emptyText="Add call notes…"
-              displayClassName="text-xs text-gray-600 leading-relaxed"
+              emptyText="Add call notes..."
+              displayClassName="text-[12px] text-gray-600 leading-relaxed"
             />
           </div>
         )}
 
         {/* ── Next steps ── */}
-        <div>
+        <div className="py-3 border-b border-gray-100">
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Next Steps</p>
           <InlineEdit
             value={lead.next_steps || ''}
             onSave={v => onUpdate({ next_steps: v })}
             multiline
-            emptyText="Add next steps…"
-            displayClassName="text-xs text-gray-600 leading-relaxed"
+            emptyText="Add next steps..."
+            displayClassName="text-[12px] text-gray-600 leading-relaxed"
           />
         </div>
 
         {/* ── Action items ── */}
-        <div>
-          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Action Items</p>
+        <div className="py-3 border-b border-gray-100">
+          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Action Items</p>
           <ActionItemList
             leadId={lead.id}
             items={actionItems}
@@ -530,11 +685,11 @@ function ProfileSidebar({
         </div>
 
         {/* ── Transcripts ── */}
-        <div>
+        <div className="py-3">
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Transcripts</p>
-          <div className="space-y-2">
+          <div className="space-y-3">
             {transcripts.map(t => (
-              <TranscriptCard key={t.id} transcript={t} />
+              <TranscriptCard key={t.id} transcript={t} onDelete={onDeleteTranscript} />
             ))}
             <TranscriptUpload
               leadId={lead.id}
@@ -546,9 +701,9 @@ function ProfileSidebar({
 
         {/* ── Call scheduled ── */}
         {lead.call_scheduled_for && (
-          <div>
-            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Call scheduled</p>
-            <p className="text-xs text-gray-600">{formatDate(lead.call_scheduled_for)}</p>
+          <div className="py-3 border-t border-gray-100">
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Call Scheduled</p>
+            <p className="text-[12px] text-gray-600">{formatDate(lead.call_scheduled_for)}</p>
           </div>
         )}
 
@@ -624,14 +779,14 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
       fetch(`/api/leads/${leadId}/action-items`, { headers: h }).then(r => r.json()),
       supabase.from('activity_log').select('*, team_member:team_members(id, name)').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(30),
       supabase.from('team_members').select('id, name, email, gmail_connected, created_at'),
-      supabase.from('transcripts').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }),
+      fetch(`/api/leads/${leadId}/transcripts`, { headers: h }).then(r => r.json()),
     ]).then(([leadRes, intRes, aiRes, actRes, memRes, transcriptRes]) => {
       if (leadRes.lead) setLead(leadRes.lead);
       if (intRes.interactions) setInteractions(intRes.interactions);
       if (aiRes.action_items) setActionItems(aiRes.action_items);
       if (actRes.data) setActivities(actRes.data as ActivityLog[]);
       if (memRes.data) setMembers(memRes.data as TeamMember[]);
-      if (transcriptRes.data) setTranscripts(transcriptRes.data as Transcript[]);
+      if (transcriptRes.transcripts) setTranscripts(transcriptRes.transcripts as Transcript[]);
     }).finally(() => setLoading(false));
   }, [leadId, user]);
 
@@ -780,6 +935,9 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
           )}
         </div>
 
+        {/* Meeting Prep (for scheduled leads) */}
+        <MeetingPrep lead={lead} headers={headers()} />
+
         {/* Thread (scrollable) */}
         <div ref={threadRef} className="flex-1 overflow-y-auto px-5 py-4">
           {interactions.length === 0 && activities.length === 0 ? (
@@ -840,6 +998,18 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
             await fetch(`/api/action-items/${id}`, { method: 'DELETE', headers: headers() });
           }}
           onTranscriptUploaded={handleTranscriptUploaded}
+          onDeleteTranscript={async (id) => {
+            setTranscripts(prev => prev.filter(t => t.id !== id));
+            const res = await fetch(`/api/transcripts/${id}`, { method: 'DELETE', headers: headers() });
+            if (!res.ok) {
+              toast.error('Failed to delete transcript');
+              // Re-fetch to restore state
+              const h = headers();
+              fetch(`/api/leads/${leadId}/transcripts`, { headers: h })
+                .then(r => r.json())
+                .then(data => { if (data.transcripts) setTranscripts(data.transcripts); });
+            }
+          }}
         />
       </div>
     </div>

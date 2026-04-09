@@ -128,6 +128,33 @@ export async function POST(req: NextRequest) {
     const primary = leadsWithCounts[0].lead;
     const duplicates = leadsWithCounts.slice(1).map(x => x.lead);
 
+    // Pick the best name and company from all leads in the group
+    // Prefer: longer name (more complete), has spaces (full name), not email-like
+    const allNames = group.map(l => l.contact_name).filter(Boolean);
+    const bestName = allNames.sort((a, b) => {
+      const aHasSpace = a.includes(' ') ? 1 : 0;
+      const bHasSpace = b.includes(' ') ? 1 : 0;
+      if (bHasSpace !== aHasSpace) return bHasSpace - aHasSpace;
+      return b.length - a.length;
+    })[0];
+
+    const allCompanies = group.map(l => l.company_name).filter(Boolean);
+    const bestCompany = allCompanies.sort((a, b) => {
+      // Prefer mixed-case over all-lowercase
+      const aIsMixed = a !== a.toLowerCase() ? 1 : 0;
+      const bIsMixed = b !== b.toLowerCase() ? 1 : 0;
+      if (bIsMixed !== aIsMixed) return bIsMixed - aIsMixed;
+      return b.length - a.length;
+    })[0];
+
+    // Update primary with best name/company if different
+    const nameUpdates: Record<string, string> = {};
+    if (bestName && bestName !== primary.contact_name) nameUpdates.contact_name = bestName;
+    if (bestCompany && bestCompany !== primary.company_name) nameUpdates.company_name = bestCompany;
+    if (Object.keys(nameUpdates).length > 0) {
+      await supabase.from('leads').update(nameUpdates).eq('id', primary.id);
+    }
+
     // Merge each duplicate into primary
     for (const dup of duplicates) {
       // Move interactions (skip duplicates by gmail_message_id)

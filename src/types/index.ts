@@ -206,3 +206,45 @@ export interface SessionUser {
   team_member_id: string;
   name: string;
 }
+
+export type KnowledgeDocType = 'problems' | 'product_feedback' | 'solutions' | 'problem_themes';
+
+export interface KnowledgeDoc {
+  id: string;
+  doc_type: KnowledgeDocType;
+  content: string;
+  updated_at: string;
+  created_at: string;
+}
+
+export interface ProblemThemeLead {
+  name: string;
+  company: string;
+  pain_point: string;
+}
+
+export interface ProblemTheme {
+  theme: string;
+  severity: 'high' | 'medium' | 'low';
+  frequency: number;
+  leads: ProblemThemeLead[];
+}
+
+export interface ProblemThemesData {
+  themes: ProblemTheme[];
+  generated_at: string | null;
+}
+
+// Chat history
+export interface ChatSession {
+  id: string;
+  title: string;
+  updated_at: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}

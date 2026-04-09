@@ -5,8 +5,17 @@ import { parseCalendarInvite } from './calendar-parser';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { syncCalendarLeads } from '@/lib/google/calendar-sync';
 import { callAI } from '@/lib/ai/openrouter';
-import { QWEN_FREE_MODEL } from '@/lib/constants';
-import { classifyReplyIntent } from './reply-classifier';
+import { QWEN_FREE_MODEL, STAGE_ORDER } from '@/lib/constants';
+import { classifySchedulingIntent } from './scheduling-classifier';
+import { normalizeName } from '@/lib/name-utils';
+
+/** Returns true if `proposed` stage is forward from `current` in the pipeline. */
+function isForwardStage(current: string, proposed: string): boolean {
+  const ci = STAGE_ORDER.indexOf(current as (typeof STAGE_ORDER)[number]);
+  const pi = STAGE_ORDER.indexOf(proposed as (typeof STAGE_ORDER)[number]);
+  if (ci === -1 || pi === -1) return false;
+  return pi > ci;
+}
 
 interface EmailHeader {
   from: string;
@@ -68,7 +77,6 @@ function getBodyPreview(message: gmail_v1.Schema$Message): string {
 export interface SyncResult {
   synced: number;
   created_leads: number;
-  filtered_not_interested: number;
   errors: string[];
   duration_ms: number;
   calendar_events_detected: number;
@@ -78,7 +86,7 @@ export interface SyncResult {
 
 export async function runInitialSync(teamMemberId: string): Promise<SyncResult> {
   const start = Date.now();
-  const result: SyncResult = { synced: 0, created_leads: 0, filtered_not_interested: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
+  const result: SyncResult = { synced: 0, created_leads: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
 
   const { gmail } = await getGmailClientForMember(teamMemberId);
   const supabase = createAdminClient();
@@ -104,7 +112,7 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
   do {
     const listRes = await gmail.users.messages.list({
       userId: 'me',
-      q: 'subject:"product prioritization at" newer_than:14d -from:me',
+      q: 'subject:"product prioritization at" newer_than:30d -from:me',
       maxResults: 100,
       pageToken,
     });
@@ -169,7 +177,7 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
 
 export async function runIncrementalSync(teamMemberId: string): Promise<SyncResult> {
   const start = Date.now();
-  const result: SyncResult = { synced: 0, created_leads: 0, filtered_not_interested: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
+  const result: SyncResult = { synced: 0, created_leads: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
 
   const supabase = createAdminClient();
   const { data: member } = await supabase
@@ -243,7 +251,7 @@ export async function runIncrementalSync(teamMemberId: string): Promise<SyncResu
     }
   } while (pageToken);
 
-  // Calendar sync: scan Google Calendar for meetings with prospects
+  // Calendar sync on every incremental run — detect new/updated events
   try {
     const calResult = await syncCalendarLeads(teamMemberId);
     result.calendar_leads_created = calResult.leads_created;
@@ -404,27 +412,36 @@ async function processMessage(
       const updates: Record<string, unknown> = { last_contact_at: occurredAt };
       if (!isOutbound && !existingLead.first_reply_at) {
         updates.first_reply_at = occurredAt;
-        updates.stage = 'replied';
+        if (isForwardStage(existingLead.stage, 'replied')) {
+          updates.stage = 'replied';
+        }
       }
       if (isOutbound && !existingLead.our_first_response_at && existingLead.first_reply_at) {
         updates.our_first_response_at = occurredAt;
       }
 
-      await supabase.from('leads').update(updates).eq('id', leadId);
-    } else if (!isOutbound) {
-      // ── Classify reply intent before creating a lead ──
-      const intent = await classifyReplyIntent(headers.subject, bodyPreview);
-      if (intent === 'not_interested') {
-        result.filtered_not_interested++;
-        return;
+      // Detect scheduling signals in email content to advance stage
+      if (['replied', 'scheduling'].includes(existingLead.stage)) {
+        try {
+          const signal = await classifySchedulingIntent(headers.subject, bodyPreview);
+          if (signal === 'booking_confirmed' && isForwardStage(existingLead.stage, 'scheduling')) {
+            updates.stage = 'scheduling'; // Calendar sync will advance to 'scheduled' with actual datetime
+          } else if (signal === 'scheduling_intent' && isForwardStage(existingLead.stage, 'scheduling')) {
+            updates.stage = 'scheduling';
+          }
+        } catch {
+          // Classifier failure should never block email sync
+        }
       }
 
+      await supabase.from('leads').update(updates).eq('id', leadId);
+    } else if (!isOutbound) {
       const { data: newLead, error: createErr } = await supabase
         .from('leads')
         .insert({
-          contact_name: contactName || company,
+          contact_name: normalizeName(contactName || company),
           contact_email: contactEmail,
-          company_name: company,
+          company_name: normalizeName(company, true),
           owned_by: member.id,
           sourced_by: member.id,
           stage: 'replied',
@@ -460,11 +477,9 @@ async function processMessage(
     return;
   }
 
-  // ── Path 3: Contact-email match (any email to/from a known lead) ─────────
-  // Links both inbound AND outbound emails to existing leads, regardless of
-  // subject. This captures out-of-thread conversations like reschedule emails,
-  // Calendly confirmations, or separate follow-up threads.
-  {
+  // ── Path 3: Contact-email match (manually-added leads) ───────────────────
+  // Only link inbound emails — outbound from us doesn't need linkage here
+  if (!isOutbound) {
     const leadId = await findLeadByContactEmail(supabase, contactEmail, member.id);
     if (!leadId) return;
 
@@ -474,24 +489,41 @@ async function processMessage(
     const bodyPreview = getBodyPreview(message);
     const threadId = message.threadId || undefined;
 
-    // Update lead last_contact_at and first_reply_at if applicable
+    // Update lead last_contact_at, first_reply_at, and detect scheduling signals
     const { data: lead } = await supabase
       .from('leads')
-      .select('first_reply_at')
+      .select('first_reply_at, stage')
       .eq('id', leadId)
       .single();
 
     const updates: Record<string, unknown> = { last_contact_at: occurredAt };
-    if (!isOutbound && lead && !lead.first_reply_at) {
+    if (lead && !lead.first_reply_at) {
       updates.first_reply_at = occurredAt;
-      updates.stage = 'replied';
+      if (!lead.stage || isForwardStage(lead.stage, 'replied')) {
+        updates.stage = 'replied';
+      }
     }
+
+    // Detect scheduling signals to advance stage
+    if (lead && ['replied', 'scheduling'].includes(lead.stage)) {
+      try {
+        const signal = await classifySchedulingIntent(headers.subject, bodyPreview);
+        if (signal === 'booking_confirmed' && isForwardStage(lead.stage, 'scheduling')) {
+          updates.stage = 'scheduling';
+        } else if (signal === 'scheduling_intent' && isForwardStage(lead.stage, 'scheduling')) {
+          updates.stage = 'scheduling';
+        }
+      } catch {
+        // Classifier failure should never block email sync
+      }
+    }
+
     await supabase.from('leads').update(updates).eq('id', leadId);
 
     await upsertInteraction(supabase, {
       lead_id: leadId,
       team_member_id: member.id,
-      type: isOutbound ? 'email_outbound' : 'email_inbound',
+      type: 'email_inbound',
       subject: headers.subject,
       body: bodyPreview,
       gmail_message_id: message.id ?? undefined,

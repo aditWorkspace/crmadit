@@ -24,7 +24,7 @@ export const ACTIVE_STAGES: LeadStage[] = [
   'active_user',
 ];
 
-export const QWEN_FREE_MODEL = 'google/gemma-4-26b-a4b-it:free';
+export const QWEN_FREE_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free';
 
 // Stages where auto-emails are suppressed (call is happening or just done)
 export const CALLS_STAGES: LeadStage[] = ['scheduled', 'call_completed', 'feedback_call', 'active_user'];

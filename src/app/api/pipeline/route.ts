@@ -24,6 +24,7 @@ export async function GET(req: NextRequest) {
       ai_next_action, ai_heat_reason,
       first_reply_at, call_scheduled_for, call_completed_at, demo_sent_at,
       product_access_granted_at, last_contact_at, next_followup_at,
+      call_prep_notes, call_prep_status, call_prep_generated_at,
       call_summary, call_notes, next_steps,
       tags, poc_status, poc_notes,
       paused_until, paused_previous_stage, pinned_note,
