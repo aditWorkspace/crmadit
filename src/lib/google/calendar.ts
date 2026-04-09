@@ -139,6 +139,8 @@ export interface RawCalendarEvent {
   end: string;
   attendeeEmails: string[];
   isAllDay: boolean;
+  meetLink: string | null;
+  htmlLink: string | null;
 }
 
 /**
@@ -166,6 +168,8 @@ export async function getEventsInRange(
     });
     for (const ev of res.data.items || []) {
       if (ev.status === 'cancelled') continue;
+      const meetLink =
+        ev.conferenceData?.entryPoints?.find(ep => ep.entryPointType === 'video')?.uri ?? null;
       events.push({
         id: ev.id || '',
         summary: ev.summary || '(No title)',
@@ -176,6 +180,8 @@ export async function getEventsInRange(
           .map(a => a.email?.toLowerCase() || '')
           .filter(Boolean),
         isAllDay: !ev.start?.dateTime,
+        meetLink,
+        htmlLink: ev.htmlLink ?? null,
       });
     }
     pageToken = res.data.nextPageToken ?? undefined;
