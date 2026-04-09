@@ -207,3 +207,93 @@ export interface SessionUser {
   team_member_id: string;
   name: string;
 }
+
+// ── Phase 5: Restructured data model ─────────────────────────────────────────
+
+export interface Company {
+  id: string;
+  name: string;
+  domain?: string;
+  url?: string;
+  stage?: string;
+  size?: string;
+  industry?: string;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Contact {
+  id: string;
+  company_id?: string;
+  name: string;
+  email: string;
+  role?: string;
+  linkedin?: string;
+  phone?: string;
+  is_primary: boolean;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+  company?: Company;
+}
+
+export interface Deal {
+  id: string;
+  contact_id?: string;
+  company_id?: string;
+  sourced_by: string;
+  owned_by: string;
+  call_participants: string[];
+  stage: LeadStage;
+  priority: Priority;
+  first_reply_at?: string;
+  our_first_response_at?: string;
+  call_scheduled_for?: string;
+  call_completed_at?: string;
+  demo_sent_at?: string;
+  product_access_granted_at?: string;
+  last_contact_at?: string;
+  next_followup_at?: string;
+  time_to_our_response_hrs?: number;
+  time_to_schedule_hrs?: number;
+  time_to_call_hrs?: number;
+  time_to_send_demo_hrs?: number;
+  our_avg_reply_speed_hrs?: number;
+  call_summary?: string;
+  call_notes?: string;
+  next_steps?: string;
+  tags: string[];
+  poc_status: PocStatus;
+  poc_notes?: string;
+  heat_score: number;
+  ai_heat_reason?: string;
+  ai_next_action?: string;
+  ai_next_action_at?: string;
+  paused_until?: string;
+  paused_previous_stage?: LeadStage;
+  pinned_note?: string;
+  is_archived: boolean;
+  legacy_lead_id?: string;
+  created_at: string;
+  updated_at: string;
+  // Joined
+  contact?: Contact;
+  company?: Company;
+  sourced_by_member?: TeamMember;
+  owned_by_member?: TeamMember;
+}
+
+export interface EmailTemplate {
+  id: string;
+  name: string;
+  subject: string;
+  body: string;
+  category: 'post_call' | 'post_demo' | 'check_in' | 'booking' | 'custom';
+  created_by?: string;
+  is_shared: boolean;
+  usage_count: number;
+  last_used_at?: string;
+  created_at: string;
+  updated_at: string;
+}
