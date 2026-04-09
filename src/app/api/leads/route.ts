@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
 import { normalizeName } from '@/lib/name-utils';
+import { createLeadSchema } from '@/lib/validation';
+import { STALE_THRESHOLDS } from '@/lib/constants';
 
 function sanitizeSearch(s: string): string {
   return s.replace(/[,()'"]/g, '').trim();
@@ -70,20 +72,15 @@ export async function GET(req: NextRequest) {
     const now = new Date().toISOString();
     query = query.gt('paused_until', now);
   } else if (preset === 'stale') {
+    // Bug #7 fix — use shared STALE_THRESHOLDS from constants (single source of truth)
     const now = Date.now();
-    const stageConditions = [
-      { stages: ['replied'], hours: 4 },
-      { stages: ['scheduling', 'scheduled'], hours: 48 },
-      { stages: ['call_completed'], hours: 6 },
-      { stages: ['demo_sent'], hours: 3 * 24 },
-      { stages: ['feedback_call'], hours: 7 * 24 },
-      { stages: ['active_user'], hours: 7 * 24 },
-    ];
-
-    const orParts = stageConditions.flatMap(({ stages, hours }) => {
-      const cutoff = new Date(now - hours * 60 * 60 * 1000).toISOString();
-      return stages.map(s => `and(stage.eq.${s},last_contact_at.lt.${cutoff})`);
-    }).join(',');
+    const orParts = Object.entries(STALE_THRESHOLDS)
+      .filter(([, hours]) => hours != null)
+      .map(([stage, hours]) => {
+        const cutoff = new Date(now - (hours as number) * 60 * 60 * 1000).toISOString();
+        return `and(stage.eq.${stage},last_contact_at.lt.${cutoff})`;
+      })
+      .join(',');
 
     query = query.or(orParts).not('stage', 'in', '("paused","dead")');
   }
@@ -113,15 +110,17 @@ export async function POST(req: NextRequest) {
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json();
-  const { contact_name, contact_email, company_name, contact_role, owned_by, sourced_by, ...rest } =
-    body;
-
-  if (!contact_name || !contact_email || !company_name) {
+  const parsed = createLeadSchema.safeParse(body);
+  if (!parsed.success) {
     return NextResponse.json(
-      { error: 'contact_name, contact_email, company_name required' },
+      { error: parsed.error.issues.map(i => i.message).join(', ') },
       { status: 400 }
     );
   }
+
+  const { contact_name, contact_email, company_name, contact_role, owned_by, sourced_by, ...rest } =
+    parsed.data;
+  const force = req.nextUrl.searchParams.get('force') === 'true';
 
   const supabase = createAdminClient();
 
@@ -137,6 +136,14 @@ export async function POST(req: NextRequest) {
     )
     .eq('is_archived', false)
     .limit(1);
+
+  // Block creation if duplicate found (unless ?force=true)
+  if (existing && existing.length > 0 && !force) {
+    return NextResponse.json(
+      { error: 'A lead with this email or name+company already exists', duplicate: existing[0] },
+      { status: 409 }
+    );
+  }
 
   const { data, error } = await supabase
     .from('leads')
@@ -163,12 +170,5 @@ export async function POST(req: NextRequest) {
     details: { contact_name, company_name },
   });
 
-  return NextResponse.json(
-    {
-      lead: data,
-      duplicate_warning:
-        existing && existing.length > 0 ? existing[0] : null,
-    },
-    { status: 201 }
-  );
+  return NextResponse.json({ lead: data }, { status: 201 });
 }

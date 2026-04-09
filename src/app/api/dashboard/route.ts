@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
-import { ACTIVE_STAGES, STALE_THRESHOLDS } from '@/lib/constants';
+import { ACTIVE_STAGES } from '@/lib/constants';
 import { LeadStage } from '@/types';
-import { differenceInHours } from 'date-fns';
+import { countStaleLeads } from '@/lib/utils/stale';
 
 export async function GET(req: NextRequest) {
   const session = await getSessionFromRequest(req);
@@ -62,13 +62,9 @@ export async function GET(req: NextRequest) {
     if (stageCounts[lead.stage] !== undefined) stageCounts[lead.stage]++;
   }
 
-  // Stale leads count
-  const now = new Date();
-  const staleLeads = (allLeads || []).filter(lead => {
-    const threshold = STALE_THRESHOLDS[lead.stage as LeadStage];
-    if (!threshold || !lead.last_contact_at) return false;
-    return differenceInHours(now, new Date(lead.last_contact_at)) > threshold;
-  });
+  // Stale leads count (unified via shared utility — Bug #7 fix)
+  const staleCount = countStaleLeads(allLeads || []);
+  const staleLeads = { length: staleCount };
 
   // Speed scorecard per team member
   const speedByMember: Record<string, { avg_reply: number | null; avg_demo: number | null; active_count: number }> = {};

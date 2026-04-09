@@ -7,6 +7,7 @@ import { ActivityChart } from '@/components/analytics/activity-chart';
 import { SourceChart } from '@/components/analytics/source-chart';
 import { TimeToDemoChart } from '@/components/analytics/time-to-demo-chart';
 import { WeeklyRetro } from '@/components/analytics/weekly-retro';
+import { VelocityChart } from '@/components/analytics/velocity-chart';
 import { SpeedScorecard } from '@/components/dashboard/speed-scorecard';
 import { VelocityLeaderboard } from '@/components/dashboard/velocity-leaderboard';
 import { useSession } from '@/hooks/use-session';
@@ -53,6 +54,22 @@ interface SpeedData {
   avg_reply: number | null;
   avg_demo: number | null;
   active_count: number;
+}
+
+interface VelocityRow {
+  stage: string;
+  label: string;
+  avg_days: number | null;
+  sample_count: number;
+}
+
+interface DropoffRow {
+  from_stage: string;
+  from_label: string;
+  to_label: string;
+  from_count: number;
+  to_count: number;
+  drop_rate: number;
 }
 
 interface VelocityEntry {
@@ -157,6 +174,8 @@ export default function AnalyticsPage() {
   const [speedByMember, setSpeedByMember] = useState<Record<string, SpeedData>>({});
   const [velocityLeaderboard, setVelocityLeaderboard] = useState<VelocityEntry[]>([]);
 
+  const [velocityData, setVelocityData] = useState<{ velocity: VelocityRow[]; dropoffs: DropoffRow[] }>({ velocity: [], dropoffs: [] });
+
   const [loading, setLoading] = useState({
     funnel: true,
     speed: true,
@@ -165,6 +184,7 @@ export default function AnalyticsPage() {
     timeToDemo: true,
     retro: true,
     team: true,
+    velocity: true,
   });
 
   const markDone = useCallback(
@@ -216,6 +236,12 @@ export default function AnalyticsPage() {
         markDone('retro');
       })
       .catch(() => markDone('retro'));
+
+    // Pipeline velocity + drop-offs
+    fetch('/api/analytics/velocity', { headers: h })
+      .then((r) => r.json())
+      .then((d: { velocity: VelocityRow[]; dropoffs: DropoffRow[] }) => { setVelocityData(d); markDone('velocity'); })
+      .catch(() => markDone('velocity'));
 
     // Team speed + velocity (from dashboard)
     fetch('/api/dashboard', { headers: h })
@@ -280,6 +306,12 @@ export default function AnalyticsPage() {
           <TimeToDemoChart data={timeToDemoData} loading={loading.timeToDemo} />
         </section>
       </div>
+
+      {/* Row 4: Pipeline Velocity + Drop-offs */}
+      <section className="rounded-xl border border-gray-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-gray-700 mb-4">Pipeline Velocity & Drop-offs</h2>
+        <VelocityChart velocity={velocityData.velocity} dropoffs={velocityData.dropoffs} loading={loading.velocity} />
+      </section>
 
       {/* Weekly Retro — full width */}
       <section className="rounded-xl border border-gray-200 bg-white p-5">

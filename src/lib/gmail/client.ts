@@ -7,6 +7,53 @@ export interface GmailClientResult {
   accessToken: string;
 }
 
+// Simple in-memory lock to prevent concurrent token refresh for the same member
+const refreshLocks = new Map<string, Promise<string>>();
+
+async function getAccessToken(teamMemberId: string, member: {
+  gmail_access_token: string;
+  gmail_refresh_token: string;
+  gmail_token_expiry: string | null;
+}): Promise<string> {
+  const expiry = member.gmail_token_expiry ? new Date(member.gmail_token_expiry).getTime() : 0;
+  const isExpired = Date.now() >= expiry - 60_000; // refresh 1 min early
+
+  if (!isExpired) {
+    return decryptToken(member.gmail_access_token);
+  }
+
+  // Check for an in-flight refresh for this member — prevents race condition
+  const existing = refreshLocks.get(teamMemberId);
+  if (existing) return existing;
+
+  const refreshPromise = (async () => {
+    try {
+      const supabase = createAdminClient();
+      const refreshed = await refreshAccessToken(member.gmail_refresh_token);
+
+      const encryptedAccess = encryptToken(refreshed.access_token);
+      const encryptedRefresh = encryptToken(refreshed.refresh_token ?? '');
+      await supabase
+        .from('team_members')
+        .update({
+          gmail_access_token: encryptedAccess,
+          gmail_refresh_token: encryptedRefresh,
+          gmail_token_expiry: refreshed.expiry_date
+            ? new Date(refreshed.expiry_date).toISOString()
+            : null,
+        })
+        .eq('id', teamMemberId);
+
+      return refreshed.access_token;
+    } finally {
+      refreshLocks.delete(teamMemberId);
+    }
+  })();
+
+  refreshLocks.set(teamMemberId, refreshPromise);
+  return refreshPromise;
+}
+
 export async function getGmailClientForMember(teamMemberId: string): Promise<GmailClientResult> {
   const supabase = createAdminClient();
 
@@ -22,30 +69,7 @@ export async function getGmailClientForMember(teamMemberId: string): Promise<Gma
     throw new Error(`Gmail tokens missing for member: ${teamMemberId}`);
   }
 
-  let accessToken: string;
-  const expiry = member.gmail_token_expiry ? new Date(member.gmail_token_expiry).getTime() : 0;
-  const isExpired = Date.now() >= expiry - 60_000; // refresh 1 min early
-
-  if (isExpired) {
-    const refreshed = await refreshAccessToken(member.gmail_refresh_token);
-    accessToken = refreshed.access_token;
-
-    // Update stored access token, refresh token (rotation), and expiry
-    const encryptedAccess = encryptToken(refreshed.access_token);
-    const encryptedRefresh = encryptToken(refreshed.refresh_token ?? '');
-    await supabase
-      .from('team_members')
-      .update({
-        gmail_access_token: encryptedAccess,
-        gmail_refresh_token: encryptedRefresh,
-        gmail_token_expiry: refreshed.expiry_date
-          ? new Date(refreshed.expiry_date).toISOString()
-          : null,
-      })
-      .eq('id', teamMemberId);
-  } else {
-    accessToken = decryptToken(member.gmail_access_token);
-  }
+  const accessToken = await getAccessToken(teamMemberId, member);
 
   const auth = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,

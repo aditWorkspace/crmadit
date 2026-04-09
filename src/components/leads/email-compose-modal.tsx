@@ -1,10 +1,19 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { X, Send, Sparkles, ChevronDown } from 'lucide-react';
+import { X, Send, Sparkles, ChevronDown, FileText } from 'lucide-react';
 import { toast } from 'sonner';
+import { renderTemplate, buildTemplateContext } from '@/lib/email/template-engine';
 
 interface ConnectedMember { id: string; name: string; email: string; }
+
+interface Template {
+  id: string;
+  name: string;
+  subject: string;
+  body: string;
+  category: string;
+}
 
 interface EmailComposeModalProps {
   leadId: string;
@@ -13,16 +22,23 @@ interface EmailComposeModalProps {
   subject: string;
   teamMemberId: string;
   initialDraft?: string;
+  contactName?: string;
+  companyName?: string;
   onClose: () => void;
   onSent: (interaction: unknown) => void;
 }
 
-export function EmailComposeModal({ leadId, threadId, toEmail, subject, teamMemberId, initialDraft, onClose, onSent }: EmailComposeModalProps) {
+export function EmailComposeModal({
+  leadId, threadId, toEmail, subject, teamMemberId,
+  initialDraft, contactName, companyName, onClose, onSent,
+}: EmailComposeModalProps) {
   const [body, setBody] = useState(initialDraft ?? '');
   const [sending, setSending] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [connectedMembers, setConnectedMembers] = useState<ConnectedMember[]>([]);
   const [senderId, setSenderId] = useState(teamMemberId);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [showTemplates, setShowTemplates] = useState(false);
 
   useEffect(() => {
     fetch('/api/team/connected-members', { headers: { 'x-team-member-id': teamMemberId } })
@@ -30,11 +46,18 @@ export function EmailComposeModal({ leadId, threadId, toEmail, subject, teamMemb
       .then(d => {
         if (d.members) {
           setConnectedMembers(d.members);
-          // Default to current user if connected, else first connected member
           const self = d.members.find((m: ConnectedMember) => m.id === teamMemberId);
           setSenderId(self ? teamMemberId : d.members[0]?.id || teamMemberId);
         }
       });
+  }, [teamMemberId]);
+
+  // Fetch templates on mount
+  useEffect(() => {
+    fetch('/api/templates', { headers: { 'x-team-member-id': teamMemberId } })
+      .then(r => r.json())
+      .then(d => { if (d.templates) setTemplates(d.templates); })
+      .catch(() => {}); // non-fatal
   }, [teamMemberId]);
 
   const handleGenerateDraft = async () => {
@@ -50,6 +73,27 @@ export function EmailComposeModal({ leadId, threadId, toEmail, subject, teamMemb
       setBody(data.draft);
     } catch { toast.error('Failed to generate draft'); }
     finally { setGenerating(false); }
+  };
+
+  const handleSelectTemplate = (template: Template) => {
+    const sender = connectedMembers.find(m => m.id === senderId);
+    const ctx = buildTemplateContext({
+      contactName: contactName ?? toEmail.split('@')[0],
+      contactEmail: toEmail,
+      companyName: companyName ?? '',
+      senderName: sender?.name ?? '',
+      senderEmail: sender?.email ?? '',
+      originalSubject: subject,
+    });
+    setBody(renderTemplate(template.body, ctx));
+    setShowTemplates(false);
+
+    // Bump usage count in background
+    fetch(`/api/templates/${template.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'x-team-member-id': teamMemberId },
+      body: JSON.stringify({ usage_count_bump: true }),
+    }).catch(() => {});
   };
 
   const handleSend = async () => {
@@ -72,6 +116,14 @@ export function EmailComposeModal({ leadId, threadId, toEmail, subject, teamMemb
 
   const sender = connectedMembers.find(m => m.id === senderId);
 
+  const CATEGORY_LABELS: Record<string, string> = {
+    post_call: 'Post-Call',
+    post_demo: 'Post-Demo',
+    check_in: 'Check-in',
+    booking: 'Booking',
+    custom: 'Custom',
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-4">
       <div className="fixed inset-0 bg-black/40" onClick={onClose} />
@@ -84,7 +136,6 @@ export function EmailComposeModal({ leadId, threadId, toEmail, subject, teamMemb
 
         {/* Fields */}
         <div className="px-4 py-2 border-b border-gray-100 space-y-1.5 text-sm">
-          {/* From — send-as selector */}
           {connectedMembers.length > 1 ? (
             <div className="flex items-center gap-2">
               <span className="w-14 text-right text-xs font-medium text-gray-400">From</span>
@@ -130,6 +181,31 @@ export function EmailComposeModal({ leadId, threadId, toEmail, subject, teamMemb
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100 bg-gray-50">
           <div className="flex items-center gap-2">
+            {/* Template picker */}
+            <div className="relative">
+              <button
+                onClick={() => setShowTemplates(!showTemplates)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors"
+              >
+                <FileText className="h-3 w-3" />
+                Templates
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              {showTemplates && templates.length > 0 && (
+                <div className="absolute bottom-full left-0 mb-1 w-56 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50 max-h-64 overflow-auto">
+                  {templates.map(t => (
+                    <button
+                      key={t.id}
+                      onClick={() => handleSelectTemplate(t)}
+                      className="w-full text-left px-3 py-2 hover:bg-gray-50 transition-colors"
+                    >
+                      <p className="text-sm font-medium text-gray-800 truncate">{t.name}</p>
+                      <p className="text-[10px] text-gray-400">{CATEGORY_LABELS[t.category] ?? t.category}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               onClick={handleGenerateDraft}
               disabled={generating || sending}

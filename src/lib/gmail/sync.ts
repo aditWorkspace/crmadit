@@ -88,8 +88,27 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
   const start = Date.now();
   const result: SyncResult = { synced: 0, created_leads: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
 
-  const { gmail } = await getGmailClientForMember(teamMemberId);
   const supabase = createAdminClient();
+
+  // Bug #9 fix — track sync status
+  await supabase.from('email_sync_state').upsert(
+    { team_member_id: teamMemberId, status: 'syncing', error_message: null, updated_at: new Date().toISOString() },
+    { onConflict: 'team_member_id' }
+  );
+
+  let gmail;
+  try {
+    ({ gmail } = await getGmailClientForMember(teamMemberId));
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    result.errors.push(errorMsg);
+    result.duration_ms = Date.now() - start;
+    await supabase.from('email_sync_state').upsert(
+      { team_member_id: teamMemberId, status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() },
+      { onConflict: 'team_member_id' }
+    );
+    return result;
+  }
 
   const { data: member } = await supabase
     .from('team_members')
@@ -156,7 +175,7 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
   await supabase
     .from('email_sync_state')
     .upsert(
-      { team_member_id: teamMemberId, last_sync_at: new Date().toISOString(), history_id: historyId, total_synced: result.synced, updated_at: new Date().toISOString() },
+      { team_member_id: teamMemberId, last_sync_at: new Date().toISOString(), history_id: historyId, total_synced: result.synced, status: 'completed', error_message: null, updated_at: new Date().toISOString() },
       { onConflict: 'team_member_id' }
     );
 
@@ -212,8 +231,12 @@ export async function runIncrementalSync(teamMemberId: string): Promise<SyncResu
         maxResults: 500,
         pageToken,
       });
-    } catch (err) {
-      if (String(err).includes('404') || String(err).includes('Invalid startHistoryId')) {
+    } catch (err: unknown) {
+      // Handle stale/invalid history ID — fall back to full sync
+      const errObj = err as { code?: number; status?: number; message?: string };
+      const errStr = String(err);
+      if (errObj.code === 404 || errObj.status === 404 || errStr.includes('Invalid startHistoryId') || errStr.includes('notFound')) {
+        console.warn(`[sync] History ID stale for ${teamMemberId}, falling back to initial sync`);
         return runInitialSync(teamMemberId);
       }
       throw err;
@@ -326,7 +349,11 @@ async function processMessage(
           gmail_message_id: message.id,
           occurred_at: message.internalDate ? new Date(parseInt(message.internalDate)).toISOString() : new Date().toISOString(),
           metadata: { bounce: true },
-        }).then(() => {});
+        }).then(({ error: bounceErr }) => {
+          if (bounceErr && (bounceErr as { code?: string }).code !== '23505') {
+            console.error('[sync] Failed to insert bounce interaction:', bounceErr.message);
+          }
+        });
       }
     }
     return;
@@ -373,6 +400,14 @@ async function processMessage(
           if (calErr && (calErr as { code?: string }).code !== '23505') {
             result.errors.push(`Calendar interaction insert: ${calErr.message}`);
           }
+
+          // Bug #8 fix — log auto-stage transition to activity_log
+          await supabase.from('activity_log').insert({
+            lead_id: leadId,
+            team_member_id: member.id,
+            action: 'auto_stage_changed',
+            details: { from: lead.stage, to: 'scheduled', trigger: 'calendar_invite', event_summary: calendarEvent.summary },
+          }).then(({ error: logErr }) => { if (logErr) console.error('[sync] Failed to log auto-stage change:', logErr.message); });
 
           result.calendar_events_detected++;
         }
@@ -435,6 +470,16 @@ async function processMessage(
       }
 
       await supabase.from('leads').update(updates).eq('id', leadId);
+
+      // Log auto-stage transition when email triggers stage change
+      if (updates.stage && updates.stage !== existingLead.stage) {
+        await supabase.from('activity_log').insert({
+          lead_id: leadId,
+          team_member_id: member.id,
+          action: 'auto_stage_changed',
+          details: { from: existingLead.stage, to: updates.stage, trigger: 'email_sync', contact_email: contactEmail },
+        }).then(({ error: logErr }) => { if (logErr) console.error('[sync] Failed to log auto-stage change:', logErr.message); });
+      }
     } else if (!isOutbound) {
       const { data: newLead, error: createErr } = await supabase
         .from('leads')
@@ -519,6 +564,16 @@ async function processMessage(
     }
 
     await supabase.from('leads').update(updates).eq('id', leadId);
+
+    // Bug #8 fix — log auto-stage for contact-email match path
+    if (updates.stage) {
+      await supabase.from('activity_log').insert({
+        lead_id: leadId,
+        team_member_id: member.id,
+        action: 'auto_stage_changed',
+        details: { from: 'new', to: updates.stage, trigger: 'contact_email_match', contact_email: contactEmail },
+      }).then(({ error: logErr }) => { if (logErr) console.error('[sync] Failed to log auto-stage change:', logErr.message); });
+    }
 
     await upsertInteraction(supabase, {
       lead_id: leadId,

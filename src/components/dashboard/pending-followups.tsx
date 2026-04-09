@@ -4,7 +4,7 @@ import { FollowUp } from '@/types';
 import { formatRelativeTime, cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useSession } from '@/hooks/use-session';
-import { Copy, CheckCheck, Clock, Phone, PhoneOff } from 'lucide-react';
+import { Copy, CheckCheck, Clock, Phone, PhoneOff, Upload } from 'lucide-react';
 import Link from 'next/link';
 
 interface PendingFollowupsProps {
@@ -46,6 +46,7 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
       {followUps.slice(0, 5).map(f => {
         const isOverdue = new Date(f.due_at) < new Date();
         const isCallConfirmation = f.type === 'call_confirmation';
+        const isPostCallFollowup = f.type === 'post_call_followup';
         const lead = f.lead as { id: string; contact_name: string; company_name: string } | undefined;
 
         return (
@@ -53,35 +54,46 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
             'rounded-lg border p-3 space-y-2',
             isCallConfirmation
               ? 'border-indigo-200 bg-indigo-50/40'
-              : isOverdue
-                ? 'border-red-200 bg-red-50/30'
-                : 'border-gray-100'
+              : isPostCallFollowup
+                ? 'border-indigo-200 bg-indigo-50/40'
+                : isOverdue
+                  ? 'border-red-200 bg-red-50/30'
+                  : 'border-gray-100'
           )}>
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="flex items-center gap-1.5 text-xs text-gray-400 mb-0.5">
                   {isCallConfirmation
                     ? <Phone className="h-3 w-3 text-indigo-400" />
-                    : <Clock className="h-3 w-3" />
+                    : isPostCallFollowup
+                      ? <Upload className="h-3 w-3 text-indigo-400" />
+                      : <Clock className="h-3 w-3" />
                   }
                   <span className={cn(
                     isCallConfirmation ? 'text-indigo-600 font-medium' :
+                    isPostCallFollowup ? 'text-indigo-600 font-medium' :
                     isOverdue ? 'text-red-500 font-medium' : ''
                   )}>
                     {isCallConfirmation
                       ? 'Call check-in'
-                      : isOverdue ? `Overdue ${formatRelativeTime(f.due_at)}` : `Due ${formatRelativeTime(f.due_at)}`
+                      : isPostCallFollowup
+                        ? 'Transcript needed'
+                        : isOverdue ? `Overdue ${formatRelativeTime(f.due_at)}` : `Due ${formatRelativeTime(f.due_at)}`
                     }
                   </span>
                 </div>
                 <p className="text-sm font-medium text-gray-800">
-                  {lead ? (
+                  {isPostCallFollowup && lead ? (
+                    <Link href={`/leads/${lead.id}?upload=true`} className="hover:text-indigo-600">
+                      Upload your transcript for {lead.contact_name}
+                    </Link>
+                  ) : lead ? (
                     <Link href={`/leads/${lead.id}`} className="hover:text-blue-600">
                       {lead.contact_name} · {lead.company_name}
                     </Link>
                   ) : '—'}
                 </p>
-                {f.reason && <p className="text-xs text-gray-500 mt-0.5">{f.reason}</p>}
+                {f.reason && !isPostCallFollowup && <p className="text-xs text-gray-500 mt-0.5">{f.reason}</p>}
               </div>
             </div>
 
@@ -101,6 +113,23 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
                 >
                   <PhoneOff className="h-3 w-3" />
                   No-show
+                </button>
+              </div>
+            ) : isPostCallFollowup && lead ? (
+              <div className="flex items-center gap-2">
+                <Link
+                  href={`/leads/${lead.id}?upload=true`}
+                  className="flex items-center gap-1.5 text-xs text-white bg-indigo-600 hover:bg-indigo-700 rounded px-2.5 py-1 transition-colors"
+                >
+                  <Upload className="h-3 w-3" />
+                  Upload Transcript
+                </Link>
+                <button
+                  onClick={() => handleAction(f.id, 'complete')}
+                  className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded px-2.5 py-1"
+                >
+                  <CheckCheck className="h-3 w-3" />
+                  Done
                 </button>
               </div>
             ) : (

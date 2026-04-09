@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, use } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from '@/hooks/use-session';
 import { Lead, ActionItem, Interaction, ActivityLog, TeamMember, LeadStage, Transcript } from '@/types';
 import { createClient } from '@/lib/supabase/client';
@@ -16,6 +16,7 @@ import { TranscriptUploadModal } from '@/components/transcripts/upload-modal';
 import { AiInsights } from '@/components/transcripts/ai-insights';
 import { EmailComposeModal } from '@/components/leads/email-compose-modal';
 import { BookMeetingModal } from '@/components/leads/book-meeting-modal';
+import { NextStepCard } from '@/components/leads/next-step-card';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { ArrowLeft, Flame, Upload, Mail, CalendarPlus, Sparkles, X } from 'lucide-react';
@@ -28,6 +29,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   const { id } = use(params);
   const { user } = useSession();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [lead, setLead] = useState<Lead | null>(null);
   const [actionItems, setActionItems] = useState<ActionItem[]>([]);
@@ -83,6 +85,13 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
       }
     })();
   }, [id, user]);
+
+  // Auto-open upload modal when ?upload=true is in the URL
+  useEffect(() => {
+    if (searchParams.get('upload') === 'true' && !loading) {
+      setShowUploadModal(true);
+    }
+  }, [searchParams, loading]);
 
   const updateLead = async (updates: Partial<Lead>) => {
     if (!user || !lead) return;
@@ -397,6 +406,9 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
         <div className="flex-[35] overflow-auto p-6 space-y-6">
           <LeadInfoPanel lead={lead} members={members} onUpdate={updateLead} />
 
+          {/* Smart Next Step */}
+          <NextStepCard lead={lead} />
+
           {/* AI Next Action */}
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
             <div className="flex items-center justify-between mb-1.5">
@@ -533,6 +545,8 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
           subject={composeThread.subject}
           teamMemberId={user.team_member_id}
           initialDraft={postCallDraft ?? undefined}
+          contactName={lead.contact_name}
+          companyName={lead.company_name}
           onClose={() => { setComposeThread(null); setPostCallDraft(null); }}
           onSent={(interaction) => {
             if (interaction) setInteractions(prev => [interaction as Interaction, ...prev]);
