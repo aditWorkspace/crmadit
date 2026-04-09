@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
+import { updateLeadSchema } from '@/lib/validation';
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSessionFromRequest(req);
@@ -31,7 +32,16 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const body = await req.json();
   // Never allow patching these fields directly via this route
-  const { id: _id, created_at: _created_at, is_archived: _is_archived, ...updateData } = body;
+  const { id: _id, created_at: _created_at, is_archived: _is_archived, ...rawUpdate } = body;
+
+  const parsed = updateLeadSchema.safeParse(rawUpdate);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ') },
+      { status: 400 }
+    );
+  }
+  const updateData = parsed.data;
 
   const supabase = createAdminClient();
 

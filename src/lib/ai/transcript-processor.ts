@@ -1,5 +1,6 @@
 import { callAI } from './openrouter';
 import { format } from 'date-fns';
+import { aiTranscriptAnalysisSchema } from '@/lib/validation';
 
 export interface TranscriptAnalysis {
   summary: string;
@@ -97,5 +98,9 @@ export async function processTranscript(rawText: string): Promise<TranscriptAnal
     jsonMode: true,
   });
 
-  return JSON.parse(raw) as TranscriptAnalysis;
+  const parsed = aiTranscriptAnalysisSchema.safeParse(JSON.parse(raw));
+  if (!parsed.success) {
+    throw new Error(`AI transcript analysis validation failed: ${parsed.error.issues.map(i => i.message).join(', ')}`);
+  }
+  return parsed.data;
 }

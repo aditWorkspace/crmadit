@@ -2,8 +2,10 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { callAI } from '@/lib/ai/openrouter';
 import { sendReplyInThread } from '@/lib/gmail/send';
 import { QWEN_FREE_MODEL } from '@/lib/constants';
+import { aiFollowupDecisionSchema } from '@/lib/validation';
 
 const FOLLOWUP_HOURS = 48;
+const MAX_AI_CALLS_PER_RUN = 50;
 
 // Only send auto follow-ups for leads still in early outreach stages
 const AUTO_FOLLOWUP_STAGES = ['replied', 'scheduling'];
@@ -60,7 +62,11 @@ Should I follow up?`,
   });
 
   try {
-    return JSON.parse(raw) as AiFollowupDecision;
+    const parsed = aiFollowupDecisionSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) {
+      return { should_send: false, reason: `AI response validation failed: ${parsed.error.issues[0]?.message}`, message: null };
+    }
+    return parsed.data;
   } catch {
     return { should_send: false, reason: 'Failed to parse AI response', message: null };
   }
@@ -82,13 +88,19 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
 
   if (!leads || leads.length === 0) return result;
 
+  let aiCallCount = 0;
   for (const lead of leads) {
+    // Bug #10 fix — rate limit AI calls per run
+    if (aiCallCount >= MAX_AI_CALLS_PER_RUN) {
+      result.errors.push(`Rate limited: skipped ${leads.length - result.processed} leads after ${MAX_AI_CALLS_PER_RUN} AI calls`);
+      break;
+    }
     result.processed++;
 
     try {
       const { data: recentInteractions } = await supabase
         .from('interactions')
-        .select('id, type, body, gmail_message_id, gmail_thread_id, occurred_at')
+        .select('id, type, subject, body, gmail_message_id, gmail_thread_id, occurred_at')
         .eq('lead_id', lead.id)
         .in('type', ['email_inbound', 'email_outbound'])
         .order('occurred_at', { ascending: false })
@@ -134,6 +146,7 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
         hoursAgo,
         [...recentInteractions].reverse()
       );
+      aiCallCount++;
 
       if (!decision.should_send || !decision.message) {
         result.skipped++;
@@ -145,11 +158,17 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
         ? `<${lastInbound.gmail_message_id}@gmail.com>`
         : undefined;
 
+      // Look up the original thread subject to preserve threading (Bug #1 fix)
+      const originalSubject = recentInteractions.find(i => i.type === 'email_inbound')?.subject
+        || recentInteractions[0]?.subject
+        || `product prioritization at ${lead.company_name}`;
+      const threadSubject = originalSubject.startsWith('Re:') ? originalSubject : `Re: ${originalSubject}`;
+
       const sentMessageId = await sendReplyInThread({
         teamMemberId: member.id,
         threadId,
         to: lead.contact_email,
-        subject: `product prioritization at ${lead.company_name}`,
+        subject: threadSubject,
         body: decision.message,
         inReplyToMessageId,
       });
@@ -160,7 +179,7 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
         lead_id: lead.id,
         team_member_id: member.id,
         type: 'email_outbound',
-        subject: `product prioritization at ${lead.company_name}`,
+        subject: threadSubject,
         body: decision.message,
         gmail_message_id: sentMessageId || undefined,
         gmail_thread_id: threadId,

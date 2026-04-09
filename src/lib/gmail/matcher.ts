@@ -1,16 +1,19 @@
-const OUTREACH_PATTERN = /product prioritization at\s+(.+)/i;
+// Configurable via env var, fallback to original pattern
+const OUTREACH_SUBJECT = process.env.OUTREACH_SUBJECT_PATTERN || 'product prioritization at';
+const OUTREACH_PATTERN = new RegExp(`${OUTREACH_SUBJECT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(.+)`, 'i');
 
 // NDR/bounce subject prefixes — these are delivery failure notifications, not real replies
+// Tightened: auto-reply patterns require colon to avoid matching legitimate replies
 const BOUNCE_PREFIXES = [
-  /^undeliverable:/i,
-  /^delivery (has )?failed:/i,
+  /^undeliverable:\s/i,
+  /^delivery (has )?failed:\s/i,
   /^mail delivery failed/i,
-  /^returned mail:/i,
-  /^failure notice/i,
-  /^delivery status notification/i,
+  /^returned mail:\s/i,
+  /^failure notice\b/i,
+  /^delivery status notification\b/i,
   /^message not delivered/i,
-  /^auto-?reply:/i,
-  /^automatic reply:/i,
+  /^out of office:\s/i,
+  /^out-of-office:\s/i,
 ];
 
 export function isBounceEmail(subject: string): boolean {
@@ -25,5 +28,6 @@ export function isOutreachThread(subject: string): boolean {
 export function extractCompanyFromSubject(subject: string): string | null {
   const match = subject.match(OUTREACH_PATTERN);
   if (!match) return null;
-  return match[1].trim().replace(/[?.!,;]+$/, '') || null;
+  const company = match[1].trim().replace(/[?.!,;:]+$/, '').trim();
+  return company || null;
 }

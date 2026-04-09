@@ -30,9 +30,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const lead = leadRes.data;
   const thread = interactionsRes.data || [];
 
+  // Get sender name for thread context (Bug #6 fix — null safety)
+  const senderName = session.name || 'our team';
+
   const threadText = thread
     .map(i => {
-      const role = i.type === 'email_inbound' ? lead.contact_name : 'Me';
+      const role = i.type === 'email_inbound' ? lead.contact_name : senderName;
       return `[${role}]: ${(i.body || '').slice(0, 300)}`;
     })
     .join('\n\n');
