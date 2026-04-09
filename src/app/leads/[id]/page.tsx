@@ -553,6 +553,8 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
           subject={composeThread.subject}
           teamMemberId={user.team_member_id}
           initialDraft={postCallDraft ?? undefined}
+          contactName={lead.contact_name}
+          companyName={lead.company_name}
           onClose={() => { setComposeThread(null); setPostCallDraft(null); }}
           onSent={(interaction) => {
             if (interaction) setInteractions(prev => [interaction as Interaction, ...prev]);
