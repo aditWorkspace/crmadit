@@ -32,6 +32,23 @@ interface ActionDue {
   owner_name: string;
 }
 
+interface OverdueAction {
+  text: string;
+  lead_name: string;
+  due_date: string;
+  owner_name: string;
+  days_overdue: number;
+}
+
+interface TopPriorityLead {
+  contact_name: string;
+  company_name: string;
+  stage: string;
+  heat_score: number;
+  ai_next_action: string;
+  owner_name: string;
+}
+
 export async function buildDailyDigest(): Promise<{
   subject: string;
   html: string;
@@ -144,6 +161,56 @@ export async function buildDailyDigest(): Promise<{
     };
   });
 
+  // 6. Overdue action items (due before today and not completed)
+  const { data: overdueItemsData } = await supabase
+    .from('action_items')
+    .select(
+      'text, due_date, lead:leads(contact_name), assigned_member:team_members(name)'
+    )
+    .eq('completed', false)
+    .lt('due_date', todayStr)
+    .order('due_date', { ascending: true })
+    .limit(20);
+
+  const overdueActions: OverdueAction[] = (overdueItemsData || []).map((a) => {
+    const lead = a.lead as { contact_name?: string } | null;
+    const member = a.assigned_member as { name?: string } | null;
+    const daysOverdue = Math.ceil(
+      (now.getTime() - new Date(a.due_date).getTime()) / (1000 * 60 * 60 * 24)
+    );
+    return {
+      text: a.text,
+      lead_name: lead?.contact_name ?? 'Unknown',
+      due_date: a.due_date,
+      owner_name: member?.name ?? '',
+      days_overdue: daysOverdue,
+    };
+  });
+
+  // 7. Top priority leads by heat_score with AI next action
+  const { data: topLeadsData } = await supabase
+    .from('leads')
+    .select(
+      'contact_name, company_name, stage, heat_score, ai_next_action, owned_by_member:team_members!leads_owned_by_fkey(name)'
+    )
+    .in('stage', ACTIVE_STAGES)
+    .eq('is_archived', false)
+    .not('ai_next_action', 'is', null)
+    .order('heat_score', { ascending: false })
+    .limit(5);
+
+  const topPriorityLeads: TopPriorityLead[] = (topLeadsData || []).map((l) => {
+    const member = l.owned_by_member as { name?: string } | null;
+    return {
+      contact_name: l.contact_name,
+      company_name: l.company_name,
+      stage: l.stage,
+      heat_score: l.heat_score,
+      ai_next_action: l.ai_next_action!,
+      owner_name: member?.name ?? '',
+    };
+  });
+
   // ── Build content ──────────────────────────────────────────────────────────
 
   const dateLabel = format(now, 'EEEE, MMMM d yyyy');
@@ -193,6 +260,23 @@ export async function buildDailyDigest(): Promise<{
     lines.push(`ACTION ITEMS DUE TODAY (${actionsDueToday.length})`);
     for (const a of actionsDueToday) {
       lines.push(`  • [${a.owner_name}] ${a.text} — re: ${a.lead_name}`);
+    }
+    lines.push('');
+  }
+
+  if (overdueActions.length > 0) {
+    lines.push(`OVERDUE ACTION ITEMS (${overdueActions.length})`);
+    for (const a of overdueActions) {
+      lines.push(`  • [${a.owner_name}] ${a.text} — re: ${a.lead_name} (${a.days_overdue}d overdue)`);
+    }
+    lines.push('');
+  }
+
+  if (topPriorityLeads.length > 0) {
+    lines.push(`TOP PRIORITY NEXT STEPS`);
+    for (const l of topPriorityLeads) {
+      const stage = STAGE_LABELS[l.stage as LeadStage] ?? l.stage;
+      lines.push(`  • ${l.contact_name} (${l.company_name}) [${stage}] — ${l.ai_next_action} [${l.owner_name}]`);
     }
     lines.push('');
   }
@@ -281,6 +365,39 @@ export async function buildDailyDigest(): Promise<{
         )
       : '';
 
+  const overdueSection =
+    overdueActions.length > 0
+      ? section(
+          `Overdue Action Items (${overdueActions.length})`,
+          ul(
+            overdueActions.map((a) =>
+              listItem(
+                `<span style="color:#ef4444;font-weight:600;">[${escHtml(a.owner_name)}]</span> ` +
+                  `${escHtml(a.text)} — <em>${escHtml(a.lead_name)}</em> ` +
+                  `<span style="color:#ef4444;">(${a.days_overdue}d overdue)</span>`
+              )
+            )
+          )
+        )
+      : '';
+
+  const topPrioritySection =
+    topPriorityLeads.length > 0
+      ? section(
+          `Top Priority Next Steps`,
+          ul(
+            topPriorityLeads.map((l) =>
+              listItem(
+                `<strong>${escHtml(l.contact_name)}</strong> (${escHtml(l.company_name)}) ` +
+                  `<span style="color:#6366f1;">[${escHtml(stageLabel(l.stage))}]</span> — ` +
+                  `${escHtml(l.ai_next_action)} ` +
+                  `<span style="color:#9ca3af;">[${escHtml(l.owner_name)}]</span>`
+              )
+            )
+          )
+        )
+      : '';
+
   const html = `
 <!DOCTYPE html>
 <html>
@@ -297,15 +414,17 @@ export async function buildDailyDigest(): Promise<{
       <p style="color:#166534;font-size:14px;margin:0;">
         <strong>${totalActive ?? 0}</strong> active leads in pipeline &nbsp;·&nbsp;
         <strong>${leadsMovedForward.length}</strong> moved forward &nbsp;·&nbsp;
-        <strong>${staleLeads.length}</strong> stale
+        <strong>${staleLeads.length}</strong> stale${overdueActions.length > 0 ? ` &nbsp;·&nbsp; <span style="color:#ef4444;"><strong>${overdueActions.length}</strong> overdue tasks</span>` : ''}
       </p>
     </div>
     <!-- Body -->
     <div style="padding:24px 32px;">
       ${movedSection}
       ${newSection}
+      ${overdueSection}
       ${staleSection}
       ${actionsSection}
+      ${topPrioritySection}
       ${
         !movedSection && !staleSection
           ? '<p style="color:#9ca3af;font-size:14px;">No significant pipeline activity yesterday.</p>'

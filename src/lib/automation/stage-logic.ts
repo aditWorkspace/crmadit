@@ -13,6 +13,7 @@ async function createActionItem(item: {
   assigned_to?: string;
   due_date?: string;
   source: 'manual' | 'ai_extracted' | 'auto_generated';
+  metadata?: Record<string, unknown>;
 }) {
   const supabase = createAdminClient();
   await supabase.from('action_items').insert(item);
@@ -125,6 +126,7 @@ const stageRegistry: Record<string, StageTrigger> = {
         assigned_to: memberId,
         due_date: addHours(new Date(), 2).toISOString().split('T')[0],
         source: 'auto_generated',
+        metadata: { urgency: 'immediate', action_type: 'upload_transcript' },
       });
       await createActionItem({
         lead_id: lead.id,

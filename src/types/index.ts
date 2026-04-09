@@ -94,6 +94,7 @@ export interface ActionItem {
   completed_at?: string;
   source: 'manual' | 'ai_extracted' | 'auto_generated';
   sort_order: number;
+  metadata?: Record<string, unknown>;
   created_at: string;
   assigned_member?: TeamMember;
   lead?: Pick<Lead, 'id' | 'contact_name' | 'company_name'>;

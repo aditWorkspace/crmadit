@@ -169,6 +169,48 @@ export async function POST(req: NextRequest) {
 </div>`,
       }),
     }).catch(() => { /* non-fatal — calendar invite still sent */ });
+
+    // Notify all founders about the new booking
+    const founderEmailList = (allMembers ?? []).map(m => m.email);
+    if (founderEmailList.length > 0) {
+      const noteSection = note?.trim()
+        ? `<p style="margin:0 0 8px;font-size:14px;"><strong>Notes:</strong> ${note.trim()}</p>`
+        : '';
+
+      const founderMeetSection = event.meetLink
+        ? `<p style="margin:16px 0;"><a href="${event.meetLink}" style="display:inline-block;background:#111827;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">Join Google Meet</a></p>`
+        : '';
+
+      await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: 'Proxi AI <onboarding@resend.dev>',
+          to: founderEmailList,
+          subject: `New call booked: ${name.trim()} on ${formattedDate}`,
+          html: `
+<div style="font-family:sans-serif;max-width:480px;margin:0 auto;color:#111;">
+  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px;">New call booked</h2>
+  <p style="color:#666;margin-top:0;">Someone just scheduled a call via the booking page.</p>
+
+  <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:16px;margin:20px 0;">
+    <p style="margin:0 0 8px;font-size:14px;"><strong>Name:</strong> ${name.trim()}</p>
+    <p style="margin:0 0 8px;font-size:14px;"><strong>Email:</strong> ${email}</p>
+    <p style="margin:0 0 8px;font-size:14px;"><strong>When:</strong> ${formattedDate} at ${formattedTime} PT</p>
+    <p style="margin:0 0 8px;font-size:14px;"><strong>Duration:</strong> ${durationMinutes} minutes</p>
+    ${noteSection}
+  </div>
+
+  ${founderMeetSection}
+
+  <p style="font-size:13px;color:#aaa;">— Proxi CRM</p>
+</div>`,
+        }),
+      }).catch(() => { /* non-fatal */ });
+    }
   }
 
   return NextResponse.json({
