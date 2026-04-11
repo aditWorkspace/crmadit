@@ -77,6 +77,7 @@ export interface Lead {
   paused_previous_stage?: LeadStage;
   pinned_note?: string;
   is_archived: boolean;
+  auto_replied_to_first: boolean;
   call_prep_notes?: string;
   call_prep_status?: 'pending' | 'generating' | 'completed' | 'failed';
   call_prep_generated_at?: string;

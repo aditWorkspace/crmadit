@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Please book at least 2 hours in advance' }, { status: 400 });
   }
 
-  // Must be within 9am–2:00pm PT on a weekday (last slot starts at 2:00pm, ends at 2:30pm max)
+  // Must be within 9:30am–2:00pm PT on a weekday (last slot starts at 2:00pm, ends at 2:30pm max)
   const ptHour = parseInt(
     new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false })
   );
@@ -56,9 +56,10 @@ export async function POST(req: NextRequest) {
     new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', minute: '2-digit' })
   );
   const ptDay = new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short' });
+  const beforeEarliest = ptHour < 9 || (ptHour === 9 && ptMin < 30);
   const pastCutoff = ptHour > 14 || (ptHour === 14 && ptMin >= 30);
-  if (['Sat', 'Sun'].includes(ptDay) || ptHour < 9 || pastCutoff) {
-    return NextResponse.json({ error: 'Slot is outside booking hours (Mon–Fri, 9am–2pm PT)' }, { status: 400 });
+  if (['Sat', 'Sun'].includes(ptDay) || beforeEarliest || pastCutoff) {
+    return NextResponse.json({ error: 'Slot is outside booking hours (Mon–Fri, 9:30am–2pm PT)' }, { status: 400 });
   }
 
   const supabase = createAdminClient();

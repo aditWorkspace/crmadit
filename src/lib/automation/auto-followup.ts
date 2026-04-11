@@ -7,8 +7,11 @@ import { aiFollowupDecisionSchema } from '@/lib/validation';
 const FOLLOWUP_HOURS = 48;
 const MAX_AI_CALLS_PER_RUN = 50;
 
-// Only send auto follow-ups for leads still in early outreach stages
-const AUTO_FOLLOWUP_STAGES = ['replied', 'scheduling'];
+// Narrowed to 'scheduling' only: the 'replied' stage is now owned by the
+// first-reply auto-responder in first-reply-responder.ts, which is a
+// classify-and-branch system rather than a nudge. This prevents
+// double-processing when both systems run from the same hourly cron.
+const AUTO_FOLLOWUP_STAGES = ['scheduling'];
 
 export interface AutoFollowupResult {
   processed: number;

@@ -76,6 +76,20 @@ export const aiFollowupDecisionSchema = z.object({
   message: z.string().nullable(),
 });
 
+export const firstReplyDecisionSchema = z.object({
+  classification: z.enum([
+    'positive_book',
+    'async_request',
+    'calendly_sent',
+    'question_only',
+    'decline',
+    'ooo',
+    'unclear',
+  ]),
+  reason: z.string(),
+  message: z.string().nullable(),
+});
+
 export const aiTranscriptAnalysisSchema = z.object({
   summary: z.string().default(''),
   sentiment: z.string().default('neutral'),
@@ -115,4 +129,5 @@ export const aiTranscriptAnalysisSchema = z.object({
 });
 
 export type AiFollowupDecision = z.infer<typeof aiFollowupDecisionSchema>;
+export type FirstReplyDecision = z.infer<typeof firstReplyDecisionSchema>;
 export type AiTranscriptAnalysis = z.infer<typeof aiTranscriptAnalysisSchema>;

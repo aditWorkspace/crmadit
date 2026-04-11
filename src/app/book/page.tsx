@@ -44,11 +44,13 @@ function getPTMinute(iso: string): number {
   );
 }
 
-/** Last slot that can start: 2:00 PM PT (ends at 2:30 for 30m or 2:20 for 20m). */
+/** Earliest slot: 9:30 AM PT. Last slot that can start: 2:00 PM PT (ends at 2:30 for 30m or 2:20 for 20m). */
 function isBookableHour(iso: string): boolean {
   const h = getPTHour(iso);
   const m = getPTMinute(iso);
-  return h >= 9 && (h < 14 || (h === 14 && m === 0));
+  const afterEarliest = h > 9 || (h === 9 && m >= 30);
+  const beforeLatest = h < 14 || (h === 14 && m === 0);
+  return afterEarliest && beforeLatest;
 }
 
 function isWeekday(date: Date): boolean {
@@ -103,7 +105,7 @@ export default function BookPage() {
     const today = todayPT();
     for (const s of slots) {
       if (s.busyCount > 1) continue; // need ≥2 of 3 free
-      if (!isBookableHour(s.start)) continue; // outside 9am–2:00pm PT
+      if (!isBookableHour(s.start)) continue; // outside 9:30am–2:00pm PT
       const date = new Date(s.start).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
       if (date < today) continue; // skip past dates
       const d = parseISO(date);

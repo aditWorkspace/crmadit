@@ -26,6 +26,15 @@ export const ACTIVE_STAGES: LeadStage[] = [
 
 export const QWEN_FREE_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free';
 
+// Classifier + short-drafting model for first-reply auto-responder. Haiku 4.5
+// is cheap, fast, and reliable for JSON-mode classification — quality matters
+// here because we're making a send/no-send decision on a real prospect email.
+export const CLASSIFIER_MODEL = 'anthropic/claude-haiku-4-5';
+
+// Public booking page. Auto-responder interpolates this into positive_book
+// replies, optionally with ?email=<contact_email> pre-fill.
+export const BOOKING_URL = 'https://pmcrminternal.vercel.app/book';
+
 // Stages where auto-emails are suppressed (call is happening or just done)
 export const CALLS_STAGES: LeadStage[] = ['scheduled', 'call_completed', 'feedback_call', 'active_user'];
 
