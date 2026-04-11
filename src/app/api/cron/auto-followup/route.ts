@@ -2,10 +2,10 @@ export const maxDuration = 60;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runAutoFollowup } from '@/lib/automation/auto-followup';
+import { verifyCronAuth } from '@/lib/auth/cron';
 
-export async function POST(req: NextRequest) {
-  const secret = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (secret !== process.env.CRON_SECRET) {
+async function handler(req: NextRequest) {
+  if (!verifyCronAuth(req).ok) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -13,3 +13,6 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ status: 'done', ...result });
 }
+
+export const GET = handler;
+export const POST = handler;

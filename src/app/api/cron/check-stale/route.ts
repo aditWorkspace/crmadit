@@ -1,9 +1,11 @@
+export const maxDuration = 60;
+
 import { NextRequest, NextResponse } from 'next/server';
 import { detectStaleLeads, createStaleFollowUps } from '@/lib/automation/stale-detection';
+import { verifyCronAuth } from '@/lib/auth/cron';
 
-export async function POST(req: NextRequest) {
-  const secret = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (secret !== process.env.CRON_SECRET) {
+async function handler(req: NextRequest) {
+  if (!verifyCronAuth(req).ok) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -16,3 +18,6 @@ export async function POST(req: NextRequest) {
     alerts: staleAlerts.map(a => ({ lead_id: a.lead_id, contact: a.contact_name, hours: a.hours_stale })),
   });
 }
+
+export const GET = handler;
+export const POST = handler;

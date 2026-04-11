@@ -1,10 +1,16 @@
+// 300s — steady-state runs are seconds, but any catch-up after an outage can
+// take minutes (measured 4.9 min catch-up after a 5-day sync gap). Keeping the
+// ceiling at Vercel's maximum ensures post-outage runs actually finish and
+// write back the fresh gmail_history_id instead of looping on the same backlog.
+export const maxDuration = 300;
+
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { runIncrementalSync, runInitialSync } from '@/lib/gmail/sync';
+import { verifyCronAuth } from '@/lib/auth/cron';
 
-export async function POST(req: NextRequest) {
-  const secret = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (secret !== process.env.CRON_SECRET) {
+async function handler(req: NextRequest) {
+  if (!verifyCronAuth(req).ok) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -37,3 +43,6 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ status: 'done', results });
 }
+
+export const GET = handler;
+export const POST = handler;
