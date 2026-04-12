@@ -21,6 +21,7 @@ interface EmailComposeModalProps {
   toEmail: string;
   subject: string;
   teamMemberId: string;
+  ownerMemberId?: string;
   initialDraft?: string;
   contactName?: string;
   companyName?: string;
@@ -30,13 +31,15 @@ interface EmailComposeModalProps {
 
 export function EmailComposeModal({
   leadId, threadId, toEmail, subject, teamMemberId,
-  initialDraft, contactName, companyName, onClose, onSent,
+  ownerMemberId, initialDraft, contactName, companyName, onClose, onSent,
 }: EmailComposeModalProps) {
   const [body, setBody] = useState(initialDraft ?? '');
   const [sending, setSending] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [connectedMembers, setConnectedMembers] = useState<ConnectedMember[]>([]);
-  const [senderId, setSenderId] = useState(teamMemberId);
+  // Default to the lead's owner (not the logged-in user) so replies come from
+  // the person who owns the relationship. Falls back to session user.
+  const [senderId, setSenderId] = useState(ownerMemberId || teamMemberId);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
 

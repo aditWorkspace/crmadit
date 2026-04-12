@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
 import { callAI } from '@/lib/ai/openrouter';
+import { BOOKING_URL } from '@/lib/constants';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSessionFromRequest(req);
@@ -47,8 +48,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   // Stage-specific instructions for smarter replies
   const stageInstructions: Record<string, string> = {
-    replied: '\n- This prospect just replied to outreach. Engage warmly, ask about their current workflow challenges, and suggest scheduling a quick call. If they seem interested, share a Calendly link: https://calendly.com/srijay-vejendla',
-    scheduling: '\n- We are trying to schedule a call with this prospect. If they proposed a time, confirm it. If there is a conflict, suggest 2-3 alternative times. If they need a booking link, share: https://calendly.com/srijay-vejendla',
+    replied: `\n- IMPORTANT: Read the prospect's last message carefully to determine their intent before drafting.
+  * If they are POSITIVE about a call ("sure", "happy to chat", "send me a time", "let's do it", "what's your availability"): thank them briefly and include this exact booking link: ${BOOKING_URL}. Do NOT ask questions about their workflow. Just send the link.
+  * If they want to do things ASYNC ("don't have time for a call", "send me more info", "what are you building"): ask 2-3 specific questions about how they prioritize at their company and what tools they use. Do NOT include the booking link. Do NOT explain what Proxi does.
+  * If they sent their OWN calendar link (Calendly, Cal.com, SavvyCal): acknowledge it and say you'll book a time. Do NOT send our booking link.
+  * If they asked a specific QUESTION (pricing, integrations, features): answer briefly if you can, or say you'd love to discuss on a quick call and include the booking link: ${BOOKING_URL}
+  * If they DECLINED: do not draft a response. Return an empty string.`,
+    scheduling: `\n- We are trying to schedule a call. If they proposed a time, confirm it. If there is a conflict, suggest 2-3 alternative times. If they need a booking link, share: ${BOOKING_URL}`,
     scheduled: '\n- A call is already scheduled. Send a brief confirmation or pre-call note. Keep it simple.',
     call_completed: '\n- The discovery call is done. Thank them briefly, reference one specific thing from the conversation, and propose a clear next step (e.g., sending the product demo).',
     post_call: '\n- This is the post-call follow-up phase. Thank them for the call, reference a key takeaway, and outline the agreed next steps (e.g., sending demo access, scheduling a follow-up).',
@@ -63,7 +69,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
 Rules:
 - Short and professional, 2-4 sentences max
-- No em-dashes (—), use commas or periods instead
+- NEVER use em dashes (the — character). Use commas or periods instead. This rule is absolute.
+- NEVER describe, explain, or pitch what Proxi does or builds. Do not say "our product" or "we're building". Sound like a curious student, not a salesperson.
 - No filler phrases ("I hope this finds you well", "Just following up")
 - Reference the conversation naturally
 - End with a clear next step or question
@@ -78,5 +85,12 @@ ${threadText}
 Draft a short professional ${isPostCall ? 'post-call follow-up' : 'follow-up reply'}.`,
   });
 
-  return NextResponse.json({ draft });
+  // Post-process: scrub em dashes the model may have slipped in
+  const scrubbed = draft
+    .replaceAll('—', ', ')
+    .replaceAll('–', ', ')
+    .replace(/\s+,/g, ',')
+    .trim();
+
+  return NextResponse.json({ draft: scrubbed });
 }

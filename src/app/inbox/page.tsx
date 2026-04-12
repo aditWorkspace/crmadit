@@ -206,6 +206,7 @@ export default function InboxPage() {
           toEmail={replyThread.lead.contact_email}
           subject={replyThread.latest_subject.startsWith('Re:') ? replyThread.latest_subject : `Re: ${replyThread.latest_subject}`}
           teamMemberId={user.team_member_id}
+          ownerMemberId={replyThread.lead.owned_by}
           contactName={replyThread.lead.contact_name}
           companyName={replyThread.lead.company_name}
           onClose={() => setReplyThread(null)}

@@ -78,7 +78,16 @@ function relativeDate(iso: string): string {
 // ── Component ──────────────────────────────────────────────────────────
 
 type StatusFilter = 'all' | 'needs_reply';
+type StageFilter = 'all' | 'replied' | 'scheduling' | 'scheduled' | 'call_completed';
 type SortOrder = 'newest' | 'oldest';
+
+const STAGE_FILTER_OPTIONS: { value: StageFilter; label: string }[] = [
+  { value: 'all', label: 'All stages' },
+  { value: 'replied', label: 'In Dialogue' },
+  { value: 'scheduling', label: 'Scheduling' },
+  { value: 'scheduled', label: 'Scheduled' },
+  { value: 'call_completed', label: 'Call Done' },
+];
 
 export function EmailsTab() {
   const { user } = useSession();
@@ -87,6 +96,7 @@ export function EmailsTab() {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [ownerFilter, setOwnerFilter] = useState<string>('all');
+  const [stageFilter, setStageFilter] = useState<StageFilter>('all');
   const [sort, setSort] = useState<SortOrder>('newest');
   const [selectedThread, setSelectedThread] = useState<EmailThread | null>(null);
   const [replyThread, setReplyThread] = useState<EmailThread | null>(null);
@@ -119,7 +129,11 @@ export function EmailsTab() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const memberName = (id: string) => members.find(m => m.id === id)?.name || '?';
-  const needsReplyCount = threads.filter(t => t.needs_reply && !handledThreads.has(t.thread_id)).length;
+  // Client-side stage filter (API already returns stage in lead object)
+  const filteredThreads = stageFilter === 'all'
+    ? threads
+    : threads.filter(t => t.lead?.stage === stageFilter);
+  const needsReplyCount = filteredThreads.filter(t => t.needs_reply && !handledThreads.has(t.thread_id)).length;
 
   const handleMarkHandled = (threadId: string) => {
     setHandledThreads(prev => new Set(prev).add(threadId));
@@ -234,6 +248,7 @@ export function EmailsTab() {
             toEmail={replyThread.lead.contact_email}
             subject={replyThread.latest_subject.startsWith('Re:') ? replyThread.latest_subject : `Re: ${replyThread.latest_subject}`}
             teamMemberId={user.team_member_id}
+            ownerMemberId={replyThread.lead.owned_by}
             contactName={replyThread.lead.contact_name}
             companyName={replyThread.lead.company_name}
             onClose={() => setReplyThread(null)}
@@ -283,6 +298,20 @@ export function EmailsTab() {
             </select>
             <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-gray-400 pointer-events-none" />
           </div>
+
+          {/* Stage filter */}
+          <div className="relative">
+            <select
+              value={stageFilter}
+              onChange={e => setStageFilter(e.target.value as StageFilter)}
+              className="text-xs text-gray-600 border border-gray-200 rounded-full px-3 py-1.5 pr-7 appearance-none bg-white cursor-pointer hover:border-gray-300 transition-colors"
+            >
+              {STAGE_FILTER_OPTIONS.map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-gray-400 pointer-events-none" />
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -294,7 +323,7 @@ export function EmailsTab() {
             <option value="newest">Newest first</option>
             <option value="oldest">Oldest first</option>
           </select>
-          <span className="text-xs text-gray-400">{threads.length} threads</span>
+          <span className="text-xs text-gray-400">{filteredThreads.length} threads</span>
         </div>
       </div>
 
@@ -304,7 +333,7 @@ export function EmailsTab() {
           <div className="flex items-center justify-center h-40 text-gray-400">
             <Loader2 className="h-5 w-5 animate-spin mr-2" /> Loading emails...
           </div>
-        ) : threads.length === 0 ? (
+        ) : filteredThreads.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-40 text-gray-400 gap-2">
             <Mail className="h-8 w-8" />
             <p className="text-sm">
@@ -313,7 +342,7 @@ export function EmailsTab() {
           </div>
         ) : (
           <div>
-            {threads.map(thread => {
+            {filteredThreads.map(thread => {
               const owner = thread.lead ? memberName(thread.lead.owned_by) : '';
               const oc = ownerColor(owner);
               const isHandled = handledThreads.has(thread.thread_id);
