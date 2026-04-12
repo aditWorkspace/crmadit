@@ -13,6 +13,7 @@ interface InlineEditProps {
   type?: 'text' | 'email' | 'url' | 'date' | 'datetime-local';
   multiline?: boolean;
   emptyText?: string;
+  required?: boolean;
 }
 
 export function InlineEdit({
@@ -25,6 +26,7 @@ export function InlineEdit({
   type = 'text',
   multiline = false,
   emptyText = 'Click to edit',
+  required = false,
 }: InlineEditProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -41,6 +43,7 @@ export function InlineEdit({
 
   const handleSave = async () => {
     if (draft === value) { setEditing(false); return; }
+    if (required && !draft.trim()) { setDraft(value); setEditing(false); return; }
     setSaving(true);
     try {
       await onSave(draft);

@@ -4,7 +4,7 @@ import { FollowUp } from '@/types';
 import { formatRelativeTime, cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useSession } from '@/hooks/use-session';
-import { Copy, CheckCheck, Clock, Phone, PhoneOff, Upload } from 'lucide-react';
+import { Copy, CheckCheck, Clock, Phone, PhoneOff, Upload, MessageCircle } from 'lucide-react';
 import Link from 'next/link';
 
 interface PendingFollowupsProps {
@@ -47,6 +47,7 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
         const isOverdue = new Date(f.due_at) < new Date();
         const isCallConfirmation = f.type === 'call_confirmation';
         const isPostCallFollowup = f.type === 'post_call_followup';
+        const isManualReview = f.type === 'first_reply_manual_review';
         const lead = f.lead as { id: string; contact_name: string; company_name: string } | undefined;
 
         return (
@@ -56,7 +57,9 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
               ? 'border-indigo-200 bg-indigo-50/40'
               : isPostCallFollowup
                 ? 'border-indigo-200 bg-indigo-50/40'
-                : isOverdue
+                : isManualReview
+                  ? 'border-amber-200 bg-amber-50/40'
+                  : isOverdue
                   ? 'border-red-200 bg-red-50/30'
                   : 'border-gray-100'
           )}>
@@ -67,18 +70,23 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
                     ? <Phone className="h-3 w-3 text-indigo-400" />
                     : isPostCallFollowup
                       ? <Upload className="h-3 w-3 text-indigo-400" />
-                      : <Clock className="h-3 w-3" />
+                      : isManualReview
+                        ? <MessageCircle className="h-3 w-3 text-amber-500" />
+                        : <Clock className="h-3 w-3" />
                   }
                   <span className={cn(
                     isCallConfirmation ? 'text-indigo-600 font-medium' :
                     isPostCallFollowup ? 'text-indigo-600 font-medium' :
+                    isManualReview ? 'text-amber-600 font-medium' :
                     isOverdue ? 'text-red-500 font-medium' : ''
                   )}>
                     {isCallConfirmation
                       ? 'Call check-in'
                       : isPostCallFollowup
                         ? 'Transcript needed'
-                        : isOverdue ? `Overdue ${formatRelativeTime(f.due_at)}` : `Due ${formatRelativeTime(f.due_at)}`
+                        : isManualReview
+                          ? 'Reply needs review'
+                          : isOverdue ? `Overdue ${formatRelativeTime(f.due_at)}` : `Due ${formatRelativeTime(f.due_at)}`
                     }
                   </span>
                 </div>
@@ -97,8 +105,25 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
               </div>
             </div>
 
-            {/* Call confirmation — special two-button UI */}
-            {isCallConfirmation ? (
+            {/* Manual review — prospect replied and AI routed to human */}
+            {isManualReview && lead ? (
+              <div className="flex items-center gap-2">
+                <Link
+                  href={`/leads/${lead.id}`}
+                  className="flex items-center gap-1.5 text-xs text-white bg-amber-600 hover:bg-amber-700 rounded px-2.5 py-1 transition-colors"
+                >
+                  <MessageCircle className="h-3 w-3" />
+                  Review Reply
+                </Link>
+                <button
+                  onClick={() => handleAction(f.id, 'complete')}
+                  className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded px-2.5 py-1"
+                >
+                  <CheckCheck className="h-3 w-3" />
+                  Done
+                </button>
+              </div>
+            ) : isCallConfirmation ? (
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => handleAction(f.id, 'confirm_call')}

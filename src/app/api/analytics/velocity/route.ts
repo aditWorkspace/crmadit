@@ -1,27 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
-
-/**
- * Pipeline velocity: average days spent in each stage.
- * Computed from activity_log stage_changed events.
- */
-
-const STAGE_ORDER = [
-  'replied', 'scheduling', 'scheduled', 'call_completed',
-  'post_call', 'demo_sent', 'feedback_call', 'active_user',
-];
-
-const STAGE_LABELS: Record<string, string> = {
-  replied: 'Awaiting Reply',
-  scheduling: 'Scheduling',
-  scheduled: 'Scheduled',
-  call_completed: 'Call Completed',
-  post_call: 'Post-Call',
-  demo_sent: 'Demo Sent',
-  feedback_call: 'Feedback Call',
-  active_user: 'Active User',
-};
+import { ACTIVE_STAGES, STAGE_LABELS } from '@/lib/constants';
 
 export async function GET(req: NextRequest) {
   const session = await getSessionFromRequest(req);
@@ -50,7 +30,7 @@ export async function GET(req: NextRequest) {
 
   // For each stage, collect durations (time spent before leaving)
   const stageDurations: Record<string, number[]> = {};
-  for (const stage of STAGE_ORDER) stageDurations[stage] = [];
+  for (const stage of ACTIVE_STAGES) stageDurations[stage] = [];
 
   for (const transitions of Object.values(byLead)) {
     for (let i = 0; i < transitions.length; i++) {
@@ -72,7 +52,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Compute averages
-  const velocity = STAGE_ORDER.map(stage => {
+  const velocity = ACTIVE_STAGES.map(stage => {
     const durations = stageDurations[stage];
     const avg = durations.length > 0
       ? durations.reduce((a, b) => a + b, 0) / durations.length
@@ -98,22 +78,22 @@ export async function GET(req: NextRequest) {
 
   // Count leads that reached each stage (cumulative — anyone currently at or past this stage)
   const reachedStage: Record<string, number> = {};
-  for (const stage of STAGE_ORDER) {
-    const idx = STAGE_ORDER.indexOf(stage);
-    reachedStage[stage] = STAGE_ORDER
+  for (const stage of ACTIVE_STAGES) {
+    const idx = ACTIVE_STAGES.indexOf(stage);
+    reachedStage[stage] = ACTIVE_STAGES
       .filter((_, i) => i >= idx)
       .reduce((sum, s) => sum + (stageCounts[s] || 0), 0);
   }
 
-  const dropoffs = STAGE_ORDER.slice(0, -1).map((stage, i) => {
+  const dropoffs = ACTIVE_STAGES.slice(0, -1).map((stage, i) => {
     const current = reachedStage[stage] || 0;
-    const next = reachedStage[STAGE_ORDER[i + 1]] || 0;
+    const next = reachedStage[ACTIVE_STAGES[i + 1]] || 0;
     const dropRate = current > 0 ? Math.round(((current - next) / current) * 100) : 0;
     return {
       from_stage: stage,
       from_label: STAGE_LABELS[stage] ?? stage,
-      to_stage: STAGE_ORDER[i + 1],
-      to_label: STAGE_LABELS[STAGE_ORDER[i + 1]] ?? STAGE_ORDER[i + 1],
+      to_stage: ACTIVE_STAGES[i + 1],
+      to_label: STAGE_LABELS[ACTIVE_STAGES[i + 1]] ?? ACTIVE_STAGES[i + 1],
       from_count: current,
       to_count: next,
       drop_rate: dropRate,

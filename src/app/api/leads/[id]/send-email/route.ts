@@ -26,6 +26,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: `${memberRes.data?.name || 'That founder'}'s Gmail is not connected` }, { status: 400 });
   }
   if (!leadRes.data) return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
+  if (!leadRes.data.contact_email) return NextResponse.json({ error: 'Lead has no email address' }, { status: 400 });
 
   const { data: lastInbound } = await supabase
     .from('interactions')

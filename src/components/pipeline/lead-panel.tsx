@@ -881,11 +881,11 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-base font-semibold text-gray-900">
-                  <InlineEdit value={lead.contact_name} onSave={v => updateLead({ contact_name: v })} displayClassName="text-base font-semibold" />
+                  <InlineEdit value={lead.contact_name} onSave={v => updateLead({ contact_name: v })} displayClassName="text-base font-semibold" required />
                 </h2>
                 <span className="text-gray-300 text-sm">·</span>
                 <span className="text-sm text-gray-500">
-                  <InlineEdit value={lead.company_name} onSave={v => updateLead({ company_name: v })} displayClassName="text-sm text-gray-600" />
+                  <InlineEdit value={lead.company_name} onSave={v => updateLead({ company_name: v })} displayClassName="text-sm text-gray-600" required />
                 </span>
                 {lead.contact_role && (
                   <>
