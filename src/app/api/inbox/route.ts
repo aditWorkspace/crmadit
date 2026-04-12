@@ -70,12 +70,21 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const threads = Array.from(threadMap.values())
-    .sort((a, b) => {
-      // needs_reply first, then by recency
-      if (a.needs_reply !== b.needs_reply) return a.needs_reply ? -1 : 1;
-      return new Date(b.latest_at).getTime() - new Date(a.latest_at).getTime();
-    });
+  const statusFilter = req.nextUrl.searchParams.get('status');
+  const sortOrder = req.nextUrl.searchParams.get('sort'); // 'oldest' or default newest
+
+  let threads = Array.from(threadMap.values());
+
+  if (statusFilter === 'needs_reply') {
+    threads = threads.filter(t => t.needs_reply);
+  }
+
+  threads.sort((a, b) => {
+    // needs_reply first, then by recency
+    if (a.needs_reply !== b.needs_reply) return a.needs_reply ? -1 : 1;
+    const dir = sortOrder === 'oldest' ? 1 : -1;
+    return dir * (new Date(b.latest_at).getTime() - new Date(a.latest_at).getTime());
+  });
 
   return NextResponse.json({ threads });
 }

@@ -6,12 +6,13 @@ import { useSession } from '@/hooks/use-session';
 import { LeadList, PipelineLead } from './lead-list';
 import { LeadPanel } from './lead-panel';
 import { KanbanBoard } from './kanban-board';
+import { EmailsTab } from './emails-tab';
 import { ResizeHandle } from '@/components/ui/resize-handle';
-import { Loader2, LayoutList, Kanban } from 'lucide-react';
+import { Loader2, LayoutList, Kanban, Mail } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 type FilterTab = 'all' | 'mine' | 'calls' | 'demos' | 'weekly';
-type ViewMode = 'list' | 'board';
+type ViewMode = 'list' | 'board' | 'emails';
 
 function EmptyPanel() {
   return (
@@ -38,7 +39,7 @@ export function PipelineView() {
   // Restore persisted view mode on mount
   useEffect(() => {
     const stored = localStorage.getItem('proxi-pipeline-view') as ViewMode | null;
-    if (stored === 'board') setViewMode('board');
+    if (stored === 'board' || stored === 'emails') setViewMode(stored);
   }, []);
 
   const setView = (mode: ViewMode) => {
@@ -117,9 +118,25 @@ export function PipelineView() {
           <Kanban className="h-3.5 w-3.5" />
           Board
         </button>
+        <button
+          onClick={() => setView('emails')}
+          className={cn(
+            'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors',
+            viewMode === 'emails'
+              ? 'bg-gray-900 text-white'
+              : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+          )}
+        >
+          <Mail className="h-3.5 w-3.5" />
+          Emails
+        </button>
       </div>
 
-      {viewMode === 'board' ? (
+      {viewMode === 'emails' ? (
+        <div className="flex-1 overflow-hidden">
+          <EmailsTab />
+        </div>
+      ) : viewMode === 'board' ? (
         <div className="flex-1 overflow-auto px-4 py-3">
           <KanbanBoard />
         </div>
