@@ -36,10 +36,10 @@ export function EmailComposeModal({
   const [body, setBody] = useState(initialDraft ?? '');
   const [sending, setSending] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [connectedMembers, setConnectedMembers] = useState<ConnectedMember[]>([]);
-  // Default to the lead's owner (not the logged-in user) so replies come from
-  // the person who owns the relationship. Falls back to session user.
-  const [senderId, setSenderId] = useState(ownerMemberId || teamMemberId);
+  // Always send from the lead's owner — no picker. The person who owns
+  // the relationship is the person who replies.
+  const senderId = ownerMemberId || teamMemberId;
+  const [senderInfo, setSenderInfo] = useState<ConnectedMember | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
 
@@ -48,12 +48,11 @@ export function EmailComposeModal({
       .then(r => r.json())
       .then(d => {
         if (d.members) {
-          setConnectedMembers(d.members);
-          const self = d.members.find((m: ConnectedMember) => m.id === teamMemberId);
-          setSenderId(self ? teamMemberId : d.members[0]?.id || teamMemberId);
+          const owner = (d.members as ConnectedMember[]).find(m => m.id === senderId);
+          if (owner) setSenderInfo(owner);
         }
       });
-  }, [teamMemberId]);
+  }, [teamMemberId, senderId]);
 
   // Fetch templates on mount
   useEffect(() => {
@@ -79,7 +78,7 @@ export function EmailComposeModal({
   };
 
   const handleSelectTemplate = (template: Template) => {
-    const sender = connectedMembers.find(m => m.id === senderId);
+    const sender = senderInfo;
     const ctx = buildTemplateContext({
       contactName: contactName ?? toEmail.split('@')[0],
       contactEmail: toEmail,
@@ -117,7 +116,7 @@ export function EmailComposeModal({
     finally { setSending(false); }
   };
 
-  const sender = connectedMembers.find(m => m.id === senderId);
+  const sender = senderInfo;
 
   const CATEGORY_LABELS: Record<string, string> = {
     post_call: 'Post-Call',
@@ -139,28 +138,10 @@ export function EmailComposeModal({
 
         {/* Fields */}
         <div className="px-4 py-2 border-b border-gray-100 space-y-1.5 text-sm">
-          {connectedMembers.length > 1 ? (
-            <div className="flex items-center gap-2">
-              <span className="w-14 text-right text-xs font-medium text-gray-400">From</span>
-              <div className="relative">
-                <select
-                  value={senderId}
-                  onChange={e => setSenderId(e.target.value)}
-                  className="appearance-none pl-2 pr-7 py-0.5 text-sm text-gray-700 border border-gray-200 rounded-md outline-none focus:border-blue-400 bg-white cursor-pointer"
-                >
-                  {connectedMembers.map(m => (
-                    <option key={m.id} value={m.id}>{m.name} ({m.email})</option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-gray-400 pointer-events-none" />
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-gray-500">
-              <span className="w-14 text-right text-xs font-medium">From</span>
-              <span className="text-gray-700 text-sm">{sender?.name || 'You'} ({sender?.email})</span>
-            </div>
-          )}
+          <div className="flex items-center gap-2 text-gray-500">
+            <span className="w-14 text-right text-xs font-medium">From</span>
+            <span className="text-gray-700 text-sm">{sender?.name || 'Loading...'} ({sender?.email || '...'})</span>
+          </div>
           <div className="flex items-center gap-2 text-gray-500">
             <span className="w-14 text-right text-xs font-medium">To</span>
             <span className="text-gray-700">{toEmail}</span>
