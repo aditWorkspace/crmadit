@@ -63,16 +63,39 @@ export async function GET(req: NextRequest) {
   // Build 30-min slots across the full range.
   // busyCount = members who are confirmed busy OR whose status is unknown (failed fetch).
   // Slot is bookable when busyCount <= 1 (i.e. ≥2 confirmed free).
+  const bookingOnly = req.nextUrl.searchParams.get('bookingOnly') === 'true';
   const slots: { start: string; end: string; busyCount: number }[] = [];
+  const nowMs = Date.now();
   const cursor = new Date(timeMin);
   while (cursor < timeMax) {
     const slotEnd = new Date(cursor.getTime() + 30 * 60 * 1000);
+
+    // When bookingOnly: skip non-bookable slots entirely (nights, weekends,
+    // past, outside 9:30am-2pm PT). Cuts payload from ~2900 to ~200 slots.
+    if (bookingOnly) {
+      const ptDay = cursor.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short' });
+      if (ptDay === 'Sat' || ptDay === 'Sun') { cursor.setTime(cursor.getTime() + 30 * 60 * 1000); continue; }
+      if (cursor.getTime() < nowMs) { cursor.setTime(cursor.getTime() + 30 * 60 * 1000); continue; }
+      const ptH = parseInt(cursor.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false }));
+      const ptM = parseInt(cursor.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', minute: '2-digit' }));
+      const afterEarliest = ptH > 9 || (ptH === 9 && ptM >= 30);
+      const beforeLatest = ptH < 14 || (ptH === 14 && ptM === 0);
+      if (!afterEarliest || !beforeLatest) { cursor.setTime(cursor.getTime() + 30 * 60 * 1000); continue; }
+    }
+
     const busyCount = (members ?? []).filter(m => {
       // Member whose freebusy fetch failed → treat as busy (fail-closed)
       if (!fetchedMemberIds.has(m.id)) return true;
       // Member with confirmed freebusy → check if they overlap this slot
       return overlaps(cursor, slotEnd, busyByMember[m.id]);
     }).length;
+
+    // When bookingOnly: also skip slots where not enough people are free
+    if (bookingOnly && busyCount > 1) {
+      cursor.setTime(cursor.getTime() + 30 * 60 * 1000);
+      continue;
+    }
+
     slots.push({
       start: cursor.toISOString(),
       end: slotEnd.toISOString(),

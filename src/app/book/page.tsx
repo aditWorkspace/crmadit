@@ -71,6 +71,7 @@ export default function BookPage() {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [step, setStep] = useState<Step>('calendar');
   const [loadingSlots, setLoadingSlots] = useState(false);
+  const [slotCache] = useState(() => new Map<string, Slot[]>());
   // Detect browser timezone on mount; default to PT while hydrating
   const [userTz, setUserTz] = useState('America/Los_Angeles');
   useEffect(() => {
@@ -79,15 +80,23 @@ export default function BookPage() {
   }, []);
 
   const fetchSlots = useCallback(async () => {
+    const monthKey = format(month, 'yyyy-MM');
+    const cached = slotCache.get(monthKey);
+    if (cached) {
+      setSlots(cached);
+      return;
+    }
     setLoadingSlots(true);
     try {
       const start = startOfMonth(month);
       const end = endOfMonth(addMonths(month, 1));
       const res = await fetch(
-        `/api/calendar/availability?start=${start.toISOString()}&end=${end.toISOString()}`
+        `/api/calendar/availability?start=${start.toISOString()}&end=${end.toISOString()}&bookingOnly=true`
       );
       const data = await res.json();
-      setSlots(data.slots ?? []);
+      const newSlots = data.slots ?? [];
+      setSlots(newSlots);
+      slotCache.set(monthKey, newSlots);
       if (data.failedCount > 0) {
         console.warn(`[booking] ${data.failedCount}/${data.connectedCount} calendar fetches failed — those members treated as busy`);
       }
@@ -96,20 +105,17 @@ export default function BookPage() {
     } finally {
       setLoadingSlots(false);
     }
-  }, [month]);
+  }, [month, slotCache]);
 
   useEffect(() => { fetchSlots(); }, [fetchSlots]);
 
   const daysWithSlots = useMemo(() => {
+    // With bookingOnly=true, the API already filters to weekday business
+    // hours with busyCount ≤ 1 and excludes past dates. Just collect dates.
     const days = new Set<string>();
-    const today = todayPT();
     for (const s of slots) {
-      if (s.busyCount > 1) continue; // need ≥2 of 3 free
-      if (!isBookableHour(s.start)) continue; // outside 9:30am–2:00pm PT
       const date = new Date(s.start).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-      if (date < today) continue; // skip past dates
-      const d = parseISO(date);
-      if (isWeekday(d)) days.add(date);
+      days.add(date);
     }
     return days;
   }, [slots]);
@@ -119,7 +125,7 @@ export default function BookPage() {
     const dateKey = format(selectedDate, 'yyyy-MM-dd');
     return slots.filter(s => {
       const slotDateKey = new Date(s.start).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-      return slotDateKey === dateKey && isBookableHour(s.start);
+      return slotDateKey === dateKey;
     });
   }, [slots, selectedDate]);
 
@@ -242,9 +248,10 @@ export default function BookPage() {
             {calendarDays.map((d, i) => {
               const key = format(d, 'yyyy-MM-dd');
               const inMonth = isSameMonth(d, month);
-              const available = daysWithSlots.has(key);
+              const available = !loadingSlots && daysWithSlots.has(key);
               const selected = selectedDate ? isSameDay(d, selectedDate) : false;
               const today = isToday(d);
+              const isPotentiallyAvailable = loadingSlots && inMonth && isWeekday(d) && !isBefore(d, startOfDay(new Date()));
 
               return (
                 <button
@@ -254,7 +261,8 @@ export default function BookPage() {
                   className={cn(
                     'aspect-square flex items-center justify-center rounded-lg text-sm transition-colors relative',
                     !inMonth && 'opacity-0 pointer-events-none',
-                    inMonth && !available && 'text-gray-600 cursor-default',
+                    isPotentiallyAvailable && 'bg-gray-800/50 text-gray-400 animate-pulse',
+                    inMonth && !available && !isPotentiallyAvailable && 'text-gray-600 cursor-default',
                     inMonth && available && !selected && 'bg-gray-800 text-white hover:bg-gray-700 cursor-pointer',
                     selected && 'bg-white text-gray-900 font-semibold',
                     today && !selected && 'ring-1 ring-gray-500'
