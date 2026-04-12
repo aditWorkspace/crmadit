@@ -17,6 +17,7 @@ import { AiInsights } from '@/components/transcripts/ai-insights';
 import { EmailComposeModal } from '@/components/leads/email-compose-modal';
 import { BookMeetingModal } from '@/components/leads/book-meeting-modal';
 import { NextStepCard } from '@/components/leads/next-step-card';
+import { MeetingPrep } from '@/components/leads/meeting-prep';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { ArrowLeft, Flame, Upload, Mail, CalendarPlus, Sparkles, X } from 'lucide-react';
@@ -338,6 +339,9 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
             onStageChange={handleStageChange}
             onDateChange={(field, value) => updateLead({ [field]: new Date(value).toISOString() })}
           />
+
+          {/* Meeting Prep (for scheduled leads) */}
+          <MeetingPrep lead={lead} headers={getHeaders()} />
 
           {/* Timeline */}
           <div className="rounded-lg border border-gray-100 overflow-hidden">

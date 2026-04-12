@@ -20,6 +20,7 @@ export async function GET(req: NextRequest) {
     { data: allLeads },
     { data: teamMembers },
     { data: stageChanges },
+    { data: hotLeads },
   ] = await Promise.all([
     supabase
       .from('action_items')
@@ -53,6 +54,14 @@ export async function GET(req: NextRequest) {
       .eq('action', 'stage_changed')
       .gte('created_at', sevenDaysAgo)
       .not('team_member_id', 'is', null),
+    supabase
+      .from('leads')
+      .select('id, contact_name, company_name, stage, heat_score, ai_heat_reason, ai_next_action, owned_by, last_contact_at')
+      .eq('is_archived', false)
+      .in('stage', ACTIVE_STAGES)
+      .gt('heat_score', 0)
+      .order('heat_score', { ascending: false })
+      .limit(10),
   ]);
 
   // Pipeline stage counts
@@ -110,5 +119,6 @@ export async function GET(req: NextRequest) {
     speed_by_member: speedByMember,
     team_members: teamMembers || [],
     velocity_leaderboard: velocityLeaderboard,
+    hot_leads: hotLeads || [],
   });
 }
