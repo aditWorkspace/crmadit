@@ -3,6 +3,7 @@ import { callAI } from '@/lib/ai/openrouter';
 import { sendReplyInThread } from '@/lib/gmail/send';
 import { QWEN_FREE_MODEL } from '@/lib/constants';
 import { aiFollowupDecisionSchema } from '@/lib/validation';
+import { isWithinSendingWindow, canSendOutbound, hasMinimumGap } from './send-guards';
 
 const FOLLOWUP_HOURS = 48;
 const MAX_AI_CALLS_PER_RUN = 50;
@@ -17,6 +18,7 @@ export interface AutoFollowupResult {
   processed: number;
   sent: number;
   skipped: number;
+  skipped_reasons: Record<string, number>;
   errors: string[];
 }
 
@@ -24,6 +26,40 @@ interface AiFollowupDecision {
   should_send: boolean;
   reason: string;
   message: string | null;
+}
+
+// Strip em dashes and en dashes from AI output. Matches the scrubber in
+// first-reply-classifier.ts.
+function scrubDashes(s: string): string {
+  return s
+    .replaceAll('—', ', ')
+    .replaceAll('–', ', ')
+    .replace(/\s+,/g, ',')
+    .trim();
+}
+
+// Ensure proper signoff: "Best,\nName" on separate lines.
+function ensureSignoff(message: string, firstName: string): string {
+  const trimmed = message.trimEnd();
+  const lines = trimmed.split('\n');
+  const lastLine = lines[lines.length - 1]?.trim() ?? '';
+
+  // Already has "Best,\nName" or just "Name"
+  if (lastLine === firstName) {
+    const secondLast = lines[lines.length - 2]?.trim() ?? '';
+    if (secondLast === 'Best,') return trimmed;
+    // Has name but no "Best," — insert it
+    lines.splice(lines.length - 1, 0, 'Best,');
+    return lines.join('\n');
+  }
+
+  // Strip trailing "Best, Name" on one line (AI sometimes does this)
+  if (lastLine.toLowerCase().startsWith('best,')) {
+    lines.pop();
+    return `${lines.join('\n').trimEnd()}\n\nBest,\n${firstName}`;
+  }
+
+  return `${trimmed}\n\nBest,\n${firstName}`;
 }
 
 async function getFollowupDecision(
@@ -51,8 +87,14 @@ Return JSON: { "should_send": boolean, "reason": string, "message": string | nul
 Rules:
 - should_send = true if my last email asked a question, shared something that needs a response, or proposed next steps
 - should_send = false if my last email was a natural close ("no worries", "sounds good", "talk soon", "thanks") or if following up would feel pushy/inappropriate
-- If should_send = true: write a warm, 1-2 sentence follow-up in "message". Reference the context naturally. Sign off with just my first name.
-- If should_send = false: message = null`,
+- If should_send = true: write a warm, 1-2 sentence follow-up in "message". Reference the context naturally.
+- If should_send = false: message = null
+- NEVER use em dashes (the — character). Use commas or periods instead. This rule is absolute.
+- NEVER describe, explain, or pitch what Proxi does. Sound like a curious student, not a salesperson.
+- No filler phrases ("I hope this finds you well", "Just following up", "Just wanted to check in")
+- End the message body with a clear next step or question
+- After the message body, add a signoff on two separate lines: "Best," then the sender's first name on the next line
+- Output ONLY the email body text in the "message" field. No subject line, no "Dear X"`,
     userMessage: `Lead: ${contactName} at ${companyName}
 
 Recent thread (oldest first):
@@ -76,8 +118,20 @@ Should I follow up?`,
 }
 
 export async function runAutoFollowup(): Promise<AutoFollowupResult> {
-  const result: AutoFollowupResult = { processed: 0, sent: 0, skipped: 0, errors: [] };
+  const result: AutoFollowupResult = {
+    processed: 0,
+    sent: 0,
+    skipped: 0,
+    skipped_reasons: {},
+    errors: [],
+  };
   const supabase = createAdminClient();
+
+  // ── Guard 1: Business hours only ──────────────────────────────────────────
+  if (!isWithinSendingWindow()) {
+    result.skipped_reasons['outside_business_hours'] = 1;
+    return result;
+  }
 
   const cutoff = new Date(Date.now() - FOLLOWUP_HOURS * 60 * 60 * 1000).toISOString();
 
@@ -101,6 +155,22 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
     result.processed++;
 
     try {
+      // ── Guard 2: Max consecutive outbound (original + 1 follow-up) ────────
+      const allowed = await canSendOutbound(lead.id);
+      if (!allowed) {
+        result.skipped++;
+        result.skipped_reasons['max_consecutive_outbound'] = (result.skipped_reasons['max_consecutive_outbound'] || 0) + 1;
+        continue;
+      }
+
+      // ── Guard 3: Minimum 48h gap from ANY last outbound ──────────────────
+      const gapOk = await hasMinimumGap(lead.id);
+      if (!gapOk) {
+        result.skipped++;
+        result.skipped_reasons['min_gap_not_met'] = (result.skipped_reasons['min_gap_not_met'] || 0) + 1;
+        continue;
+      }
+
       const { data: recentInteractions } = await supabase
         .from('interactions')
         .select('id, type, subject, body, gmail_message_id, gmail_thread_id, occurred_at')
@@ -156,6 +226,10 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
         continue;
       }
 
+      // ── Post-process: scrub dashes + enforce signoff ────────────────────
+      const firstName = (member.name || 'Adit').trim().split(/\s+/)[0];
+      const scrubbed = ensureSignoff(scrubDashes(decision.message), firstName);
+
       const lastInbound = recentInteractions.find(i => i.type === 'email_inbound');
       const inReplyToMessageId = lastInbound?.gmail_message_id
         ? `<${lastInbound.gmail_message_id}@gmail.com>`
@@ -172,7 +246,7 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
         threadId,
         to: lead.contact_email,
         subject: threadSubject,
-        body: decision.message,
+        body: scrubbed,
         inReplyToMessageId,
       });
 
@@ -183,7 +257,7 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
         team_member_id: member.id,
         type: 'email_outbound',
         subject: threadSubject,
-        body: decision.message,
+        body: scrubbed,
         gmail_message_id: sentMessageId || undefined,
         gmail_thread_id: threadId,
         occurred_at: now,
@@ -197,7 +271,7 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
         status: 'sent',
         due_at: now,
         sent_at: now,
-        suggested_message: decision.message,
+        suggested_message: scrubbed,
         gmail_thread_id: threadId,
       });
 

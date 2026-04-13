@@ -69,7 +69,12 @@ TONE RULES (strict, apply to every message you write):
 - 2 to 4 sentences maximum. Shorter is better.
 - Plain text only. No bullets, no headers, no bold, no emoji.
 - Contractions are fine ("I'd", "we're", "it'd").
-- ALWAYS sign off. The final line of every message MUST be the sender's first name alone on its own line. No "Best," or "Thanks,". If you forget the signoff the message is invalid.`;
+- ALWAYS sign off with exactly two lines at the end: "Best," on one line, then the sender's first name on the next line. Nothing else. Example:
+
+Best,
+Adit
+
+If you forget the signoff the message is invalid.`;
 
 function buildUserMessage(opts: ClassifyFirstReplyOptions): string {
   const role = opts.contactRole ? `${opts.contactRole} at ${opts.companyName}` : opts.companyName;
@@ -201,6 +206,20 @@ function ensureSignoff(message: string, firstName: string): string {
   const trimmed = message.trimEnd();
   const lines = trimmed.split('\n');
   const lastLine = lines[lines.length - 1]?.trim() ?? '';
-  if (lastLine === firstName) return trimmed;
-  return `${trimmed}\n\n${firstName}`;
+
+  // Already has "Best,\nName"
+  if (lastLine === firstName) {
+    const secondLast = lines[lines.length - 2]?.trim() ?? '';
+    if (secondLast === 'Best,') return trimmed;
+    lines.splice(lines.length - 1, 0, 'Best,');
+    return lines.join('\n');
+  }
+
+  // "Best, Name" on one line
+  if (lastLine.toLowerCase().startsWith('best,')) {
+    lines.pop();
+    return `${lines.join('\n').trimEnd()}\n\nBest,\n${firstName}`;
+  }
+
+  return `${trimmed}\n\nBest,\n${firstName}`;
 }

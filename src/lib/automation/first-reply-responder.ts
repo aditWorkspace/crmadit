@@ -5,6 +5,7 @@ import { classifyFirstReply, type FirstReplyClassification } from '@/lib/ai/firs
 import { changeStage } from '@/lib/automation/stage-logic';
 import { BOOKING_URL } from '@/lib/constants';
 import type { FirstReplyDecision } from '@/lib/validation';
+import { isWithinSendingWindow, hasMinimumGap } from './send-guards';
 
 // Cap how many leads we process per cron run. At 3-user scale this is
 // effectively unbounded but it bounds the worst case if something pathological
@@ -52,15 +53,37 @@ function scrubDashes(s: string): string {
     .trim();
 }
 
-// Belt-and-suspenders: if the model drops the signoff (observed ~10% on long
-// async_request outputs even with the prompt rule), append it. Idempotent.
-function ensureSignoff(message: string, firstName: string): string {
+// Enforce proper "Best,\nName" signoff on separate lines. Handles cases where
+// the AI drops the signoff entirely, uses "Best, Name" on one line, or has
+// just the name without "Best,".
+function ensureBestSignoff(message: string, firstName: string): string {
   const trimmed = message.trimEnd();
   const lines = trimmed.split('\n');
   const lastLine = lines[lines.length - 1]?.trim() ?? '';
-  if (lastLine === firstName) return trimmed;
-  // If last line is anything else (question mark, period, etc), append signoff.
-  return `${trimmed}\n\n${firstName}`;
+
+  // Already has "Best,\nName" — perfect
+  if (lastLine === firstName) {
+    const secondLast = lines[lines.length - 2]?.trim() ?? '';
+    if (secondLast === 'Best,') return trimmed;
+    // Has name but no "Best," — insert it
+    lines.splice(lines.length - 1, 0, 'Best,');
+    return lines.join('\n');
+  }
+
+  // Strip trailing "Best, Name" on one line (AI sometimes does this)
+  if (lastLine.toLowerCase().startsWith('best,')) {
+    lines.pop();
+    return `${lines.join('\n').trimEnd()}\n\nBest,\n${firstName}`;
+  }
+
+  // Strip trailing "Thanks," / "Cheers," / just name variants
+  const casualSignoffs = ['thanks,', 'thanks', 'cheers,', 'cheers'];
+  if (casualSignoffs.includes(lastLine.toLowerCase())) {
+    lines.pop();
+    return `${lines.join('\n').trimEnd()}\n\nBest,\n${firstName}`;
+  }
+
+  return `${trimmed}\n\nBest,\n${firstName}`;
 }
 
 function firstNameOf(fullName: string | null | undefined): string {
@@ -106,6 +129,13 @@ export async function runFirstReplyAutoResponder(
     errors: [],
     details: dryRun ? [] : undefined,
   };
+
+  // Guard: only send during business hours (9 AM – 6 PM PT, weekdays).
+  // Manual reviews still get created, but no emails go out at 2 AM.
+  if (!dryRun && !isWithinSendingWindow()) {
+    return result;
+  }
+
   const supabase = createAdminClient();
 
   // Phase 1: Find candidates. The partial index on (stage, auto_replied_to_first,
@@ -276,9 +306,19 @@ export async function runFirstReplyAutoResponder(
       switch (decision.classification) {
         case 'positive_book':
         case 'async_request': {
+          // Guard: don't send if we sent another outbound <48h ago (cross-system)
+          if (!dryRun) {
+            const gapOk = await hasMinimumGap(lead.id);
+            if (!gapOk) {
+              result.skipped++;
+              recordDetail(result, lead.id, decision.classification, 'min_gap_not_met', 'skipped');
+              continue;
+            }
+          }
+
           const firstName = firstNameOf(owner.name);
           const withSignoff = decision.message
-            ? ensureSignoff(scrubDashes(decision.message), firstName)
+            ? ensureBestSignoff(scrubDashes(decision.message), firstName)
             : null;
           const scrubbed = withSignoff;
           if (!scrubbed) {
