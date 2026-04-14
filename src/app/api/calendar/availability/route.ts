@@ -60,39 +60,38 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Build 30-min slots across the full range.
-  // busyCount = members who are confirmed busy OR whose status is unknown (failed fetch).
-  // Slot is bookable when busyCount <= 1 (i.e. ≥2 confirmed free).
+  // Build slots across the full range. Default 30-min intervals; pass
+  // ?interval=15 for 15-min increments (used for 10-min meetings).
   const bookingOnly = req.nextUrl.searchParams.get('bookingOnly') === 'true';
+  const intervalParam = parseInt(req.nextUrl.searchParams.get('interval') || '30', 10);
+  const intervalMs = ([15, 30].includes(intervalParam) ? intervalParam : 30) * 60 * 1000;
   const slots: { start: string; end: string; busyCount: number }[] = [];
   const nowMs = Date.now();
   const cursor = new Date(timeMin);
   while (cursor < timeMax) {
-    const slotEnd = new Date(cursor.getTime() + 30 * 60 * 1000);
+    const slotEnd = new Date(cursor.getTime() + intervalMs);
 
     // When bookingOnly: skip non-bookable slots entirely (nights, weekends,
     // past, outside 9:30am-5pm PT).
     if (bookingOnly) {
       const ptDay = cursor.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short' });
-      if (ptDay === 'Sat' || ptDay === 'Sun') { cursor.setTime(cursor.getTime() + 30 * 60 * 1000); continue; }
-      if (cursor.getTime() < nowMs) { cursor.setTime(cursor.getTime() + 30 * 60 * 1000); continue; }
+      if (ptDay === 'Sat' || ptDay === 'Sun') { cursor.setTime(cursor.getTime() + intervalMs); continue; }
+      if (cursor.getTime() < nowMs) { cursor.setTime(cursor.getTime() + intervalMs); continue; }
       const ptH = parseInt(cursor.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false }));
       const ptM = parseInt(cursor.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', minute: '2-digit' }));
       const afterEarliest = ptH > 9 || (ptH === 9 && ptM >= 30);
       const beforeLatest = ptH < 17;
-      if (!afterEarliest || !beforeLatest) { cursor.setTime(cursor.getTime() + 30 * 60 * 1000); continue; }
+      if (!afterEarliest || !beforeLatest) { cursor.setTime(cursor.getTime() + intervalMs); continue; }
     }
 
     const busyCount = (members ?? []).filter(m => {
-      // Member whose freebusy fetch failed → treat as busy (fail-closed)
       if (!fetchedMemberIds.has(m.id)) return true;
-      // Member with confirmed freebusy → check if they overlap this slot
       return overlaps(cursor, slotEnd, busyByMember[m.id]);
     }).length;
 
     // When bookingOnly: also skip slots where not enough people are free
     if (bookingOnly && busyCount > 1) {
-      cursor.setTime(cursor.getTime() + 30 * 60 * 1000);
+      cursor.setTime(cursor.getTime() + intervalMs);
       continue;
     }
 
@@ -101,7 +100,7 @@ export async function GET(req: NextRequest) {
       end: slotEnd.toISOString(),
       busyCount,
     });
-    cursor.setTime(cursor.getTime() + 30 * 60 * 1000);
+    cursor.setTime(cursor.getTime() + intervalMs);
   }
 
   // Fetch events for the requesting member to classify and enrich

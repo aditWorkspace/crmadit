@@ -80,8 +80,10 @@ export default function BookPage() {
     if (tz) setUserTz(tz);
   }, []);
 
+  const interval = duration === 10 ? 15 : 30;
+
   const fetchSlots = useCallback(async () => {
-    const monthKey = format(month, 'yyyy-MM');
+    const monthKey = `${format(month, 'yyyy-MM')}_${interval}`;
     const cached = slotCache.get(monthKey);
     if (cached) {
       setSlots(cached);
@@ -92,7 +94,7 @@ export default function BookPage() {
       const start = startOfMonth(month);
       const end = endOfMonth(addMonths(month, 1));
       const res = await fetch(
-        `/api/calendar/availability?start=${start.toISOString()}&end=${end.toISOString()}&bookingOnly=true`
+        `/api/calendar/availability?start=${start.toISOString()}&end=${end.toISOString()}&bookingOnly=true&interval=${interval}`
       );
       const data = await res.json();
       const newSlots = data.slots ?? [];
@@ -106,7 +108,7 @@ export default function BookPage() {
     } finally {
       setLoadingSlots(false);
     }
-  }, [month, slotCache]);
+  }, [month, interval, slotCache]);
 
   useEffect(() => { fetchSlots(); }, [fetchSlots]);
 
@@ -192,7 +194,7 @@ export default function BookPage() {
             {DURATION_OPTIONS.map(opt => (
               <button
                 key={opt.value}
-                onClick={() => setDuration(opt.value)}
+                onClick={() => { setDuration(opt.value); setSelectedSlot(null); }}
                 className={cn(
                   'px-3 py-1 rounded-md text-sm font-medium transition-colors',
                   duration === opt.value
