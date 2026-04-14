@@ -11,7 +11,7 @@ interface Slot {
 interface TimeSlotListProps {
   slots: Slot[];
   selectedSlot: string | null;
-  durationMinutes: 20 | 30;
+  durationMinutes: 10 | 20 | 30;
   timezone: string; // IANA timezone string from visitor's browser
   onSelect: (start: string) => void;
 }

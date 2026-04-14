@@ -5,7 +5,7 @@ import { Loader2, ArrowLeft } from 'lucide-react';
 
 interface BookingFormProps {
   startTime: string;
-  durationMinutes: 20 | 30;
+  durationMinutes: 10 | 20 | 30;
   timezone: string;
   onBack: () => void;
   onConfirm: (data: { name: string; email: string; note: string }) => Promise<void>;

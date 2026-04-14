@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
 
   const { name, email, startTime, durationMinutes, note } = body;
 
-  if (!name?.trim() || !email?.trim() || !startTime || ![20, 30].includes(durationMinutes)) {
+  if (!name?.trim() || !email?.trim() || !startTime || ![10, 20, 30].includes(durationMinutes)) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
