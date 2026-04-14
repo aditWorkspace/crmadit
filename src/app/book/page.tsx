@@ -182,9 +182,9 @@ export default function BookPage() {
           <div className="h-10 w-10 rounded-full bg-gray-700 flex items-center justify-center text-white font-semibold text-sm mb-4">
             P
           </div>
-          <p className="text-gray-400 text-xs font-medium mb-1">Proxi AI</p>
-          <h1 className="text-xl font-bold text-white mb-2">Quick call</h1>
-          <p className="text-gray-400 text-sm mb-6">Chat with the Proxi team about your product workflows.</p>
+          <p className="text-gray-400 text-xs font-medium mb-1">Adit, Srijay & Asim</p>
+          <h1 className="text-xl font-bold text-white mb-2">Quick chat</h1>
+          <p className="text-gray-400 text-sm mb-6">We're curious about how you think about prioritization and workflows. Would love to learn from you.</p>
 
           <div className="flex items-center gap-1.5 mb-5">
             <span className="text-gray-500 text-xs mr-1">⏱</span>
@@ -310,7 +310,7 @@ export default function BookPage() {
       </div>
 
       <div className="fixed bottom-4 left-0 right-0 text-center text-xs text-gray-600">
-        Proxi AI · Internal scheduling
+        Berkeley founders · Scheduling
       </div>
     </div>
   );

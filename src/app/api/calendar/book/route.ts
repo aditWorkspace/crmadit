@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
   const allEmails = [...new Set([...founderEmails, email])];
 
   const event = await createMeetingEvent(freeMembers[0].id, {
-    summary: `Quick call — ${name.trim()} × Proxi AI`,
+    summary: `Quick chat — ${name.trim()} × Adit, Srijay & Asim`,
     description: note?.trim()
       ? `Booking note: ${note.trim()}\n\nsource:proxi_crm`
       : 'source:proxi_crm',
@@ -149,13 +149,13 @@ export async function POST(req: NextRequest) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'Proxi AI <onboarding@resend.dev>',
+        from: 'Adit & Team <onboarding@resend.dev>',
         to: [email],
-        subject: `Confirmed: Quick call with Proxi AI — ${formattedDate}`,
+        subject: `Confirmed: Quick chat — ${formattedDate}`,
         html: `
 <div style="font-family:sans-serif;max-width:480px;margin:0 auto;color:#111;">
   <h2 style="font-size:20px;font-weight:700;margin-bottom:4px;">You're confirmed!</h2>
-  <p style="color:#666;margin-top:0;">Your call with Proxi AI is scheduled.</p>
+  <p style="color:#666;margin-top:0;">Your chat is scheduled. Looking forward to it!</p>
 
   <div style="background:#f9f9f9;border:1px solid #e5e5e5;border-radius:10px;padding:16px;margin:20px 0;">
     <p style="margin:0 0 8px;font-size:14px;"><strong>When:</strong> ${formattedDate} at ${formattedTime} PT</p>
@@ -166,7 +166,7 @@ export async function POST(req: NextRequest) {
   ${meetSection}
 
   <p style="font-size:13px;color:#888;margin-top:24px;">A calendar invite has also been sent to your email. All times are in Pacific Time (PT).</p>
-  <p style="font-size:13px;color:#aaa;">— The Proxi AI team</p>
+  <p style="font-size:13px;color:#aaa;">— Adit, Srijay & Asim</p>
 </div>`,
       }),
     }).catch(() => { /* non-fatal — calendar invite still sent */ });
@@ -189,7 +189,7 @@ export async function POST(req: NextRequest) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          from: 'Proxi AI <onboarding@resend.dev>',
+          from: 'Adit & Team <onboarding@resend.dev>',
           to: founderEmailList,
           subject: `New call booked: ${name.trim()} on ${formattedDate}`,
           html: `
@@ -207,7 +207,7 @@ export async function POST(req: NextRequest) {
 
   ${founderMeetSection}
 
-  <p style="font-size:13px;color:#aaa;">— Proxi CRM</p>
+  <p style="font-size:13px;color:#aaa;">— Adit, Srijay & Asim</p>
 </div>`,
         }),
       }).catch(() => { /* non-fatal */ });
