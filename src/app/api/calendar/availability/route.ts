@@ -71,7 +71,7 @@ export async function GET(req: NextRequest) {
     const slotEnd = new Date(cursor.getTime() + 30 * 60 * 1000);
 
     // When bookingOnly: skip non-bookable slots entirely (nights, weekends,
-    // past, outside 9:30am-2pm PT). Cuts payload from ~2900 to ~200 slots.
+    // past, outside 9:30am-5pm PT).
     if (bookingOnly) {
       const ptDay = cursor.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short' });
       if (ptDay === 'Sat' || ptDay === 'Sun') { cursor.setTime(cursor.getTime() + 30 * 60 * 1000); continue; }
@@ -79,7 +79,7 @@ export async function GET(req: NextRequest) {
       const ptH = parseInt(cursor.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false }));
       const ptM = parseInt(cursor.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', minute: '2-digit' }));
       const afterEarliest = ptH > 9 || (ptH === 9 && ptM >= 30);
-      const beforeLatest = ptH < 14 || (ptH === 14 && ptM === 0);
+      const beforeLatest = ptH < 17;
       if (!afterEarliest || !beforeLatest) { cursor.setTime(cursor.getTime() + 30 * 60 * 1000); continue; }
     }
 

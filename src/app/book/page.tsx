@@ -44,12 +44,12 @@ function getPTMinute(iso: string): number {
   );
 }
 
-/** Earliest slot: 9:30 AM PT. Last slot that can start: 2:00 PM PT (ends at 2:30 for 30m or 2:20 for 20m). */
+/** Earliest slot: 9:30 AM PT. Last slot that can start: 4:30 PM PT (ends at 5:00 PM). */
 function isBookableHour(iso: string): boolean {
   const h = getPTHour(iso);
   const m = getPTMinute(iso);
   const afterEarliest = h > 9 || (h === 9 && m >= 30);
-  const beforeLatest = h < 14 || (h === 14 && m === 0);
+  const beforeLatest = h < 17 || (h === 17 && m === 0);
   return afterEarliest && beforeLatest;
 }
 
