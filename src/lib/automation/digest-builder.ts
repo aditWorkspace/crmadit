@@ -451,3 +451,137 @@ function escHtml(str: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+// ── Phase 2c: @mention digest section (per recipient) ─────────────────────────
+
+interface MentionDigestRow {
+  notification_id: string;
+  comment_id: string;
+  gmail_thread_id: string;
+  author_name: string;
+  body: string;
+  created_at: string;
+}
+
+export interface MentionDigestSection {
+  rows: MentionDigestRow[];
+  notificationIds: string[];
+  html: string; // '' when rows.length === 0
+  text: string; // '' when rows.length === 0
+}
+
+function snippet(body: string, max = 180): string {
+  const trimmed = body.replace(/\s+/g, ' ').trim();
+  if (trimmed.length <= max) return trimmed;
+  return trimmed.slice(0, max - 1) + '…';
+}
+
+/**
+ * Build the mentions section for a single recipient — includes unread + not-yet-digested
+ * mention notifications. Returns empty html/text if no rows. Does NOT mark the rows
+ * as digested — call `markMentionsDigested(notificationIds)` only after the digest
+ * email is successfully sent.
+ */
+export async function getMentionDigestSection(
+  memberId: string
+): Promise<MentionDigestSection> {
+  const supabase = createAdminClient();
+
+  type RawRow = {
+    id: string;
+    comment_id: string;
+    gmail_thread_id: string;
+    created_at: string;
+    comment: {
+      body: string;
+      author: { name: string | null } | null;
+    } | null;
+  };
+
+  const { data, error } = await supabase
+    .from('mention_notifications')
+    .select(
+      `
+      id, comment_id, gmail_thread_id, created_at,
+      comment:thread_comments!mention_notifications_comment_id_fkey(
+        body,
+        author:team_members!thread_comments_author_id_fkey(name)
+      )
+      `
+    )
+    .eq('recipient_id', memberId)
+    .is('read_at', null)
+    .is('digested_at', null)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (error || !data) {
+    return { rows: [], notificationIds: [], html: '', text: '' };
+  }
+
+  const rawRows = data as unknown as RawRow[];
+  const rows: MentionDigestRow[] = rawRows
+    .filter((r) => r.comment !== null)
+    .map((r) => ({
+      notification_id: r.id,
+      comment_id: r.comment_id,
+      gmail_thread_id: r.gmail_thread_id,
+      author_name: r.comment?.author?.name ?? 'Someone',
+      body: r.comment?.body ?? '',
+      created_at: r.created_at,
+    }));
+
+  if (rows.length === 0) {
+    return { rows: [], notificationIds: [], html: '', text: '' };
+  }
+
+  const notificationIds = rows.map((r) => r.notification_id);
+
+  // Text section
+  const textLines: string[] = [`MENTIONS YOU HAVEN'T SEEN (${rows.length})`];
+  for (const r of rows) {
+    textLines.push(
+      `  • ${r.author_name}: ${snippet(r.body, 140)}  (thread ${r.gmail_thread_id})`
+    );
+  }
+  const text = textLines.join('\n');
+
+  // HTML section (matches existing section() helper style from buildDailyDigest)
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || '';
+  const items = rows
+    .map((r) => {
+      const link = appUrl
+        ? `${appUrl}/inbox?thread=${encodeURIComponent(r.gmail_thread_id)}`
+        : '';
+      const linkAttr = link ? ` href="${escHtml(link)}"` : '';
+      return `<li style="padding:4px 0;color:#374151;font-size:14px;">
+        <strong>${escHtml(r.author_name)}</strong> mentioned you —
+        <a${linkAttr} style="color:#6366f1;text-decoration:none;">
+          ${escHtml(snippet(r.body, 140))}
+        </a>
+      </li>`;
+    })
+    .join('');
+
+  const html = `
+    <div style="margin-bottom:24px;">
+      <h2 style="font-size:14px;font-weight:600;color:#374151;margin:0 0 8px;">Mentions you haven't seen (${rows.length})</h2>
+      <ul style="margin:0;padding-left:20px;list-style:disc;">${items}</ul>
+    </div>`;
+
+  return { rows, notificationIds, html, text };
+}
+
+/**
+ * Atomically mark a batch of mention notifications as digested — call only
+ * after the digest email is successfully sent so a failed send doesn't swallow
+ * the notifications.
+ */
+export async function markMentionsDigested(notificationIds: string[]): Promise<void> {
+  if (notificationIds.length === 0) return;
+  const supabase = createAdminClient();
+  await supabase
+    .from('mention_notifications')
+    .update({ digested_at: new Date().toISOString() })
+    .in('id', notificationIds);
+}

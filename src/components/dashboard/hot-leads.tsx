@@ -1,6 +1,6 @@
 'use client';
 
-import { Flame } from 'lucide-react';
+import { Flame } from '@/lib/icons';
 import { StageBadge } from '@/components/leads/stage-badge';
 import Link from 'next/link';
 import { LeadStage } from '@/types';

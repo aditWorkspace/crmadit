@@ -8,7 +8,7 @@ import { LeadStage } from '@/types';
 import {
   Send, Sparkles, Loader2, CheckCircle2, AlertTriangle,
   Search, Users, Mail, TestTube,
-} from 'lucide-react';
+} from '@/lib/icons';
 import { toast } from 'sonner';
 
 interface LeadOption {

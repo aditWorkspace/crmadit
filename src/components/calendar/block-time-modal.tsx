@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { X, Loader2, Ban } from 'lucide-react';
+import { X, Loader2, Ban } from '@/lib/icons';
 import { format, addDays } from 'date-fns';
 import { cn } from '@/lib/utils';
 

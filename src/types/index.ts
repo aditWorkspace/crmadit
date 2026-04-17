@@ -186,6 +186,8 @@ export interface FollowUp {
   reason?: string;
   suggested_message?: string;
   due_at: string;
+  scheduled_for?: string;
+  gmail_thread_id?: string;
   auto_send: boolean;
   sent_at?: string;
   completed_at?: string;

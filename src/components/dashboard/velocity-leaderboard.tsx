@@ -1,6 +1,6 @@
 'use client';
 
-import { Trophy, Minus } from 'lucide-react';
+import { Trophy, Minus } from '@/lib/icons';
 
 interface Entry {
   id: string;

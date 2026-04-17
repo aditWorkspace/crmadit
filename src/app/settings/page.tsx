@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSession } from '@/hooks/use-session';
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
-import { Mail, CheckCircle, XCircle, RefreshCw, Loader2, Calendar, KeyRound } from 'lucide-react';
+import { Mail, CheckCircle, XCircle, RefreshCw, Loader2, Calendar } from '@/lib/icons';
 
 interface MemberGmailStatus {
   id: string;
@@ -21,7 +21,6 @@ export default function SettingsPage() {
   const [syncing, setSyncing] = useState<string | null>(null);
   const [syncingCalendar, setSyncingCalendar] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
-  const [resettingPin, setResettingPin] = useState(false);
 
   const fetchMembers = useCallback(async () => {
     if (!user) return;
@@ -122,24 +121,6 @@ export default function SettingsPage() {
     }
   };
 
-  const handleResetPin = async (memberId: string) => {
-    if (!confirm('Reset PIN? The next login will require creating a new one.')) return;
-    setResettingPin(true);
-    try {
-      const res = await fetch('/api/auth/set-pin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-team-member-id': user!.team_member_id },
-        body: JSON.stringify({ member_id: memberId, pin: null, reset: true }),
-      });
-      if (!res.ok) throw new Error('Failed');
-      toast.success('PIN reset — next login will prompt to create a new one');
-    } catch {
-      toast.error('Failed to reset PIN');
-    } finally {
-      setResettingPin(false);
-    }
-  };
-
   const isCurrentUser = (memberId: string) => user?.team_member_id === memberId;
 
   if (loading) {
@@ -213,19 +194,6 @@ export default function SettingsPage() {
                       </>
                     )}
                   </div>
-
-                  {/* PIN reset — any founder can reset any other founder's PIN */}
-                  {!isSelf && (
-                    <button
-                      onClick={() => handleResetPin(member.id)}
-                      disabled={resettingPin}
-                      className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-lg px-2.5 py-1.5 hover:bg-gray-50 disabled:opacity-50 transition-colors flex-shrink-0"
-                      title="Reset PIN"
-                    >
-                      <KeyRound className="h-3 w-3" />
-                      Reset PIN
-                    </button>
-                  )}
 
                   {isSelf && (
                     <div className="flex items-center gap-2 flex-shrink-0">

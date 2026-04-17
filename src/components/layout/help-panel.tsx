@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { HelpCircle, X, ChevronDown, ChevronRight } from 'lucide-react';
+import { HelpCircle, X, ChevronDown, ChevronRight } from '@/lib/icons';
 
 const GLOSSARY: { term: string; definition: string; example?: string }[] = [
   {

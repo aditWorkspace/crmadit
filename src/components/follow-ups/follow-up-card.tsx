@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Clock, CheckCheck, X, ChevronDown, Copy, AlertCircle } from 'lucide-react';
+import { Clock, CheckCheck, X, ChevronDown, Copy, AlertCircle } from '@/lib/icons';
 import Link from 'next/link';
 
 interface FollowUpCardProps {

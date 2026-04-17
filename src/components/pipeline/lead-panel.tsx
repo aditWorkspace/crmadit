@@ -10,12 +10,13 @@ import { LeadTimeline } from '@/components/leads/lead-timeline';
 import { ActionItemList } from '@/components/action-items/action-item-list';
 import { InlineEdit } from '@/components/leads/inline-edit';
 import { ComposeBar } from './compose-bar';
+import { buildGmailThreadUrl } from '@/lib/gmail/url';
 import { toast } from 'sonner';
 import {
   X, ChevronRight, Flame, ExternalLink, Mail, Link2,
   Sparkles, Loader2, Trash2, FileText, Upload, ChevronDown,
   ChevronUp, AlertCircle, CheckCircle2, Clock, Tag, BookOpen, RefreshCw,
-} from 'lucide-react';
+} from '@/lib/icons';
 import Link from 'next/link';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -802,6 +803,22 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
               <button onClick={handleSuggestAction} disabled={suggestingAction} title="AI suggested action" className="text-gray-300 hover:text-amber-500 transition-colors disabled:opacity-40">
                 {suggestingAction ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               </button>
+
+              {/* Open in Gmail */}
+              {(() => {
+                const gmailUrl = buildGmailThreadUrl(latestThread?.gmail_thread_id, user?.name);
+                return gmailUrl ? (
+                  <a
+                    href={gmailUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open thread in Gmail"
+                    className="text-gray-300 hover:text-blue-600 transition-colors"
+                  >
+                    <Mail className="h-4 w-4" />
+                  </a>
+                ) : null;
+              })()}
 
               {/* Full page link */}
               <Link href={`/leads/${leadId}`} className="text-gray-300 hover:text-gray-600 transition-colors" title="Open full page">

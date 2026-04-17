@@ -4,7 +4,7 @@ import { FollowUp } from '@/types';
 import { formatRelativeTime, cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useSession } from '@/hooks/use-session';
-import { Copy, CheckCheck, Clock, Phone, PhoneOff, Upload, MessageCircle } from 'lucide-react';
+import { Copy, CheckCheck, Clock, Phone, PhoneOff, Upload, MessageCircle } from '@/lib/icons';
 import Link from 'next/link';
 
 interface PendingFollowupsProps {

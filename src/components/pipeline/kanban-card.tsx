@@ -7,7 +7,7 @@ import { Lead, LeadStage } from '@/types';
 import { PRIORITY_COLORS, STALE_THRESHOLDS } from '@/lib/constants';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { differenceInHours } from 'date-fns';
-import { Flame } from 'lucide-react';
+import { Flame } from '@/lib/icons';
 
 interface KanbanCardProps {
   lead: Lead;

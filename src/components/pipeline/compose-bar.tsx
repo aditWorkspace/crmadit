@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
-import { Send, Sparkles, ChevronDown, Loader2 } from 'lucide-react';
+import { Send, Sparkles, ChevronDown, Loader2 } from '@/lib/icons';
 import { cn } from '@/lib/utils';
 
 interface ConnectedMember { id: string; name: string; email: string; }

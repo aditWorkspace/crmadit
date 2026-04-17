@@ -5,7 +5,7 @@ import { Lead, TeamMember } from '@/types';
 import { InlineEdit } from './inline-edit';
 import { PRIORITY_LABELS, PRIORITY_COLORS } from '@/lib/constants';
 import { cn } from '@/lib/utils';
-import { ExternalLink, X } from 'lucide-react';
+import { ExternalLink, X } from '@/lib/icons';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';

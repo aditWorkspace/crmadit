@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
 import { sendReplyInThread, getOtherFounderEmails } from '@/lib/gmail/send';
+import { cancelQueuedAutoSendForLead } from '@/lib/automation/cancel-queued-autosend';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSessionFromRequest(req);
@@ -82,6 +83,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   await supabase.from('leads').update({ last_contact_at: now }).eq('id', id);
+
+  await cancelQueuedAutoSendForLead(
+    id,
+    'Cancelled: manual reply sent',
+    supabase,
+  );
 
   return NextResponse.json({ sent: true, interaction });
 }

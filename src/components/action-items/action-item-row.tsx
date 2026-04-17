@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { ActionItem, TeamMember } from '@/types';
 import { formatDate, cn } from '@/lib/utils';
-import { Trash2, Calendar } from 'lucide-react';
+import { Trash2, Calendar } from '@/lib/icons';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,

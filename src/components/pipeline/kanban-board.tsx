@@ -21,7 +21,7 @@ import { useLeadRealtime } from '@/hooks/use-realtime';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import { SkeletonKanban } from '@/components/ui/skeleton-cards';
 import { LeadFormModal } from '@/components/leads/lead-form';
-import { Kanban } from 'lucide-react';
+import { Kanban } from '@/lib/icons';
 import { Button } from '@/components/ui/button';
 
 // Kanban shows all active stages except paused (it's in ACTIVE_STAGES but not useful in Kanban)

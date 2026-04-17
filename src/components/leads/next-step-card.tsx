@@ -9,7 +9,7 @@ import {
   Send,
   PhoneCall,
   CalendarCheck,
-} from 'lucide-react';
+} from '@/lib/icons';
 import Link from 'next/link';
 import { toast } from 'sonner';
 

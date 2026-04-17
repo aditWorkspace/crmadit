@@ -1,7 +1,7 @@
 'use client';
 
 import { useDroppable } from '@dnd-kit/core';
-import { Download } from 'lucide-react';
+import { Download } from '@/lib/icons';
 import { Lead, LeadStage } from '@/types';
 import { STAGE_LABELS, STAGE_DOT_COLORS } from '@/lib/constants';
 import { KanbanCard } from './kanban-card';

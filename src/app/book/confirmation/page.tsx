@@ -2,7 +2,7 @@
 
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { CheckCircle, Video, Calendar, RefreshCw } from 'lucide-react';
+import { CheckCircle, Video, Calendar, RefreshCw } from '@/lib/icons';
 
 function ConfirmationContent() {
   const params = useSearchParams();

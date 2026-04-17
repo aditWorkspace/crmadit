@@ -9,7 +9,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { RelativeTime } from '@/components/ui/relative-time';
 import { SkeletonCards } from '@/components/ui/skeleton-cards';
-import { Clock, CheckCheck, Bell } from 'lucide-react';
+import { Clock, CheckCheck, Bell } from '@/lib/icons';
+import { QueuedAutoSendPanel } from '@/components/follow-ups/queued-autosend-panel';
 
 export default function FollowUpsPage() {
   const { user } = useSession();
@@ -80,6 +81,8 @@ export default function FollowUpsPage() {
       </div>
 
       <div className="flex-1 overflow-auto px-4 md:px-8 py-6">
+        <div className="flex flex-col lg:flex-row lg:items-start gap-6">
+          <div className="flex-1 min-w-0">
         <Tabs defaultValue="pending">
           <TabsList className="mb-6">
             <TabsTrigger value="pending" className="gap-2">
@@ -142,6 +145,9 @@ export default function FollowUpsPage() {
             )}
           </TabsContent>
         </Tabs>
+          </div>
+          <QueuedAutoSendPanel />
+        </div>
       </div>
     </div>
   );

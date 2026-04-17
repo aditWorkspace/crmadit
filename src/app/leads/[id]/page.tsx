@@ -20,7 +20,8 @@ import { NextStepCard } from '@/components/leads/next-step-card';
 import { MeetingPrep } from '@/components/leads/meeting-prep';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { ArrowLeft, Flame, Upload, Mail, CalendarPlus, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, Flame, Upload, Mail, CalendarPlus, Sparkles, X, ExternalLink } from '@/lib/icons';
+import { buildGmailThreadUrl } from '@/lib/gmail/url';
 import Link from 'next/link';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -350,6 +351,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
               {(() => {
                 const latestThread = interactions.find(i => i.gmail_thread_id);
                 const isPostCallStage = ['call_completed', 'demo_sent', 'feedback_call', 'active_user'].includes(lead.stage);
+                const gmailUrl = latestThread ? buildGmailThreadUrl(latestThread.gmail_thread_id, user?.name) : null;
                 return latestThread ? (
                   <div className="flex items-center gap-2">
                     {isPostCallStage && (
@@ -361,6 +363,18 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                         <Sparkles className={`h-3.5 w-3.5 ${draftingPostCall ? 'animate-pulse' : ''}`} />
                         {draftingPostCall ? 'Drafting...' : 'Post-Call Draft'}
                       </button>
+                    )}
+                    {gmailUrl && (
+                      <a
+                        href={gmailUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Open this thread in Gmail"
+                        className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded-md px-2.5 py-1 hover:border-gray-300 transition-colors"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        Open in Gmail
+                      </a>
                     )}
                     <button
                       onClick={() => setComposeThread({ threadId: latestThread.gmail_thread_id!, subject: latestThread.subject || '' })}

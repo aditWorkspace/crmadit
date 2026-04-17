@@ -5,7 +5,7 @@ import { ActionItem, TeamMember } from '@/types';
 import { ActionItemRow } from './action-item-row';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Plus } from 'lucide-react';
+import { Plus } from '@/lib/icons';
 
 interface ActionItemListProps {
   leadId: string;

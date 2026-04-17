@@ -10,7 +10,7 @@ import { SpeedScorecard } from '@/components/dashboard/speed-scorecard';
 import { VelocityLeaderboard } from '@/components/dashboard/velocity-leaderboard';
 import { PipelineOverview } from '@/components/dashboard/pipeline-overview';
 import { ActivityFeed } from '@/components/dashboard/activity-feed';
-import { Loader2, LayoutDashboard } from 'lucide-react';
+import { Loader2, LayoutDashboard } from '@/lib/icons';
 
 interface DashboardData {
   action_items: unknown[];

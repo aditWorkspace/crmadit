@@ -6,7 +6,7 @@ import { format } from 'date-fns';
 import { useSession } from '@/hooks/use-session';
 import { AvailabilityGrid, CalendarEvent } from '@/components/calendar/availability-grid';
 import { UpcomingCalls } from '@/components/calendar/upcoming-calls';
-import { ChevronLeft, ChevronRight, RefreshCw, Loader2, ExternalLink, CalendarDays, Calendar as CalendarIcon, Ban } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Loader2, ExternalLink, CalendarDays, Calendar as CalendarIcon, Ban } from '@/lib/icons';
 import { BlockTimeModal } from '@/components/calendar/block-time-modal';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus } from '@/lib/icons';
 import { LeadFormModal } from './lead-form';
 
 interface QuickAddFabProps {

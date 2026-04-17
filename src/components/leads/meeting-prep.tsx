@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Lead } from '@/types';
-import { BookOpen, Clock, Loader2, RefreshCw } from 'lucide-react';
+import { BookOpen, Clock, Loader2, RefreshCw } from '@/lib/icons';
 import ReactMarkdown from 'react-markdown';
 
 export function MeetingPrep({ lead, headers }: { lead: Lead; headers: Record<string, string> }) {

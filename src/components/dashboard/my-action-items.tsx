@@ -5,7 +5,7 @@ import { formatDate, cn } from '@/lib/utils';
 import { useSession } from '@/hooks/use-session';
 import { toast } from 'sonner';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Upload } from 'lucide-react';
+import { Upload } from '@/lib/icons';
 import Link from 'next/link';
 
 interface MyActionItemsProps {

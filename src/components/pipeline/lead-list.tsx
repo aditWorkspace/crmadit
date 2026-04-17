@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils';
 import { stripHtml } from '@/lib/utils';
 import { STAGE_LABELS, STAGE_COLORS, STALE_THRESHOLDS, PRIORITY_COLORS } from '@/lib/constants';
 import { LeadStage, Priority } from '@/types';
-import { AlertCircle, Phone, Clock, Users, Repeat, ArrowUpRight, ArrowDownLeft, Search } from 'lucide-react';
+import { AlertCircle, Phone, Clock, Users, Repeat, ArrowUpRight, ArrowDownLeft, Search } from '@/lib/icons';
 import { useState, useMemo } from 'react';
 
 export interface PipelineLead {

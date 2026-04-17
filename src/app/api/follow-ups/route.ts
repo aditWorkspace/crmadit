@@ -10,6 +10,7 @@ export async function GET(req: NextRequest) {
   const status = searchParams.get('status'); // 'pending', 'sent', 'completed', 'dismissed'
   const assignedTo = searchParams.get('assigned_to');
   const leadId = searchParams.get('lead_id');
+  const queue = searchParams.get('queue'); // 'auto_send' → upcoming auto-sends only
 
   const supabase = createAdminClient();
   let query = supabase
@@ -17,9 +18,17 @@ export async function GET(req: NextRequest) {
     .select(`
       *,
       lead:leads(id, contact_name, company_name, stage),
-      assigned_member:team_members(id, name)
-    `)
-    .order('due_at', { ascending: true });
+      assigned_member:team_members(id, name, email)
+    `);
+
+  if (queue === 'auto_send') {
+    query = query
+      .eq('auto_send', true)
+      .eq('status', 'pending')
+      .order('scheduled_for', { ascending: true, nullsFirst: false });
+  } else {
+    query = query.order('due_at', { ascending: true });
+  }
 
   if (status) query = query.eq('status', status);
   if (assignedTo) query = query.eq('assigned_to', assignedTo);
@@ -52,7 +61,7 @@ export async function POST(req: NextRequest) {
       auto_send: auto_send ?? false,
       status: 'pending',
     })
-    .select('*, lead:leads(id, contact_name, company_name, stage), assigned_member:team_members(id, name)')
+    .select('*, lead:leads(id, contact_name, company_name, stage), assigned_member:team_members(id, name, email)')
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

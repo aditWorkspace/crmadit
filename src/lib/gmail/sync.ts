@@ -8,6 +8,7 @@ import { callAI } from '@/lib/ai/openrouter';
 import { QWEN_FREE_MODEL, STAGE_ORDER } from '@/lib/constants';
 import { classifySchedulingIntent } from './scheduling-classifier';
 import { normalizeName } from '@/lib/name-utils';
+import { cancelQueuedAutoSendForLead } from '@/lib/automation/cancel-queued-autosend';
 
 /** Returns true if `proposed` stage is forward from `current` in the pipeline. */
 function isForwardStage(current: string, proposed: string): boolean {
@@ -629,7 +630,16 @@ async function upsertInteraction(
 
   // 23505 = unique_violation on gmail_message_id — expected deduplication
   if (!error || (error as { code?: string }).code === '23505') {
-    if (!error) result.synced++;
+    if (!error) {
+      result.synced++;
+      if (data.type === 'email_inbound') {
+        await cancelQueuedAutoSendForLead(
+          data.lead_id,
+          'Cancelled: prospect replied before scheduled send',
+          supabase,
+        );
+      }
+    }
   } else {
     throw new Error(error.message);
   }

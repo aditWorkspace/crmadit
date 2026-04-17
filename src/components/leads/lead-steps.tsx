@@ -3,7 +3,7 @@
 import { Lead, LeadStage } from '@/types';
 import { ACTIVE_STAGES, STAGE_LABELS } from '@/lib/constants';
 import { formatDate, cn } from '@/lib/utils';
-import { Check } from 'lucide-react';
+import { Check } from '@/lib/icons';
 
 interface LeadStepsProps {
   lead: Lead;

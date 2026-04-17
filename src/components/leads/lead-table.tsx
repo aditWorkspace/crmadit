@@ -38,7 +38,7 @@ import {
   Users,
   BellOff,
   Clock,
-} from 'lucide-react';
+} from '@/lib/icons';
 
 type Preset = 'all' | 'my_leads' | 'awaiting_response' | 'awaiting_demo' | 'stale' | 'calls' | 'snoozed';
 type SortDir = 'asc' | 'desc';

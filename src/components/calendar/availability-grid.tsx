@@ -3,7 +3,7 @@
 import { useMemo, useState, useRef, useEffect } from 'react';
 import { format, addDays, isToday } from 'date-fns';
 import { cn } from '@/lib/utils';
-import { Video, ExternalLink, User, Building2, Clock } from 'lucide-react';
+import { Video, ExternalLink, User, Building2, Clock } from '@/lib/icons';
 import Link from 'next/link';
 
 interface Slot {

@@ -8,7 +8,7 @@ import {
   startOfWeek, addDays, isSameMonth, isToday, isBefore, startOfDay,
   format, isSameDay, parseISO
 } from 'date-fns';
-import { ChevronLeft, ChevronRight, Video, Globe } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Video, Globe } from '@/lib/icons';
 import { cn } from '@/lib/utils';
 import { TimeSlotList } from '@/components/calendar/time-slot-list';
 import { BookingForm } from '@/components/calendar/booking-form';

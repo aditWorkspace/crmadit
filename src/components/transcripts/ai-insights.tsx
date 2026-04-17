@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Transcript } from '@/types';
 import { cn } from '@/lib/utils';
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronDown, ChevronUp } from '@/lib/icons';
 
 interface AiInsightsProps {
   transcript: Transcript;

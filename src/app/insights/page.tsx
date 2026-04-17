@@ -11,7 +11,7 @@ import {
   Send, RefreshCw, Loader2, BookOpen, MessageSquare,
   AlertTriangle, MessageCircle, Lightbulb, Layers, Bot, User,
   Quote, Users, ChevronDown, ChevronUp, MessageSquarePlus, Trash2,
-} from 'lucide-react';
+} from '@/lib/icons';
 
 /* ─── Markdown → Structured Parsing ──────────────────────────────── */
 

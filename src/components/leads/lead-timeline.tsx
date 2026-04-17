@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Interaction, ActivityLog } from '@/types';
 import { formatDateTime, cn, stripHtml } from '@/lib/utils';
 import { RelativeTime } from '@/components/ui/relative-time';
-import { ArrowRight, Zap, FileText } from 'lucide-react';
+import { ArrowRight, Zap, FileText } from '@/lib/icons';
 
 interface ReplyContext {
   threadId: string;

@@ -1,7 +1,7 @@
 'use client';
 
 import { CalendarEvent } from './availability-grid';
-import { Video, BookOpen, Clock } from 'lucide-react';
+import { Video, BookOpen, Clock } from '@/lib/icons';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 

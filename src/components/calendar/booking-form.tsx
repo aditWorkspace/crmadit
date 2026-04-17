@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, ArrowLeft } from 'lucide-react';
+import { Loader2, ArrowLeft } from '@/lib/icons';
 
 interface BookingFormProps {
   startTime: string;

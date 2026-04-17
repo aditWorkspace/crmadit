@@ -16,7 +16,7 @@ import {
 import {
   Upload, FileText, Loader2, CheckCircle2, X, Plus,
   Brain, Target, Quote, AlertTriangle, Sparkles,
-} from 'lucide-react';
+} from '@/lib/icons';
 import { cn } from '@/lib/utils';
 
 interface UploadModalProps {
