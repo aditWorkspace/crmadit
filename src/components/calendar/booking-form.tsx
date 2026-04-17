@@ -9,6 +9,9 @@ interface BookingFormProps {
   timezone: string;
   onBack: () => void;
   onConfirm: (data: { name: string; email: string; note: string }) => Promise<void>;
+  defaultName?: string;
+  defaultEmail?: string;
+  isReschedule?: boolean;
 }
 
 function formatInTz(iso: string, tz: string): string {
@@ -33,9 +36,9 @@ function formatInTz(iso: string, tz: string): string {
   return `${datePart} · ${timePart} ${tzAbbr}`;
 }
 
-export function BookingForm({ startTime, durationMinutes, timezone, onBack, onConfirm }: BookingFormProps) {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+export function BookingForm({ startTime, durationMinutes, timezone, onBack, onConfirm, defaultName, defaultEmail, isReschedule }: BookingFormProps) {
+  const [name, setName] = useState(defaultName ?? '');
+  const [email, setEmail] = useState(defaultEmail ?? '');
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,7 +121,7 @@ export function BookingForm({ startTime, durationMinutes, timezone, onBack, onCo
             className="flex-1 flex items-center justify-center gap-2 bg-white text-gray-900 rounded-lg py-2.5 text-sm font-semibold hover:bg-gray-100 disabled:opacity-40 transition-colors"
           >
             {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-            Confirm booking
+            {isReschedule ? 'Confirm new time' : 'Confirm booking'}
           </button>
         </div>
       </form>

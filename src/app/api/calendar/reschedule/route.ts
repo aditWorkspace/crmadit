@@ -1,7 +1,6 @@
-// src/app/api/calendar/book/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { getFreeBusy, createMeetingEvent } from '@/lib/google/calendar';
+import { deleteCalendarEvent, getFreeBusy, createMeetingEvent } from '@/lib/google/calendar';
 
 function overlaps(
   slotStart: Date,
@@ -18,6 +17,7 @@ export async function POST(req: NextRequest) {
     startTime: string;
     durationMinutes: number;
     note?: string;
+    rescheduleEventId: string;
   };
 
   try {
@@ -26,10 +26,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const { name, email, startTime, durationMinutes, note } = body;
+  const { name, email, startTime, durationMinutes, note, rescheduleEventId } = body;
 
   if (!name?.trim() || !email?.trim() || !startTime || ![10, 20, 30].includes(durationMinutes)) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  }
+  if (!rescheduleEventId?.trim()) {
+    return NextResponse.json({ error: 'Missing rescheduleEventId' }, { status: 400 });
   }
 
   const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -43,12 +46,10 @@ export async function POST(req: NextRequest) {
   }
   const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
 
-  // Must be at least 2 hours from now
   if (start.getTime() < Date.now() + 2 * 60 * 60 * 1000) {
     return NextResponse.json({ error: 'Please book at least 2 hours in advance' }, { status: 400 });
   }
 
-  // Must be within 9:30am-5:00pm PT on a weekday (last slot starts at 4:30pm, ends at 5:00pm)
   const ptHour = parseInt(
     new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false })
   );
@@ -64,30 +65,24 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
 
-  // Get ALL team members for attendee list, but only connected ones for freebusy
   const [{ data: allMembers }, { data: connectedMembers }] = await Promise.all([
     supabase.from('team_members').select('id, name, email'),
     supabase.from('team_members').select('id, name, email').eq('gmail_connected', true),
   ]);
 
   if (!connectedMembers?.length) {
-    return NextResponse.json({ error: 'No calendar connected — please connect Google in Settings' }, { status: 503 });
+    return NextResponse.json({ error: 'No calendar connected' }, { status: 503 });
   }
 
-  // Re-validate availability at booking time.
-  // Require at least 2 confirmed-free members when calendars are reachable.
-  // If a member's token is broken/expired we skip them rather than blocking all bookings
-  // (the real fix is for that member to reconnect in Settings).
+  // Validate availability for the new time
   const results = await Promise.allSettled(
     connectedMembers.map(m => getFreeBusy(m.id, start, end))
   );
 
   const successfulFetches = results.filter(r => r.status === 'fulfilled').length;
-
   if (successfulFetches === 0) {
-    // Can't verify anyone's availability — fail gracefully
     return NextResponse.json(
-      { error: 'Calendar unavailable right now — please try again or contact us directly at hello@proxi.ai' },
+      { error: 'Calendar unavailable right now — please try again' },
       { status: 503 }
     );
   }
@@ -97,7 +92,6 @@ export async function POST(req: NextRequest) {
     return r.status === 'fulfilled' && !overlaps(start, end, r.value.busy);
   });
 
-  // Require 2 free if we can verify 2+ calendars, otherwise require all verified ones to be free
   const required = Math.min(2, successfulFetches);
   if (freeMembers.length < required) {
     return NextResponse.json(
@@ -106,36 +100,47 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Create the event on the first free member's calendar.
-  // Always invite ALL founders (even those not yet OAuth-connected) + the prospect.
+  // Delete the old event (try on each connected member until one succeeds —
+  // we don't know which member's calendar holds the event)
+  let deleted = false;
+  for (const m of connectedMembers) {
+    try {
+      await deleteCalendarEvent(m.id, rescheduleEventId);
+      deleted = true;
+      break;
+    } catch {
+      // Not on this member's calendar — try next
+    }
+  }
+  if (!deleted) {
+    // Non-fatal: old event may have already been deleted manually.
+    // Proceed with creating the new event anyway.
+  }
+
+  // Create the new event
   const founderEmails = (allMembers ?? connectedMembers).map(m => m.email);
   const allEmails = [...new Set([...founderEmails, email])];
 
   const event = await createMeetingEvent(freeMembers[0].id, {
     summary: `Quick chat — ${name.trim()} × Adit, Srijay & Asim`,
     description: note?.trim()
-      ? `Booking note: ${note.trim()}\n\nsource:proxi_crm`
-      : 'source:proxi_crm',
+      ? `Booking note: ${note.trim()}\n\n(Rescheduled)\nsource:proxi_crm`
+      : '(Rescheduled)\nsource:proxi_crm',
     startTime: start,
     endTime: end,
     attendeeEmails: allEmails,
   });
 
-  // Send confirmation email to booker via Resend
+  // Send reschedule confirmation email
   const resendApiKey = process.env.RESEND_API_KEY;
   if (resendApiKey) {
     const formattedDate = start.toLocaleString('en-US', {
       timeZone: 'America/Los_Angeles',
-      weekday: 'long',
-      month: 'long',
-      day: 'numeric',
-      year: 'numeric',
+      weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
     });
     const formattedTime = start.toLocaleString('en-US', {
       timeZone: 'America/Los_Angeles',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
+      hour: 'numeric', minute: '2-digit', hour12: true,
     });
 
     const meetSection = event.meetLink
@@ -151,39 +156,29 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         from: 'Adit & Team <onboarding@resend.dev>',
         to: [email],
-        subject: `Confirmed: Quick chat — ${formattedDate}`,
+        subject: `Rescheduled: Quick chat — ${formattedDate}`,
         html: `
 <div style="font-family:sans-serif;max-width:480px;margin:0 auto;color:#111;">
-  <h2 style="font-size:20px;font-weight:700;margin-bottom:4px;">You're confirmed!</h2>
-  <p style="color:#666;margin-top:0;">Your chat is scheduled. Looking forward to it!</p>
+  <h2 style="font-size:20px;font-weight:700;margin-bottom:4px;">Rescheduled!</h2>
+  <p style="color:#666;margin-top:0;">Your chat has been moved to a new time.</p>
 
   <div style="background:#f9f9f9;border:1px solid #e5e5e5;border-radius:10px;padding:16px;margin:20px 0;">
-    <p style="margin:0 0 8px;font-size:14px;"><strong>When:</strong> ${formattedDate} at ${formattedTime} PT</p>
+    <p style="margin:0 0 8px;font-size:14px;"><strong>New time:</strong> ${formattedDate} at ${formattedTime} PT</p>
     <p style="margin:0 0 8px;font-size:14px;"><strong>Duration:</strong> ${durationMinutes} minutes</p>
     <p style="margin:0;font-size:14px;"><strong>Format:</strong> Google Meet (video)</p>
   </div>
 
   ${meetSection}
 
-  <p style="margin:16px 0;"><a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pmcrminternal.vercel.app'}/book?rescheduleEventId=${encodeURIComponent(event.eventId)}&email=${encodeURIComponent(email)}&name=${encodeURIComponent(name.trim())}" style="color:#b45309;font-size:13px;text-decoration:underline;">Need to reschedule?</a></p>
-
-  <p style="font-size:13px;color:#888;margin-top:24px;">A calendar invite has also been sent to your email. All times are in Pacific Time (PT).</p>
+  <p style="font-size:13px;color:#888;margin-top:24px;">An updated calendar invite has been sent. All times are in Pacific Time (PT).</p>
   <p style="font-size:13px;color:#aaa;">— Adit, Srijay & Asim</p>
 </div>`,
       }),
-    }).catch(() => { /* non-fatal — calendar invite still sent */ });
+    }).catch(() => { /* non-fatal */ });
 
-    // Notify all founders about the new booking
+    // Notify founders
     const founderEmailList = (allMembers ?? []).map(m => m.email);
     if (founderEmailList.length > 0) {
-      const noteSection = note?.trim()
-        ? `<p style="margin:0 0 8px;font-size:14px;"><strong>Notes:</strong> ${note.trim()}</p>`
-        : '';
-
-      const founderMeetSection = event.meetLink
-        ? `<p style="margin:16px 0;"><a href="${event.meetLink}" style="display:inline-block;background:#111827;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">Join Google Meet</a></p>`
-        : '';
-
       await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
@@ -193,21 +188,18 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({
           from: 'Adit & Team <onboarding@resend.dev>',
           to: founderEmailList,
-          subject: `New call booked: ${name.trim()} on ${formattedDate}`,
+          subject: `Rescheduled: ${name.trim()} moved to ${formattedDate}`,
           html: `
 <div style="font-family:sans-serif;max-width:480px;margin:0 auto;color:#111;">
-  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px;">New call booked</h2>
-  <p style="color:#666;margin-top:0;">Someone just scheduled a call via the booking page.</p>
+  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px;">Call rescheduled</h2>
+  <p style="color:#666;margin-top:0;">${name.trim()} rescheduled their call.</p>
 
-  <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:16px;margin:20px 0;">
+  <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:16px;margin:20px 0;">
     <p style="margin:0 0 8px;font-size:14px;"><strong>Name:</strong> ${name.trim()}</p>
     <p style="margin:0 0 8px;font-size:14px;"><strong>Email:</strong> ${email}</p>
-    <p style="margin:0 0 8px;font-size:14px;"><strong>When:</strong> ${formattedDate} at ${formattedTime} PT</p>
-    <p style="margin:0 0 8px;font-size:14px;"><strong>Duration:</strong> ${durationMinutes} minutes</p>
-    ${noteSection}
+    <p style="margin:0 0 8px;font-size:14px;"><strong>New time:</strong> ${formattedDate} at ${formattedTime} PT</p>
+    <p style="margin:0;font-size:14px;"><strong>Duration:</strong> ${durationMinutes} minutes</p>
   </div>
-
-  ${founderMeetSection}
 
   <p style="font-size:13px;color:#aaa;">— Adit, Srijay & Asim</p>
 </div>`,
@@ -219,11 +211,9 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     meetLink: event.meetLink,
     eventLink: event.eventLink,
-    eventId: event.eventId,
     startTime: event.startTime,
     endTime: end.toISOString(),
     name: name.trim(),
-    email: email.trim(),
     durationMinutes,
   });
 }

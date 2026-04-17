@@ -2,14 +2,17 @@
 
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { CheckCircle, Video, Calendar } from 'lucide-react';
+import { CheckCircle, Video, Calendar, RefreshCw } from 'lucide-react';
 
 function ConfirmationContent() {
   const params = useSearchParams();
   const meetLink = params.get('meetLink');
   const startTime = params.get('startTime');
   const name = params.get('name');
+  const email = params.get('email');
+  const eventId = params.get('eventId');
   const durationMinutes = params.get('durationMinutes');
+  const wasRescheduled = params.get('rescheduled') === '1';
 
   const [userTz, setUserTz] = useState('America/Los_Angeles');
   useEffect(() => {
@@ -39,9 +42,13 @@ function ConfirmationContent() {
           <div className="inline-flex items-center justify-center h-16 w-16 rounded-full bg-green-500/10 border border-green-500/20 mb-4">
             <CheckCircle className="h-8 w-8 text-green-400" />
           </div>
-          <h1 className="text-2xl font-bold text-white">You&apos;re confirmed!</h1>
+          <h1 className="text-2xl font-bold text-white">
+            {wasRescheduled ? 'Rescheduled!' : 'You\u0027re confirmed!'}
+          </h1>
           <p className="text-gray-400 mt-2">
-            A calendar invite and Google Meet link have been sent to your email.
+            {wasRescheduled
+              ? 'Your meeting has been moved. An updated invite has been sent to your email.'
+              : 'A calendar invite and Google Meet link have been sent to your email.'}
           </p>
         </div>
 
@@ -74,6 +81,15 @@ function ConfirmationContent() {
             >
               <Video className="h-4 w-4" />
               Join Google Meet
+            </a>
+          )}
+          {eventId && email && (
+            <a
+              href={`/book?rescheduleEventId=${encodeURIComponent(eventId)}&email=${encodeURIComponent(email)}&name=${encodeURIComponent(name ?? '')}`}
+              className="flex items-center justify-center gap-2 w-full bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded-xl py-3 text-sm font-medium hover:bg-amber-500/20 hover:border-amber-500/40 transition-colors"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Reschedule
             </a>
           )}
           <a

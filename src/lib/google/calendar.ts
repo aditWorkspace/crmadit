@@ -127,6 +127,22 @@ export async function createMeetingEvent(
   };
 }
 
+/**
+ * Delete a Google Calendar event by ID.
+ * Used for reschedule flow — cancel old event before creating the new one.
+ */
+export async function deleteCalendarEvent(
+  teamMemberId: string,
+  eventId: string
+): Promise<void> {
+  const calendar = await getCalendarClientForMember(teamMemberId);
+  await calendar.events.delete({
+    calendarId: 'primary',
+    eventId,
+    sendUpdates: 'all', // notify attendees of cancellation
+  });
+}
+
 export interface FreeBusyResult {
   memberId: string;
   busy: { start: string; end: string }[];

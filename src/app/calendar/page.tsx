@@ -6,7 +6,8 @@ import { format } from 'date-fns';
 import { useSession } from '@/hooks/use-session';
 import { AvailabilityGrid, CalendarEvent } from '@/components/calendar/availability-grid';
 import { UpcomingCalls } from '@/components/calendar/upcoming-calls';
-import { ChevronLeft, ChevronRight, RefreshCw, Loader2, ExternalLink, CalendarDays, Calendar as CalendarIcon } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Loader2, ExternalLink, CalendarDays, Calendar as CalendarIcon, Ban } from 'lucide-react';
+import { BlockTimeModal } from '@/components/calendar/block-time-modal';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 
@@ -29,6 +30,7 @@ export default function CalendarPage() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [connectedCount, setConnectedCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [showBlockModal, setShowBlockModal] = useState(false);
 
   const fetchAvailability = useCallback(async () => {
     if (!user) return;
@@ -119,6 +121,13 @@ export default function CalendarPage() {
               Day
             </button>
           </div>
+          <button
+            onClick={() => setShowBlockModal(true)}
+            className="flex items-center gap-1.5 text-xs text-red-600 hover:text-red-700 border border-red-200 rounded-lg px-3 py-1.5 hover:bg-red-50 transition-colors"
+          >
+            <Ban className="h-3.5 w-3.5" />
+            Block time
+          </button>
           <a
             href="/book"
             target="_blank"
@@ -186,6 +195,17 @@ export default function CalendarPage() {
           />
         )}
       </div>
+
+      {showBlockModal && user && (
+        <BlockTimeModal
+          teamMemberId={user.team_member_id}
+          onClose={() => setShowBlockModal(false)}
+          onBlock={() => {
+            toast.success('Time blocked');
+            fetchAvailability();
+          }}
+        />
+      )}
     </div>
   );
 }

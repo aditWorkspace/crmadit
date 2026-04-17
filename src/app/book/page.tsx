@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense } from 'react';
 import {
   startOfMonth, endOfMonth, addMonths, subMonths,
   startOfWeek, addDays, isSameMonth, isToday, isBefore, startOfDay,
@@ -63,8 +64,12 @@ function todayPT(): string {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
 }
 
-export default function BookPage() {
+function BookPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const rescheduleEventId = searchParams.get('rescheduleEventId');
+  const rescheduleEmail = searchParams.get('email');
+  const rescheduleName = searchParams.get('name');
   const [month, setMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
@@ -154,13 +159,15 @@ export default function BookPage() {
 
   const handleBook = async (data: { name: string; email: string; note: string }) => {
     if (!selectedSlot) return;
-    const res = await fetch('/api/calendar/book', {
+    const endpoint = rescheduleEventId ? '/api/calendar/reschedule' : '/api/calendar/book';
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...data,
         startTime: selectedSlot,
         durationMinutes: duration,
+        ...(rescheduleEventId ? { rescheduleEventId } : {}),
       }),
     });
     const result = await res.json();
@@ -171,13 +178,21 @@ export default function BookPage() {
       startTime: result.startTime,
       endTime: result.endTime,
       name: data.name,
+      email: data.email,
+      eventId: result.eventId ?? '',
       durationMinutes: String(duration),
+      ...(rescheduleEventId ? { rescheduled: '1' } : {}),
     });
     router.push(`/book/confirmation?${params.toString()}`);
   };
 
   return (
     <div className="min-h-screen bg-[#111] flex items-center justify-center p-4 md:p-8">
+      {rescheduleEventId && (
+        <div className="fixed top-0 left-0 right-0 bg-amber-500/90 text-gray-900 text-center text-sm font-medium py-2 z-50">
+          Rescheduling — pick a new time below
+        </div>
+      )}
       <div className="w-full max-w-[900px] bg-[#1c1c1c] border border-gray-800 rounded-2xl overflow-hidden flex flex-col md:flex-row">
 
         {/* Left panel — team info */}
@@ -306,6 +321,9 @@ export default function BookPage() {
                 timezone={userTz}
                 onBack={() => setStep('slots')}
                 onConfirm={handleBook}
+                defaultName={rescheduleName ?? undefined}
+                defaultEmail={rescheduleEmail ?? undefined}
+                isReschedule={!!rescheduleEventId}
               />
             )}
           </div>
@@ -316,5 +334,13 @@ export default function BookPage() {
         Berkeley founders · Scheduling
       </div>
     </div>
+  );
+}
+
+export default function BookPage() {
+  return (
+    <Suspense>
+      <BookPageContent />
+    </Suspense>
   );
 }
