@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
-import { sendReplyInThread } from '@/lib/gmail/send';
+import { sendReplyInThread, getOtherFounderEmails } from '@/lib/gmail/send';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSessionFromRequest(req);
@@ -41,10 +41,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const inReplyToMessageId = lastInbound?.gmail_message_id ? `<${lastInbound.gmail_message_id}>` : undefined;
   const replySubject = subject || `product prioritization at ${leadRes.data.company_name}`;
 
+  const ccEmails = await getOtherFounderEmails(effectiveSenderId);
+
   const sentMessageId = await sendReplyInThread({
     teamMemberId: effectiveSenderId,
     threadId: thread_id,
     to: leadRes.data.contact_email,
+    cc: ccEmails,
     subject: replySubject,
     body: body.trim(),
     inReplyToMessageId,

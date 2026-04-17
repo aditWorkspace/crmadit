@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/admin';
-import { sendReplyInThread } from '@/lib/gmail/send';
+import { sendReplyInThread, getOtherFounderEmails } from '@/lib/gmail/send';
 import { classifySchedulingIntent } from '@/lib/gmail/scheduling-classifier';
 import { classifyFirstReply, type FirstReplyClassification } from '@/lib/ai/first-reply-classifier';
 import { changeStage } from '@/lib/automation/stage-logic';
@@ -368,10 +368,13 @@ export async function runFirstReplyAutoResponder(
             ? originalSubject
             : `Re: ${originalSubject}`;
 
+          const ccEmails = await getOtherFounderEmails(owner.id);
+
           const sentMessageId = await sendReplyInThread({
             teamMemberId: owner.id,
             threadId,
             to: lead.contact_email,
+            cc: ccEmails,
             subject: threadSubject,
             body: scrubbed,
             inReplyToMessageId,

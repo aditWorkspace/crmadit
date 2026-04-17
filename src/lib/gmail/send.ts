@@ -1,9 +1,24 @@
 import { getGmailClientForMember } from './client';
+import { createAdminClient } from '@/lib/supabase/admin';
+
+/**
+ * Get the email addresses of all founders except the sender.
+ * Used to CC the other co-founders on every outbound email.
+ */
+export async function getOtherFounderEmails(senderMemberId: string): Promise<string[]> {
+  const supabase = createAdminClient();
+  const { data: members } = await supabase
+    .from('team_members')
+    .select('id, email')
+    .neq('id', senderMemberId);
+  return (members ?? []).map(m => m.email).filter(Boolean);
+}
 
 export async function sendReplyInThread({
   teamMemberId,
   threadId,
   to,
+  cc,
   subject,
   body,
   inReplyToMessageId,
@@ -11,6 +26,7 @@ export async function sendReplyInThread({
   teamMemberId: string;
   threadId: string;
   to: string;
+  cc?: string[];
   subject: string;
   body: string;
   inReplyToMessageId?: string;
@@ -27,6 +43,11 @@ export async function sendReplyInThread({
     'Content-Type: text/plain; charset=utf-8',
     'MIME-Version: 1.0',
   ];
+
+  // CC other founders so everyone stays in the loop
+  if (cc && cc.length > 0) {
+    emailLines.splice(1, 0, `Cc: ${cc.join(', ')}`);
+  }
 
   if (inReplyToMessageId) {
     emailLines.push(`In-Reply-To: <${inReplyToMessageId}>`);

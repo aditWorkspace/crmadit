@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/admin';
-import { sendReplyInThread } from '@/lib/gmail/send';
+import { sendReplyInThread, getOtherFounderEmails } from '@/lib/gmail/send';
 
 // ── Business-hours window (Pacific Time) ────────────────────────────────────
 // Auto-emails queue for delivery inside this window. Anything decided outside
@@ -247,11 +247,15 @@ export async function drainScheduledEmails(): Promise<DrainResult> {
         ? `<${lastInt.gmail_message_id}@gmail.com>`
         : undefined;
 
+      // CC the other founders
+      const ccEmails = await getOtherFounderEmails(member.id);
+
       // Send the email
       const sentMessageId = await sendReplyInThread({
         teamMemberId: member.id,
         threadId: entry.gmail_thread_id,
         to: lead.contact_email,
+        cc: ccEmails,
         subject: threadSubject,
         body: entry.suggested_message,
         inReplyToMessageId,
