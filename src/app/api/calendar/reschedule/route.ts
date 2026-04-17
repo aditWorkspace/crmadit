@@ -117,7 +117,11 @@ export async function POST(req: NextRequest) {
     // Proceed with creating the new event anyway.
   }
 
-  // Create the new event
+  // Create the event on Adit's calendar so invites come from him.
+  freeMembers.sort((a, b) =>
+    (a.name.toLowerCase() === 'adit' ? -1 : 0) - (b.name.toLowerCase() === 'adit' ? -1 : 0)
+  );
+
   const founderEmails = (allMembers ?? connectedMembers).map(m => m.email);
   const allEmails = [...new Set([...founderEmails, email])];
 

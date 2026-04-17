@@ -106,8 +106,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Create the event on the first free member's calendar.
-  // Always invite ALL founders (even those not yet OAuth-connected) + the prospect.
+  // Create the event on Adit's calendar so invites come from him.
+  // Fall back to any other free member if Adit isn't free.
+  freeMembers.sort((a, b) =>
+    (a.name.toLowerCase() === 'adit' ? -1 : 0) - (b.name.toLowerCase() === 'adit' ? -1 : 0)
+  );
+
   const founderEmails = (allMembers ?? connectedMembers).map(m => m.email);
   const allEmails = [...new Set([...founderEmails, email])];
 
