@@ -87,6 +87,23 @@ export interface SyncResult {
   calendar_leads_updated: number;
 }
 
+/**
+ * Load every team member's email → id map. Used to recognize any co-founder's
+ * outbound email during a sync — not just the syncing member's. Without this,
+ * a thread where Srijay syncs while Adit also replied would mis-label Adit's
+ * messages as `email_inbound` and attribute them to the prospect.
+ */
+async function loadTeamEmails(
+  supabase: ReturnType<typeof import('@/lib/supabase/admin').createAdminClient>,
+): Promise<Map<string, string>> {
+  const { data } = await supabase.from('team_members').select('id, email');
+  const map = new Map<string, string>();
+  for (const m of data ?? []) {
+    if (m?.email) map.set(m.email.toLowerCase(), m.id);
+  }
+  return map;
+}
+
 export async function runInitialSync(teamMemberId: string): Promise<SyncResult> {
   const start = Date.now();
   const result: SyncResult = { synced: 0, created_leads: 0, errors: [], duration_ms: 0, calendar_events_detected: 0, calendar_leads_created: 0, calendar_leads_updated: 0 };
@@ -127,6 +144,7 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
 
   const profileRes = await gmail.users.getProfile({ userId: 'me' });
   const gmailEmail = profileRes.data.emailAddress?.toLowerCase() || member.email.toLowerCase();
+  const teamEmails = await loadTeamEmails(supabase);
 
   const threadIds = new Set<string>();
   let pageToken: string | undefined;
@@ -157,7 +175,7 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
       for (const message of messages) {
         if (!message.id) continue;
         try {
-          await processMessage(supabase, message, gmailEmail, member, result);
+          await processMessage(supabase, message, gmailEmail, member, teamEmails, result);
         } catch (err) {
           result.errors.push(`Message ${message.id}: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -220,6 +238,7 @@ export async function runIncrementalSync(teamMemberId: string): Promise<SyncResu
 
   const profileRes = await gmail.users.getProfile({ userId: 'me' });
   const gmailEmail = profileRes.data.emailAddress?.toLowerCase() || member.email.toLowerCase();
+  const teamEmails = await loadTeamEmails(supabase);
 
   let pageToken: string | undefined;
   const processedMessageIds = new Set<string>();
@@ -255,7 +274,7 @@ export async function runIncrementalSync(teamMemberId: string): Promise<SyncResu
 
         try {
           const msgRes = await gmail.users.messages.get({ userId: 'me', id: message.id, format: 'full' });
-          await processMessage(supabase, msgRes.data, gmailEmail, member, result);
+          await processMessage(supabase, msgRes.data, gmailEmail, member, teamEmails, result);
         } catch (err) {
           result.errors.push(`Message ${message.id}: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -319,12 +338,22 @@ async function processMessage(
   message: gmail_v1.Schema$Message,
   gmailEmail: string,
   member: { id: string; email: string; name: string },
+  teamEmails: Map<string, string>,
   result: SyncResult
 ) {
   const headers = parseHeaders(message.payload?.headers || []);
   const fromEmail = extractEmail(headers.from);
   const toEmail = extractEmail(headers.to);
-  const isOutbound = fromEmail === gmailEmail;
+  // Any team member's email counts as outbound — not just the syncing member.
+  // Without this, Adit's replies synced through Srijay's Gmail would be
+  // mislabeled `email_inbound` and render under the prospect's name.
+  const isOutbound = teamEmails.has(fromEmail) || fromEmail === gmailEmail;
+  // Attribute the interaction to the actual sender so MessageCard shows the
+  // right name/color. Falls back to the syncing member for inbound + for
+  // co-founder outbounds we somehow can't map.
+  const senderMemberId = isOutbound
+    ? (teamEmails.get(fromEmail) ?? member.id)
+    : member.id;
   const contactEmail = isOutbound ? toEmail : fromEmail;
 
   // ── Bounce/NDR detection — skip entirely, and dead any matched lead ────────
@@ -524,7 +553,7 @@ async function processMessage(
     if (!leadId) return;
     await upsertInteraction(supabase, {
       lead_id: leadId,
-      team_member_id: member.id,
+      team_member_id: isOutbound ? senderMemberId : member.id,
       type: isOutbound ? 'email_outbound' : 'email_inbound',
       subject: headers.subject,
       body: bodyPreview,
