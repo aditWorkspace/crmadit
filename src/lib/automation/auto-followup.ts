@@ -1,8 +1,16 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { callAI } from '@/lib/ai/openrouter';
-import { QWEN_FREE_MODEL } from '@/lib/constants';
+import { WRITER_MODEL } from '@/lib/constants';
 import { aiFollowupDecisionSchema } from '@/lib/validation';
 import { canSendOutbound, hasMinimumGap, pickRandomSendTime } from './send-guards';
+import { formatEmailBody } from '@/lib/format/email-body';
+
+function firstNameOf(fullName: string | null | undefined, fallback = 'there'): string {
+  if (!fullName) return fallback;
+  const trimmed = fullName.trim();
+  if (!trimmed) return fallback;
+  return trimmed.split(/\s+/)[0];
+}
 
 const FOLLOWUP_HOURS = 48;
 const MAX_AI_CALLS_PER_RUN = 50;
@@ -25,34 +33,6 @@ interface AiFollowupDecision {
   message: string | null;
 }
 
-function scrubDashes(s: string): string {
-  return s
-    .replaceAll('—', ', ')
-    .replaceAll('–', ', ')
-    .replace(/\s+,/g, ',')
-    .trim();
-}
-
-function ensureSignoff(message: string, firstName: string): string {
-  const trimmed = message.trimEnd();
-  const lines = trimmed.split('\n');
-  const lastLine = lines[lines.length - 1]?.trim() ?? '';
-
-  if (lastLine === firstName) {
-    const secondLast = lines[lines.length - 2]?.trim() ?? '';
-    if (secondLast === 'Best,') return trimmed;
-    lines.splice(lines.length - 1, 0, 'Best,');
-    return lines.join('\n');
-  }
-
-  if (lastLine.toLowerCase().startsWith('best,')) {
-    lines.pop();
-    return `${lines.join('\n').trimEnd()}\n\nBest,\n${firstName}`;
-  }
-
-  return `${trimmed}\n\nBest,\n${firstName}`;
-}
-
 async function getFollowupDecision(
   contactName: string,
   companyName: string,
@@ -69,7 +49,7 @@ async function getFollowupDecision(
     .join('\n\n');
 
   const raw = await callAI({
-    model: QWEN_FREE_MODEL,
+    model: WRITER_MODEL,
     jsonMode: true,
     systemPrompt: `You are a sales assistant deciding whether to send a follow-up email.
 
@@ -219,9 +199,11 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
         continue;
       }
 
-      // Post-process: scrub dashes + enforce signoff
-      const firstName = (member.name || 'Adit').trim().split(/\s+/)[0];
-      const scrubbed = ensureSignoff(scrubDashes(decision.message), firstName);
+      // Post-process via shared formatter: canonical greeting + spacing + signoff
+      const scrubbed = formatEmailBody(decision.message, {
+        recipientFirstName: firstNameOf(lead.contact_name, 'there'),
+        senderFirstName: firstNameOf(member.name, 'Adit'),
+      });
 
       // Queue for delivery at a random business-hours time
       const sendAt = pickRandomSendTime();

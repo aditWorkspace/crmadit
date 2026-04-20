@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { sendReplyInThread, getOtherFounderEmails } from '@/lib/gmail/send';
+import { autoReplyEnabled } from './kill-switch';
 
 // ── Business-hours window (Pacific Time) ────────────────────────────────────
 // Auto-emails queue for delivery inside this window. Anything decided outside
@@ -163,6 +164,11 @@ export interface DrainResult {
 export async function drainScheduledEmails(): Promise<DrainResult> {
   const result: DrainResult = { sent: 0, errors: [] };
 
+  // Global kill switch — leave queue rows untouched (status=pending) so they
+  // drain naturally when the flag is flipped back on. This lets ops cut auto-
+  // sends without losing queued intent.
+  if (!autoReplyEnabled()) return result;
+
   // Only drain during business hours
   if (!isWithinSendingWindow()) return result;
 
@@ -202,11 +208,14 @@ export async function drainScheduledEmails(): Promise<DrainResult> {
         continue;
       }
 
-      // Re-check guards right before sending (someone may have replied in the meantime)
-      const [canSend, gapOk] = await Promise.all([
-        canSendOutbound(entry.lead_id),
-        hasMinimumGap(entry.lead_id),
-      ]);
+      // Re-check guards right before sending (someone may have replied in the meantime).
+      // Fast-loop entries deliberately bypass the 48h gap because the whole point
+      // is to fire a second email 30-120 min after the first. The consecutive-
+      // outbound guard (canSendOutbound, max 2 in a row) still applies — that's
+      // the real spam backstop.
+      const canSend = await canSendOutbound(entry.lead_id);
+      const gapOk =
+        entry.type === 'fast_loop_first_reply' ? true : await hasMinimumGap(entry.lead_id);
 
       if (!canSend || !gapOk) {
         // Conditions changed — dismiss instead of sending

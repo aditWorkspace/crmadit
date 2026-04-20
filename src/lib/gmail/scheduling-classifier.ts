@@ -1,5 +1,5 @@
 import { callAI } from '@/lib/ai/openrouter';
-import { QWEN_FREE_MODEL } from '@/lib/constants';
+import { TRIAGE_MODEL } from '@/lib/constants';
 
 export type SchedulingSignal = 'no_signal' | 'scheduling_intent' | 'booking_confirmed';
 
@@ -65,7 +65,7 @@ export async function classifySchedulingIntent(
 
   try {
     const response = await callAI({
-      model: QWEN_FREE_MODEL,
+      model: TRIAGE_MODEL,
       systemPrompt: 'You classify emails about meeting scheduling. Respond with exactly ONE word: "confirmed" if a meeting/call is confirmed or booked, "scheduling" if someone is trying to schedule or sharing availability, or "none" if neither. No explanation.',
       userMessage: `Subject: ${subject}\n\n${body.slice(0, 500)}`,
     });

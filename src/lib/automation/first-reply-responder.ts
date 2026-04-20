@@ -2,10 +2,21 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { sendReplyInThread, getOtherFounderEmails } from '@/lib/gmail/send';
 import { classifySchedulingIntent } from '@/lib/gmail/scheduling-classifier';
 import { classifyFirstReply, type FirstReplyClassification } from '@/lib/ai/first-reply-classifier';
+import {
+  writePositiveBookReply,
+  writeAsyncRequestReply,
+  writeInfoRequestReply,
+  writeFastLoopFollowup,
+  type BaseWriteOpts,
+} from '@/lib/ai/first-reply-writer';
+import { pickRelevantQa } from '@/lib/ai/qa-bank';
 import { changeStage } from '@/lib/automation/stage-logic';
 import { BOOKING_URL } from '@/lib/constants';
 import type { FirstReplyDecision } from '@/lib/validation';
 import { isWithinSendingWindow, hasMinimumGap } from './send-guards';
+import { formatEmailBody } from '@/lib/format/email-body';
+import { scheduleFastLoopFollowup } from './fast-loop';
+import { autoReplyEnabled, infoReplyEnabled } from './kill-switch';
 
 // Cap how many leads we process per cron run. At 3-user scale this is
 // effectively unbounded but it bounds the worst case if something pathological
@@ -40,50 +51,6 @@ export interface RunOptions {
   // no stage change, no follow_up_queue writes. Only reads + classification.
   // Returns classification details for inspection.
   dryRun?: boolean;
-}
-
-// Strip em dashes and en dashes from AI output as a safety net even though
-// the prompt forbids them. Also collapses any stray whitespace before the
-// replacement comma.
-function scrubDashes(s: string): string {
-  return s
-    .replaceAll('—', ', ')
-    .replaceAll('–', ', ')
-    .replace(/\s+,/g, ',')
-    .trim();
-}
-
-// Enforce proper "Best,\nName" signoff on separate lines. Handles cases where
-// the AI drops the signoff entirely, uses "Best, Name" on one line, or has
-// just the name without "Best,".
-function ensureBestSignoff(message: string, firstName: string): string {
-  const trimmed = message.trimEnd();
-  const lines = trimmed.split('\n');
-  const lastLine = lines[lines.length - 1]?.trim() ?? '';
-
-  // Already has "Best,\nName" — perfect
-  if (lastLine === firstName) {
-    const secondLast = lines[lines.length - 2]?.trim() ?? '';
-    if (secondLast === 'Best,') return trimmed;
-    // Has name but no "Best," — insert it
-    lines.splice(lines.length - 1, 0, 'Best,');
-    return lines.join('\n');
-  }
-
-  // Strip trailing "Best, Name" on one line (AI sometimes does this)
-  if (lastLine.toLowerCase().startsWith('best,')) {
-    lines.pop();
-    return `${lines.join('\n').trimEnd()}\n\nBest,\n${firstName}`;
-  }
-
-  // Strip trailing "Thanks," / "Cheers," / just name variants
-  const casualSignoffs = ['thanks,', 'thanks', 'cheers,', 'cheers'];
-  if (casualSignoffs.includes(lastLine.toLowerCase())) {
-    lines.pop();
-    return `${lines.join('\n').trimEnd()}\n\nBest,\n${firstName}`;
-  }
-
-  return `${trimmed}\n\nBest,\n${firstName}`;
 }
 
 function firstNameOf(fullName: string | null | undefined): string {
@@ -281,31 +248,48 @@ export async function runFirstReplyAutoResponder(
         lastInteraction.body || ''
       );
 
+      const writeOpts: BaseWriteOpts = {
+        contactName: lead.contact_name,
+        contactRole: lead.contact_role,
+        companyName: lead.company_name,
+        senderFirstName: firstNameOf(owner.name),
+        bookingUrl: buildBookingUrl(lead.contact_email),
+        latestInboundBody: lastInteraction.body || '',
+        threadContext: buildThreadContext(
+          [...recentInteractions].reverse(),
+          lead.contact_name
+        ),
+      };
+
       let decision: FirstReplyDecision;
       if (schedSignal === 'scheduling_intent' || schedSignal === 'booking_confirmed') {
         decision = {
           classification: 'calendly_sent',
           reason: `short-circuited via scheduling_classifier=${schedSignal}`,
           message: null,
+          content_plan: null,
         };
       } else {
-        // Phase 6: Call the main AI classifier.
-        const threadForAi = [...recentInteractions].reverse();
-        decision = await classifyFirstReply({
-          contactName: lead.contact_name,
-          contactRole: lead.contact_role,
-          companyName: lead.company_name,
-          senderFirstName: firstNameOf(owner.name),
-          bookingUrl: buildBookingUrl(lead.contact_email),
-          latestInboundBody: lastInteraction.body || '',
-          threadContext: buildThreadContext(threadForAi, lead.contact_name),
-        });
+        // Phase 6: Call the classifier (pure classification — no prose).
+        decision = await classifyFirstReply(writeOpts);
+      }
+
+      // Kill-switch gate: if info_request auto-reply is disabled, demote to
+      // question_only so it flows into the manual-review branch and surfaces
+      // as a dashboard card instead of auto-sending.
+      if (decision.classification === 'info_request' && !infoReplyEnabled()) {
+        decision = {
+          ...decision,
+          classification: 'question_only',
+          reason: `info_reply_disabled: ${decision.reason}`,
+        };
       }
 
       // Phase 7: Branch on classification.
       switch (decision.classification) {
         case 'positive_book':
-        case 'async_request': {
+        case 'async_request':
+        case 'info_request': {
           // Guard: don't send if we sent another outbound <48h ago (cross-system)
           if (!dryRun) {
             const gapOk = await hasMinimumGap(lead.id);
@@ -317,19 +301,41 @@ export async function runFirstReplyAutoResponder(
           }
 
           const firstName = firstNameOf(owner.name);
-          const withSignoff = decision.message
-            ? ensureBestSignoff(scrubDashes(decision.message), firstName)
+          const recipientFirstName = (lead.contact_name || '').trim().split(/\s+/)[0] || 'there';
+
+          // Call the Haiku writer for the body prose. Separate from classifier.
+          let rawBody: string | null = null;
+          try {
+            if (decision.classification === 'positive_book') {
+              rawBody = await writePositiveBookReply(writeOpts);
+            } else if (decision.classification === 'async_request') {
+              rawBody = await writeAsyncRequestReply(writeOpts);
+            } else {
+              const qaMatches = pickRelevantQa(lastInteraction.body || '');
+              rawBody = await writeInfoRequestReply({ ...writeOpts, qaMatches });
+            }
+          } catch (err) {
+            rawBody = null;
+            result.errors.push(
+              `writer failed for ${lead.id}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+
+          const scrubbed = rawBody
+            ? formatEmailBody(rawBody, {
+                recipientFirstName,
+                senderFirstName: firstName,
+              })
             : null;
-          const scrubbed = withSignoff;
           if (!scrubbed) {
-            // Classifier said send but gave no body — fall through to manual review.
+            // Writer failed — fall through to manual review.
             if (!dryRun) {
               await createManualReview(supabase, {
                 leadId: lead.id,
                 ownedBy: lead.owned_by,
                 threadId,
                 classification: decision.classification,
-                reason: 'ai_returned_null_message',
+                reason: 'writer_returned_no_body',
               });
             }
             result.manual_review++;
@@ -337,7 +343,7 @@ export async function runFirstReplyAutoResponder(
               result,
               lead.id,
               decision.classification,
-              'ai_returned_null_message',
+              'writer_returned_no_body',
               'manual_review'
             );
             break;
@@ -352,6 +358,29 @@ export async function runFirstReplyAutoResponder(
               decision.reason,
               'sent',
               scrubbed
+            );
+            break;
+          }
+
+          // Kill-switch gate: auto_reply disabled globally. We've already done
+          // the classification work; fall through to manual review so the row
+          // still surfaces and nothing is lost when the flag flips back on.
+          if (!autoReplyEnabled()) {
+            await createManualReview(supabase, {
+              leadId: lead.id,
+              ownedBy: lead.owned_by,
+              threadId,
+              classification: decision.classification,
+              reason: `auto_reply_disabled: ${decision.reason}`,
+              needsFounder: true,
+            });
+            result.manual_review++;
+            recordDetail(
+              result,
+              lead.id,
+              decision.classification,
+              `auto_reply_disabled: ${decision.reason}`,
+              'manual_review'
             );
             break;
           }
@@ -424,6 +453,33 @@ export async function runFirstReplyAutoResponder(
             }
           }
 
+          // Fast-loop: compose a short nudge now, queue for 30-120 min out.
+          // Failures are non-fatal — the first-reply auto-response already
+          // went out, so worst case the prospect just doesn't get a second
+          // nudge. scheduleFastLoopFollowup is a no-op when FAST_LOOP_ENABLED
+          // is false.
+          try {
+            const rawFastLoop = await writeFastLoopFollowup({
+              ...writeOpts,
+              prevOutboundBody: scrubbed,
+            });
+            const fastLoopBody = formatEmailBody(rawFastLoop, {
+              recipientFirstName,
+              senderFirstName: firstName,
+            });
+            await scheduleFastLoopFollowup({
+              leadId: lead.id,
+              ownerId: lead.owned_by,
+              threadId,
+              messageBody: fastLoopBody,
+              reason: `fast_loop_after_${decision.classification}`,
+            });
+          } catch (err) {
+            result.errors.push(
+              `fast_loop_queue failed for ${lead.id}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+
           result.sent++;
           break;
         }
@@ -436,6 +492,7 @@ export async function runFirstReplyAutoResponder(
               threadId,
               classification: 'calendly_sent',
               reason: decision.reason || 'prospect_sent_calendly',
+              needsFounder: true,
             });
             const stageResult = await changeStage(lead.id, 'scheduling', owner.id);
             if (!stageResult.success) {
@@ -477,6 +534,9 @@ export async function runFirstReplyAutoResponder(
               threadId,
               classification: decision.classification,
               reason: decision.reason,
+              // question_only is the one class where we explicitly want a
+              // founder to answer by hand — surface it in the dashboard.
+              needsFounder: decision.classification === 'question_only',
             });
           }
           result.manual_review++;
@@ -524,16 +584,23 @@ async function createManualReview(
     threadId: string;
     classification: FirstReplyClassification;
     reason: string;
+    needsFounder?: boolean;
   }
 ): Promise<void> {
   const now = new Date().toISOString();
+  // Prefix "NEEDS_FOUNDER:" in the reason so the dashboard card component and
+  // daily digest can pick these out with a cheap substring check — no schema
+  // change required. Dropping this prefix later is trivial: remove the string.
+  const reasonText = args.needsFounder
+    ? `NEEDS_FOUNDER: ${args.classification}: ${args.reason}`
+    : `${args.classification}: ${args.reason}`;
   await supabase.from('follow_up_queue').insert({
     lead_id: args.leadId,
     assigned_to: args.ownedBy,
     type: 'first_reply_manual_review',
     status: 'pending',
     due_at: now,
-    reason: `${args.classification}: ${args.reason}`,
+    reason: reasonText,
     gmail_thread_id: args.threadId,
   });
 }

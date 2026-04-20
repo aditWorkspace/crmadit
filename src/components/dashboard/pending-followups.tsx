@@ -4,7 +4,7 @@ import { FollowUp } from '@/types';
 import { formatRelativeTime, cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useSession } from '@/hooks/use-session';
-import { Copy, CheckCheck, Clock, Phone, PhoneOff, Upload, MessageCircle } from '@/lib/icons';
+import { Copy, CheckCheck, Clock, Phone, PhoneOff, Upload, MessageCircle, CalendarPlus, HelpCircle } from '@/lib/icons';
 import Link from 'next/link';
 
 interface PendingFollowupsProps {
@@ -48,6 +48,12 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
         const isCallConfirmation = f.type === 'call_confirmation';
         const isPostCallFollowup = f.type === 'post_call_followup';
         const isManualReview = f.type === 'first_reply_manual_review';
+        // Responder flags "needs founder" cases (calendly_sent / question_only)
+        // by prefixing the reason text. Sub-classify so we can show the right
+        // verb (log in and book vs answer the question).
+        const needsFounder = isManualReview && f.reason?.startsWith('NEEDS_FOUNDER:') === true;
+        const isCalendarNudge = needsFounder && f.reason?.includes('calendly_sent') === true;
+        const isQuestionNudge = needsFounder && f.reason?.includes('question_only') === true;
         const lead = f.lead as { id: string; contact_name: string; company_name: string } | undefined;
 
         return (
@@ -57,11 +63,13 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
               ? 'border-indigo-200 bg-indigo-50/40'
               : isPostCallFollowup
                 ? 'border-indigo-200 bg-indigo-50/40'
-                : isManualReview
-                  ? 'border-amber-200 bg-amber-50/40'
-                  : isOverdue
-                  ? 'border-red-200 bg-red-50/30'
-                  : 'border-gray-100'
+                : needsFounder
+                  ? 'border-rose-300 bg-rose-50/50'
+                  : isManualReview
+                    ? 'border-amber-200 bg-amber-50/40'
+                    : isOverdue
+                    ? 'border-red-200 bg-red-50/30'
+                    : 'border-gray-100'
           )}>
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -70,13 +78,18 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
                     ? <Phone className="h-3 w-3 text-indigo-400" />
                     : isPostCallFollowup
                       ? <Upload className="h-3 w-3 text-indigo-400" />
-                      : isManualReview
-                        ? <MessageCircle className="h-3 w-3 text-amber-500" />
-                        : <Clock className="h-3 w-3" />
+                      : isCalendarNudge
+                        ? <CalendarPlus className="h-3 w-3 text-rose-500" />
+                        : isQuestionNudge
+                          ? <HelpCircle className="h-3 w-3 text-rose-500" />
+                          : isManualReview
+                            ? <MessageCircle className="h-3 w-3 text-amber-500" />
+                            : <Clock className="h-3 w-3" />
                   }
                   <span className={cn(
                     isCallConfirmation ? 'text-indigo-600 font-medium' :
                     isPostCallFollowup ? 'text-indigo-600 font-medium' :
+                    needsFounder ? 'text-rose-600 font-medium' :
                     isManualReview ? 'text-amber-600 font-medium' :
                     isOverdue ? 'text-red-500 font-medium' : ''
                   )}>
@@ -84,9 +97,13 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
                       ? 'Call check-in'
                       : isPostCallFollowup
                         ? 'Transcript needed'
-                        : isManualReview
-                          ? 'Reply needs review'
-                          : isOverdue ? `Overdue ${formatRelativeTime(f.due_at)}` : `Due ${formatRelativeTime(f.due_at)}`
+                        : isCalendarNudge
+                          ? 'Needs founder: book the slot'
+                          : isQuestionNudge
+                            ? 'Needs founder: answer question'
+                            : isManualReview
+                              ? 'Reply needs review'
+                              : isOverdue ? `Overdue ${formatRelativeTime(f.due_at)}` : `Due ${formatRelativeTime(f.due_at)}`
                     }
                   </span>
                 </div>
@@ -105,15 +122,36 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
               </div>
             </div>
 
-            {/* Manual review — prospect replied and AI routed to human */}
+            {/* Manual review — prospect replied and AI routed to human.
+                needsFounder rows (calendly_sent / question_only) get a red
+                CTA that reads differently; everything else stays amber. */}
             {isManualReview && lead ? (
               <div className="flex items-center gap-2">
                 <Link
                   href={`/leads/${lead.id}`}
-                  className="flex items-center gap-1.5 text-xs text-white bg-amber-600 hover:bg-amber-700 rounded px-2.5 py-1 transition-colors"
+                  className={cn(
+                    'flex items-center gap-1.5 text-xs text-white rounded px-2.5 py-1 transition-colors',
+                    needsFounder
+                      ? 'bg-rose-600 hover:bg-rose-700'
+                      : 'bg-amber-600 hover:bg-amber-700'
+                  )}
                 >
-                  <MessageCircle className="h-3 w-3" />
-                  Review Reply
+                  {isCalendarNudge ? (
+                    <>
+                      <CalendarPlus className="h-3 w-3" />
+                      Book the slot
+                    </>
+                  ) : isQuestionNudge ? (
+                    <>
+                      <HelpCircle className="h-3 w-3" />
+                      Answer
+                    </>
+                  ) : (
+                    <>
+                      <MessageCircle className="h-3 w-3" />
+                      Review Reply
+                    </>
+                  )}
                 </Link>
                 <button
                   onClick={() => handleAction(f.id, 'complete')}

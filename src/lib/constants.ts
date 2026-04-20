@@ -24,12 +24,33 @@ export const ACTIVE_STAGES: LeadStage[] = [
   'active_user',
 ];
 
-export const QWEN_FREE_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free';
+// Three-tier model routing — the rule is volume, not stakes:
+//   - TRIAGE_MODEL   Qwen 3 14B free. Hot-path per-email calls that we make
+//                    hundreds-to-thousands of times a day. Cheap and fast;
+//                    accuracy floor is "good enough triage, humans + downstream
+//                    models catch escapes."
+//   - DECIDER_MODEL  DeepSeek v3. Low-volume backend decisions where accuracy
+//                    matters (first-reply auto-send classification, 48h
+//                    followup should-send). JSON mode is reliable here.
+//   - WRITER_MODEL   Haiku 4.5. Every outbound prose body (first-reply,
+//                    fast-loop, info-reply, 48h followup). Warm voice.
+export const TRIAGE_MODEL = 'qwen/qwen3-14b:free';
+export const DECIDER_MODEL = 'deepseek/deepseek-chat-v3-0324';
+export const WRITER_MODEL = 'anthropic/claude-haiku-4-5';
 
-// Classifier + short-drafting model for first-reply auto-responder. Haiku 4.5
-// is cheap, fast, and reliable for JSON-mode classification — quality matters
-// here because we're making a send/no-send decision on a real prospect email.
-export const CLASSIFIER_MODEL = 'anthropic/claude-haiku-4-5';
+// Legacy alias. Four callers still import this name (sync.ts, reply-classifier,
+// lead-scoring, generate-templates). Pointed at TRIAGE_MODEL so those
+// high-volume paths auto-route to Qwen without touching their code.
+export const QWEN_FREE_MODEL = TRIAGE_MODEL;
+
+// Legacy alias from the pre-split era — pre-split the classifier wrote prose,
+// so CLASSIFIER_MODEL was Haiku. New code should import DECIDER_MODEL directly.
+export const CLASSIFIER_MODEL = DECIDER_MODEL;
+
+// Fast-loop follow-up window (in minutes from the original auto-reply).
+// Clamped to the business-hours window by pickFastLoopTime.
+export const FAST_LOOP_MIN_MINUTES = 30;
+export const FAST_LOOP_MAX_MINUTES = 120;
 
 // Public booking page. Auto-responder interpolates this into positive_book
 // replies, optionally with ?email=<contact_email> pre-fill.

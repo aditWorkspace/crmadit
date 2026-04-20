@@ -49,6 +49,19 @@ interface TopPriorityLead {
   owner_name: string;
 }
 
+// Rows the first-reply responder flagged with `NEEDS_FOUNDER:` in reason —
+// either prospect sent a calendar link or asked a deep technical question.
+// Surfaced in the digest so they get handled within the day.
+interface NeedsFounderRow {
+  lead_id: string;
+  contact_name: string;
+  company_name: string;
+  owner_name: string;
+  // 'calendly_sent' | 'question_only' | other (fallback)
+  kind: string;
+  reason: string;
+}
+
 export async function buildDailyDigest(): Promise<{
   subject: string;
   html: string;
@@ -211,12 +224,52 @@ export async function buildDailyDigest(): Promise<{
     };
   });
 
+  // 8. NEEDS_FOUNDER manual-review rows. The responder tags calendly_sent /
+  //    question_only with a "NEEDS_FOUNDER:" reason prefix so we can pick them
+  //    out without a schema change. `ilike` matches case-insensitively and
+  //    anchors to the start of the field.
+  const { data: needsFounderData } = await supabase
+    .from('follow_up_queue')
+    .select(
+      'lead_id, reason, lead:leads(contact_name, company_name, owned_by_member:team_members!leads_owned_by_fkey(name))'
+    )
+    .eq('type', 'first_reply_manual_review')
+    .eq('status', 'pending')
+    .ilike('reason', 'NEEDS_FOUNDER:%')
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  const needsFounderRows: NeedsFounderRow[] = (needsFounderData || []).map((r) => {
+    const lead = r.lead as
+      | { contact_name?: string; company_name?: string; owned_by_member?: { name?: string } | null }
+      | null;
+    const member = lead?.owned_by_member as { name?: string } | null;
+    const reasonStr = (r.reason ?? '') as string;
+    // Reason shape: "NEEDS_FOUNDER: <classification>: <llm reason>"
+    const kindMatch = reasonStr.match(/NEEDS_FOUNDER:\s*(\w+)/i);
+    const kind = kindMatch?.[1] ?? 'other';
+    return {
+      lead_id: r.lead_id,
+      contact_name: lead?.contact_name ?? 'Unknown',
+      company_name: lead?.company_name ?? '',
+      owner_name: member?.name ?? '',
+      kind,
+      reason: reasonStr,
+    };
+  });
+
   // ── Build content ──────────────────────────────────────────────────────────
 
   const dateLabel = format(now, 'EEEE, MMMM d yyyy');
   const subject = `Proxi CRM Daily Digest — ${format(now, 'MMM d')}`;
 
   // ── Text version ───────────────────────────────────────────────────────────
+
+  const nudgeLabel = (kind: string): string => {
+    if (kind === 'calendly_sent') return 'prospect sent a calendar link — log in and book';
+    if (kind === 'question_only') return 'prospect asked a question that needs a human answer';
+    return 'needs founder attention';
+  };
 
   const lines: string[] = [
     `Proxi CRM Daily Digest`,
@@ -226,6 +279,16 @@ export async function buildDailyDigest(): Promise<{
     `Total active leads: ${totalActive ?? 0}`,
     ``,
   ];
+
+  if (needsFounderRows.length > 0) {
+    lines.push(`NEEDS FOUNDER ATTENTION TODAY (${needsFounderRows.length})`);
+    for (const r of needsFounderRows) {
+      lines.push(
+        `  • ${r.contact_name} (${r.company_name}) — ${nudgeLabel(r.kind)} [${r.owner_name}]`
+      );
+    }
+    lines.push('');
+  }
 
   if (leadsMovedForward.length > 0) {
     lines.push(`LEADS MOVED FORWARD YESTERDAY (${leadsMovedForward.length})`);
@@ -302,6 +365,28 @@ export async function buildDailyDigest(): Promise<{
 
   const ul = (items: string[]) =>
     `<ul style="margin:0;padding-left:20px;list-style:disc;">${items.join('')}</ul>`;
+
+  const needsFounderSection =
+    needsFounderRows.length > 0
+      ? `
+        <div style="margin-bottom:24px;padding:12px 16px;border:1px solid #fecdd3;background:#fff1f2;border-radius:8px;">
+          <h2 style="font-size:14px;font-weight:700;color:#9f1239;margin:0 0 8px;">
+            Needs founder attention today (${needsFounderRows.length})
+          </h2>
+          <ul style="margin:0;padding-left:20px;list-style:disc;">
+            ${needsFounderRows
+              .map((r) =>
+                listItem(
+                  `<strong>${escHtml(r.contact_name)}</strong> ` +
+                    `(${escHtml(r.company_name)}) — ` +
+                    `<span style="color:#9f1239;">${escHtml(nudgeLabel(r.kind))}</span> ` +
+                    `<span style="color:#9ca3af;">[${escHtml(r.owner_name)}]</span>`
+                )
+              )
+              .join('')}
+          </ul>
+        </div>`
+      : '';
 
   const movedSection =
     leadsMovedForward.length > 0
@@ -414,11 +499,12 @@ export async function buildDailyDigest(): Promise<{
       <p style="color:#166534;font-size:14px;margin:0;">
         <strong>${totalActive ?? 0}</strong> active leads in pipeline &nbsp;·&nbsp;
         <strong>${leadsMovedForward.length}</strong> moved forward &nbsp;·&nbsp;
-        <strong>${staleLeads.length}</strong> stale${overdueActions.length > 0 ? ` &nbsp;·&nbsp; <span style="color:#ef4444;"><strong>${overdueActions.length}</strong> overdue tasks</span>` : ''}
+        <strong>${staleLeads.length}</strong> stale${overdueActions.length > 0 ? ` &nbsp;·&nbsp; <span style="color:#ef4444;"><strong>${overdueActions.length}</strong> overdue tasks</span>` : ''}${needsFounderRows.length > 0 ? ` &nbsp;·&nbsp; <span style="color:#9f1239;"><strong>${needsFounderRows.length}</strong> need founder</span>` : ''}
       </p>
     </div>
     <!-- Body -->
     <div style="padding:24px 32px;">
+      ${needsFounderSection}
       ${movedSection}
       ${newSection}
       ${overdueSection}

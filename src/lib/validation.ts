@@ -80,6 +80,7 @@ export const firstReplyDecisionSchema = z.object({
   classification: z.enum([
     'positive_book',
     'async_request',
+    'info_request',
     'calendly_sent',
     'question_only',
     'decline',
@@ -87,7 +88,13 @@ export const firstReplyDecisionSchema = z.object({
     'unclear',
   ]),
   reason: z.string(),
+  // Classifier no longer writes prose. Non-null only on legacy runs where the
+  // classifier and writer still share a model.
   message: z.string().nullable(),
+  // One-sentence plan for the writer module. Always populated for auto-send
+  // classifications (positive_book / async_request / info_request); null
+  // otherwise.
+  content_plan: z.string().nullable().optional(),
 });
 
 export const aiTranscriptAnalysisSchema = z.object({
