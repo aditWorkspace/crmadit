@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/admin';
-import { sendReplyInThread, getOtherFounderEmails } from '@/lib/gmail/send';
+import { sendReplyInThread } from '@/lib/gmail/send';
 import { classifySchedulingIntent } from '@/lib/gmail/scheduling-classifier';
 import { classifyFirstReply, type FirstReplyClassification } from '@/lib/ai/first-reply-classifier';
 import {
@@ -152,7 +152,7 @@ export async function runFirstReplyAutoResponder(
       // Phase 3: Fetch recent thread context.
       const { data: recentInteractions, error: intError } = await supabase
         .from('interactions')
-        .select('id, type, subject, body, gmail_message_id, gmail_thread_id, occurred_at')
+        .select('id, type, subject, body, gmail_message_id, gmail_thread_id, metadata, occurred_at')
         .eq('lead_id', lead.id)
         .in('type', ['email_inbound', 'email_outbound'])
         .order('occurred_at', { ascending: false })
@@ -385,10 +385,8 @@ export async function runFirstReplyAutoResponder(
             break;
           }
 
-          const lastInboundMsgId = lastInteraction.gmail_message_id;
-          const inReplyToMessageId = lastInboundMsgId
-            ? `<${lastInboundMsgId}@gmail.com>`
-            : undefined;
+          const rfcMessageId = (lastInteraction.metadata as { rfc_message_id?: string } | null)
+            ?.rfc_message_id;
 
           const originalSubject =
             lastInteraction.subject ||
@@ -397,16 +395,15 @@ export async function runFirstReplyAutoResponder(
             ? originalSubject
             : `Re: ${originalSubject}`;
 
-          const ccEmails = await getOtherFounderEmails(owner.id);
-
+          // Auto-replies do NOT CC the other founders. The volume would flood
+          // everyone's inboxes; manual replies still CC. See also getOtherFounderEmails docstring.
           const sentMessageId = await sendReplyInThread({
             teamMemberId: owner.id,
             threadId,
             to: lead.contact_email,
-            cc: ccEmails,
             subject: threadSubject,
             body: scrubbed,
-            inReplyToMessageId,
+            rfcMessageId,
           });
 
           const now = new Date().toISOString();

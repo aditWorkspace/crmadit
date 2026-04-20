@@ -29,9 +29,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!leadRes.data) return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
   if (!leadRes.data.contact_email) return NextResponse.json({ error: 'Lead has no email address' }, { status: 400 });
 
+  // Pull the latest inbound on this thread so we can reference its RFC
+  // Message-Id in the reply headers. Without this, Gmail can't stitch the
+  // reply into the existing conversation and opens a brand-new thread.
   const { data: lastInbound } = await supabase
     .from('interactions')
-    .select('gmail_message_id')
+    .select('metadata')
     .eq('lead_id', id)
     .eq('gmail_thread_id', thread_id)
     .eq('type', 'email_inbound')
@@ -39,9 +42,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .limit(1)
     .maybeSingle();
 
-  const inReplyToMessageId = lastInbound?.gmail_message_id ? `<${lastInbound.gmail_message_id}>` : undefined;
+  const rfcMessageId = (lastInbound?.metadata as { rfc_message_id?: string } | null)?.rfc_message_id;
   const replySubject = subject || `product prioritization at ${leadRes.data.company_name}`;
 
+  // Manual replies CC the other founders so we stay in the loop on live threads.
   const ccEmails = await getOtherFounderEmails(effectiveSenderId);
 
   const sentMessageId = await sendReplyInThread({
@@ -51,7 +55,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     cc: ccEmails,
     subject: replySubject,
     body: body.trim(),
-    inReplyToMessageId,
+    rfcMessageId,
   });
 
   const now = new Date().toISOString();

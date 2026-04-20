@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/admin';
-import { sendReplyInThread, getOtherFounderEmails } from '@/lib/gmail/send';
+import { sendReplyInThread } from '@/lib/gmail/send';
 import { autoReplyEnabled } from './kill-switch';
 
 // ── Business-hours window (Pacific Time) ────────────────────────────────────
@@ -236,10 +236,10 @@ export async function drainScheduledEmails(): Promise<DrainResult> {
         continue;
       }
 
-      // Look up thread subject from most recent interaction
+      // Look up thread subject + real RFC Message-Id from most recent inbound
       const { data: lastInt } = await supabase
         .from('interactions')
-        .select('subject, gmail_message_id')
+        .select('subject, metadata')
         .eq('lead_id', entry.lead_id)
         .eq('type', 'email_inbound')
         .order('occurred_at', { ascending: false })
@@ -252,22 +252,16 @@ export async function drainScheduledEmails(): Promise<DrainResult> {
         ? originalSubject
         : `Re: ${originalSubject}`;
 
-      const inReplyToMessageId = lastInt?.gmail_message_id
-        ? `<${lastInt.gmail_message_id}@gmail.com>`
-        : undefined;
+      const rfcMessageId = (lastInt?.metadata as { rfc_message_id?: string } | null)?.rfc_message_id;
 
-      // CC the other founders
-      const ccEmails = await getOtherFounderEmails(member.id);
-
-      // Send the email
+      // Auto-followups do NOT CC the other founders — would flood inboxes.
       const sentMessageId = await sendReplyInThread({
         teamMemberId: member.id,
         threadId: entry.gmail_thread_id,
         to: lead.contact_email,
-        cc: ccEmails,
         subject: threadSubject,
         body: entry.suggested_message,
-        inReplyToMessageId,
+        rfcMessageId,
       });
 
       const sentAt = new Date().toISOString();

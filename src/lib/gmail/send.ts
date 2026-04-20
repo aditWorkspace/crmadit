@@ -3,7 +3,9 @@ import { createAdminClient } from '@/lib/supabase/admin';
 
 /**
  * Get the email addresses of all founders except the sender.
- * Used to CC the other co-founders on every outbound email.
+ * Used to CC the other co-founders on every *manual* outbound email.
+ * Auto-paths (first-reply responder, drained queue) deliberately do NOT
+ * CC the other founders — the volume would flood everyone's inboxes.
  */
 export async function getOtherFounderEmails(senderMemberId: string): Promise<string[]> {
   const supabase = createAdminClient();
@@ -14,6 +16,44 @@ export async function getOtherFounderEmails(senderMemberId: string): Promise<str
   return (members ?? []).map(m => m.email).filter(Boolean);
 }
 
+/**
+ * Resolve the thread id that belongs to the sender's own Gmail mailbox.
+ *
+ * Gmail thread ids are scoped per Google account: thread `T_A` in Adit's
+ * inbox is a different opaque id from the same conversation's thread in
+ * Asim's inbox, even though the underlying RFC messages are identical.
+ * If we pass Adit's thread id to Asim's `messages.send`, Gmail can't find
+ * it and starts a brand-new thread.
+ *
+ * The fix is to look up the sender's copy of the conversation by the
+ * RFC 5322 Message-Id header (which IS account-agnostic), using Gmail
+ * search's `rfc822msgid:` operator.
+ *
+ * Returns the sender-local threadId, or `undefined` if not found (in
+ * which case the caller should fall through to no `threadId` — Gmail
+ * will still thread correctly thanks to `In-Reply-To`/`References`).
+ */
+async function resolveSenderThreadId(
+  teamMemberId: string,
+  rfcMessageId: string | undefined,
+): Promise<string | undefined> {
+  if (!rfcMessageId) return undefined;
+  // Gmail's query operator wants the bare id, no angle brackets.
+  const bareId = rfcMessageId.replace(/^</, '').replace(/>$/, '');
+  try {
+    const { gmail } = await getGmailClientForMember(teamMemberId);
+    const res = await gmail.users.messages.list({
+      userId: 'me',
+      q: `rfc822msgid:${bareId}`,
+      maxResults: 1,
+    });
+    const match = res.data.messages?.[0];
+    return match?.threadId || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function sendReplyInThread({
   teamMemberId,
   threadId,
@@ -21,43 +61,60 @@ export async function sendReplyInThread({
   cc,
   subject,
   body,
-  inReplyToMessageId,
+  rfcMessageId,
 }: {
   teamMemberId: string;
-  threadId: string;
+  /** The sender-local thread id if known. If this was synced from a
+   *  *different* founder's mailbox, it will NOT match the sender's own
+   *  thread id — in that case pass it anyway, we'll try to re-resolve
+   *  via RFC Message-Id first and fall back to this. */
+  threadId?: string;
   to: string;
   cc?: string[];
   subject: string;
   body: string;
-  inReplyToMessageId?: string;
+  /** Full RFC 5322 Message-Id of the message we're replying to, wrapped in
+   *  angle brackets ("<xxx@yyy>"). Used for both In-Reply-To/References
+   *  headers and for resolving the sender-local thread id. */
+  rfcMessageId?: string;
 }): Promise<string> {
   const { gmail } = await getGmailClientForMember(teamMemberId);
 
-  // Ensure subject has Re: prefix
+  // Prefer a sender-local thread id derived from the RFC Message-Id over the
+  // stored one, because the stored id may have come from another founder's
+  // inbox. Fall back to the stored id, then to undefined (fresh thread).
+  const senderLocalThreadId =
+    (await resolveSenderThreadId(teamMemberId, rfcMessageId)) || threadId || undefined;
+
+  // Ensure subject has Re: prefix — Gmail uses subject match as a secondary
+  // threading signal when the Message-Id chain is missing/broken.
   const replySubject = subject.startsWith('Re:') ? subject : `Re: ${subject}`;
 
-  // Build RFC 2822 email
-  const emailLines = [
+  const emailLines: string[] = [
     `To: ${to}`,
     `Subject: ${replySubject}`,
     'Content-Type: text/plain; charset=utf-8',
     'MIME-Version: 1.0',
   ];
 
-  // CC other founders so everyone stays in the loop
   if (cc && cc.length > 0) {
     emailLines.splice(1, 0, `Cc: ${cc.join(', ')}`);
   }
 
-  if (inReplyToMessageId) {
-    emailLines.push(`In-Reply-To: <${inReplyToMessageId}>`);
-    emailLines.push(`References: <${inReplyToMessageId}>`);
+  // Threading headers — these are what Gmail actually uses to stitch the
+  // reply into the existing conversation. Must be the real RFC Message-Id,
+  // not the Gmail API's internal message id.
+  if (rfcMessageId) {
+    const normalized = rfcMessageId.trim().startsWith('<')
+      ? rfcMessageId.trim()
+      : `<${rfcMessageId.trim()}>`;
+    emailLines.push(`In-Reply-To: ${normalized}`);
+    emailLines.push(`References: ${normalized}`);
   }
 
   emailLines.push('', body);
   const raw = emailLines.join('\r\n');
 
-  // Base64url encode
   const encoded = Buffer.from(raw)
     .toString('base64')
     .replace(/\+/g, '-')
@@ -68,7 +125,11 @@ export async function sendReplyInThread({
     userId: 'me',
     requestBody: {
       raw: encoded,
-      threadId,
+      // Only pass threadId when we resolved it in THIS account. Sending with
+      // a stale cross-account id is what caused replies to split into new
+      // threads before — without threadId Gmail relies on In-Reply-To, which
+      // is correct now.
+      ...(senderLocalThreadId ? { threadId: senderLocalThreadId } : {}),
     },
   });
 

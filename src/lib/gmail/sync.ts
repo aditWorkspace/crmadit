@@ -26,16 +26,28 @@ interface EmailHeader {
   to: string;
   subject: string;
   date: string;
+  /** Raw RFC 5322 Message-Id header. Globally unique and identical in every
+   *  mailbox that holds the message, so it survives cross-account threading.
+   *  Stored as "<xxx@domain>" including angle brackets. */
+  rfcMessageId: string;
 }
 
 function parseHeaders(headers: Array<{ name?: string | null; value?: string | null }>): EmailHeader {
   const get = (name: string) =>
     headers.find(h => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
+  // Gmail sometimes uses "Message-ID", sometimes "Message-Id" — case-insensitive get handles both.
+  const rawMsgId = get('Message-Id');
+  // Normalize: ensure angle brackets, trim whitespace, drop anything after whitespace (some
+  // senders pack comments after the id, which are illegal but common).
+  const rfcMessageId = rawMsgId
+    ? (rawMsgId.trim().startsWith('<') ? rawMsgId.trim().split(/\s+/)[0] : `<${rawMsgId.trim().split(/\s+/)[0]}>`)
+    : '';
   return {
     from: get('From'),
     to: get('To'),
     subject: get('Subject'),
     date: get('Date'),
+    rfcMessageId,
   };
 }
 
@@ -560,6 +572,7 @@ async function processMessage(
       body: bodyPreview,
       gmail_message_id: message.id ?? undefined,
       gmail_thread_id: threadId,
+      rfc_message_id: headers.rfcMessageId || undefined,
       occurred_at: message.internalDate
         ? new Date(parseInt(message.internalDate)).toISOString()
         : new Date().toISOString(),
@@ -627,6 +640,7 @@ async function processMessage(
       body: bodyPreview,
       gmail_message_id: message.id ?? undefined,
       gmail_thread_id: threadId,
+      rfc_message_id: headers.rfcMessageId || undefined,
       occurred_at: occurredAt,
     }, result);
   }
@@ -655,6 +669,11 @@ async function upsertInteraction(
     body: string;
     gmail_message_id?: string;
     gmail_thread_id?: string;
+    /** RFC 5322 Message-Id header (with angle brackets). Stored inside
+     *  metadata so reply composers can use it as the real In-Reply-To
+     *  target — the Gmail API's internal id is NOT a valid Message-Id and
+     *  making one up (`<apiId@gmail.com>`) breaks threading across accounts. */
+    rfc_message_id?: string;
     occurred_at: string;
   },
   result: SyncResult
@@ -665,12 +684,16 @@ async function upsertInteraction(
     summary = await summarizeEmail(data.subject, data.body);
   }
 
+  const { rfc_message_id, ...row } = data;
+  const initialMetadata: Record<string, unknown> = {};
+  if (rfc_message_id) initialMetadata.rfc_message_id = rfc_message_id;
+
   const { data: inserted, error } = await supabase
     .from('interactions')
     .insert({
-      ...data,
+      ...row,
       summary: summary || undefined,
-      metadata: {},
+      metadata: initialMetadata,
     })
     .select('id')
     .single();
@@ -781,17 +804,27 @@ async function runTriageAndPersist(
     companyName: lead?.company_name ?? null,
   });
 
+  // Merge into existing metadata so we don't trash the rfc_message_id that
+  // the initial insert stored. Read-modify-write within a single sync run is
+  // race-safe — no other writer mutates this row in the same window.
+  const { data: existingRow } = await supabase
+    .from('interactions')
+    .select('metadata')
+    .eq('id', interactionId)
+    .maybeSingle();
+
+  const merged = {
+    ...((existingRow?.metadata as Record<string, unknown> | null) ?? {}),
+    triage: {
+      needs_response: triage.needs_response,
+      reason: triage.reason,
+      brief: triage.brief,
+    },
+  };
+
   await supabase
     .from('interactions')
-    .update({
-      metadata: {
-        triage: {
-          needs_response: triage.needs_response,
-          reason: triage.reason,
-          brief: triage.brief,
-        },
-      },
-    })
+    .update({ metadata: merged })
     .eq('id', interactionId);
 
   if (triage.knowledge) {
