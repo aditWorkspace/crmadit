@@ -2,6 +2,7 @@ import type { gmail_v1 } from 'googleapis';
 import { getGmailClientForMember } from './client';
 import { isOutreachThread, extractCompanyFromSubject, isBounceEmail } from './matcher';
 import { parseCalendarInvite } from './calendar-parser';
+import { isCalendarNoise, hasNonInviteIcsMethod } from './calendar-noise';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { syncCalendarLeads } from '@/lib/google/calendar-sync';
 import { callAI } from '@/lib/ai/openrouter';
@@ -9,6 +10,7 @@ import { QWEN_FREE_MODEL, STAGE_ORDER } from '@/lib/constants';
 import { classifySchedulingIntent } from './scheduling-classifier';
 import { normalizeName } from '@/lib/name-utils';
 import { cancelQueuedAutoSendForLead } from '@/lib/automation/cancel-queued-autosend';
+import { tagInboundForReview } from '@/lib/automation/inbox-mentions';
 
 /** Returns true if `proposed` stage is forward from `current` in the pipeline. */
 function isForwardStage(current: string, proposed: string): boolean {
@@ -360,6 +362,19 @@ async function processMessage(
     return;
   }
 
+  // ── Path 0: Calendar-system noise ──────────────────────────────────────────
+  // "Declined: …", "Updated invitation: …", "Accepted: …", emails from
+  // calendar-notification@google.com, and any ICS with METHOD=REPLY/CANCEL
+  // all short-circuit here. Path 1 below still runs for genuine new invites
+  // (METHOD=REQUEST/PUBLISH) — those carry real scheduling info we want.
+  const bodyPreview = getBodyPreview(message);
+  if (
+    isCalendarNoise(headers.from, headers.subject, bodyPreview) ||
+    hasNonInviteIcsMethod(message)
+  ) {
+    return;
+  }
+
   // ── Path 1: Calendar invite detection ─────────────────────────────────────
   const calendarEvent = parseCalendarInvite(message);
   if (calendarEvent) {
@@ -427,7 +442,6 @@ async function processMessage(
     const occurredAt = message.internalDate
       ? new Date(parseInt(message.internalDate)).toISOString()
       : new Date().toISOString();
-    const bodyPreview = getBodyPreview(message);
     const threadId = message.threadId || undefined;
 
     let leadId: string | null = null;
@@ -532,7 +546,6 @@ async function processMessage(
     const occurredAt = message.internalDate
       ? new Date(parseInt(message.internalDate)).toISOString()
       : new Date().toISOString();
-    const bodyPreview = getBodyPreview(message);
     const threadId = message.threadId || undefined;
 
     // Update lead last_contact_at, first_reply_at, and detect scheduling signals
@@ -638,6 +651,30 @@ async function upsertInteraction(
           'Cancelled: prospect replied before scheduled send',
           supabase,
         );
+
+        // Tag the lead owner with a notification-bell mention. Dedupes per
+        // thread — one open mention at a time, so rapid-fire replies on the
+        // same thread don't pile up. Best-effort: don't block sync on a
+        // mention-table write failure.
+        try {
+          const { data: lead } = await supabase
+            .from('leads')
+            .select('owned_by')
+            .eq('id', data.lead_id)
+            .maybeSingle();
+          if (lead?.owned_by) {
+            await tagInboundForReview({
+              supabase,
+              leadId: data.lead_id,
+              ownerId: lead.owned_by,
+              threadId: data.gmail_thread_id,
+              subject: data.subject,
+              bodyPreview: data.body,
+            });
+          }
+        } catch (mentionErr) {
+          console.error('[sync] inbound mention failed:', mentionErr);
+        }
       }
     }
   } else {
