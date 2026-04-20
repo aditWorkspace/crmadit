@@ -21,9 +21,8 @@ interface Slot {
 
 type Step = 'calendar' | 'slots' | 'form';
 
-const DURATION_OPTIONS: { value: 10 | 20 | 30; label: string }[] = [
-  { value: 10, label: '10m' },
-  { value: 20, label: '20m' },
+const DURATION_OPTIONS: { value: 15 | 30; label: string }[] = [
+  { value: 15, label: '15m' },
   { value: 30, label: '30m' },
 ];
 
@@ -73,7 +72,7 @@ function BookPageContent() {
   const [month, setMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
-  const [duration, setDuration] = useState<10 | 20 | 30>(20);
+  const [duration, setDuration] = useState<15 | 30>(30);
   const [slots, setSlots] = useState<Slot[]>([]);
   const [step, setStep] = useState<Step>('calendar');
   const [loadingSlots, setLoadingSlots] = useState(false);
@@ -85,7 +84,7 @@ function BookPageContent() {
     if (tz) setUserTz(tz);
   }, []);
 
-  const interval = duration === 10 ? 15 : 30;
+  const interval = duration;
 
   const fetchSlots = useCallback(async () => {
     const monthKey = `${format(month, 'yyyy-MM')}_${interval}`;
@@ -157,7 +156,7 @@ function BookPageContent() {
     setStep('form');
   };
 
-  const handleBook = async (data: { name: string; email: string; note: string }) => {
+  const handleBook = async (data: { name: string; email: string; note: string; guestEmails: string[] }) => {
     if (!selectedSlot) return;
     const endpoint = rescheduleEventId ? '/api/calendar/reschedule' : '/api/calendar/book';
     const res = await fetch(endpoint, {
@@ -204,22 +203,31 @@ function BookPageContent() {
           <h1 className="text-xl font-bold text-white mb-2">Quick chat</h1>
           <p className="text-gray-400 text-sm mb-6">We're curious about how you think about prioritization and workflows. Would love to learn from you.</p>
 
-          <div className="flex items-center gap-1.5 mb-5">
-            <span className="text-gray-500 text-xs mr-1">⏱</span>
-            {DURATION_OPTIONS.map(opt => (
-              <button
-                key={opt.value}
-                onClick={() => { setDuration(opt.value); setSelectedSlot(null); }}
-                className={cn(
-                  'px-3 py-1 rounded-md text-sm font-medium transition-colors',
-                  duration === opt.value
-                    ? 'bg-gray-700 text-white'
-                    : 'text-gray-400 hover:text-gray-200'
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
+          <div className="mb-5">
+            <div className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-2">Duration</div>
+            <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-gray-800/60 border border-gray-700/60">
+              {DURATION_OPTIONS.map(opt => {
+                const active = duration === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => { setDuration(opt.value); setSelectedSlot(null); }}
+                    aria-pressed={active}
+                    className={cn(
+                      'cursor-pointer select-none px-3.5 py-1.5 rounded-md text-sm font-medium',
+                      'transition-all duration-150 ease-out',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30',
+                      active
+                        ? 'bg-white text-gray-900 shadow-sm scale-[1.02]'
+                        : 'text-gray-400 hover:text-white hover:bg-gray-700/50 active:scale-[0.98]'
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <div className="flex items-center gap-2 text-gray-500 text-xs mb-2">
@@ -294,7 +302,7 @@ function BookPageContent() {
           </div>
         </div>
 
-        {/* Right panel — slots or form */}
+        {/* Right panel — slots (stays visible even while booking modal is open) */}
         {(step === 'slots' || step === 'form') && selectedDate && (
           <div className="p-6 md:p-8 md:w-[260px] flex-shrink-0">
             <h3 className="text-white font-semibold mb-1">
@@ -304,31 +312,31 @@ function BookPageContent() {
               <button onClick={() => setStep('calendar')} className="text-xs text-gray-400 hover:text-gray-200">← Back</button>
             </div>
 
-            {step === 'slots' && (
-              <TimeSlotList
-                slots={slotsForDay}
-                selectedSlot={selectedSlot}
-                durationMinutes={duration}
-                timezone={userTz}
-                onSelect={handleSlotSelect}
-              />
-            )}
-
-            {step === 'form' && selectedSlot && (
-              <BookingForm
-                startTime={selectedSlot}
-                durationMinutes={duration}
-                timezone={userTz}
-                onBack={() => setStep('slots')}
-                onConfirm={handleBook}
-                defaultName={rescheduleName ?? undefined}
-                defaultEmail={rescheduleEmail ?? undefined}
-                isReschedule={!!rescheduleEventId}
-              />
-            )}
+            <TimeSlotList
+              slots={slotsForDay}
+              selectedSlot={selectedSlot}
+              durationMinutes={duration}
+              timezone={userTz}
+              loading={loadingSlots}
+              onSelect={handleSlotSelect}
+            />
           </div>
         )}
       </div>
+
+      {/* Booking form — modal overlay */}
+      {step === 'form' && selectedSlot && (
+        <BookingForm
+          startTime={selectedSlot}
+          durationMinutes={duration}
+          timezone={userTz}
+          onBack={() => setStep('slots')}
+          onConfirm={handleBook}
+          defaultName={rescheduleName ?? undefined}
+          defaultEmail={rescheduleEmail ?? undefined}
+          isReschedule={!!rescheduleEventId}
+        />
+      )}
 
       <div className="fixed bottom-4 left-0 right-0 text-center text-xs text-gray-600">
         Berkeley founders · Scheduling

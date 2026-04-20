@@ -18,6 +18,7 @@ export async function POST(req: NextRequest) {
     durationMinutes: number;
     note?: string;
     rescheduleEventId: string;
+    guestEmails?: string[];
   };
 
   try {
@@ -26,9 +27,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const { name, email, startTime, durationMinutes, note, rescheduleEventId } = body;
+  const { name, email, startTime, durationMinutes, note, rescheduleEventId, guestEmails } = body;
 
-  if (!name?.trim() || !email?.trim() || !startTime || ![10, 20, 30].includes(durationMinutes)) {
+  if (!name?.trim() || !email?.trim() || !startTime || ![15, 30].includes(durationMinutes)) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
   if (!rescheduleEventId?.trim()) {
@@ -38,6 +39,15 @@ export async function POST(req: NextRequest) {
   const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRe.test(email)) {
     return NextResponse.json({ error: 'Invalid email address' }, { status: 400 });
+  }
+
+  const cleanGuests: string[] = Array.isArray(guestEmails)
+    ? guestEmails
+        .map(g => (typeof g === 'string' ? g.trim() : ''))
+        .filter(g => g.length > 0 && emailRe.test(g))
+    : [];
+  if (cleanGuests.length > 20) {
+    return NextResponse.json({ error: 'Too many guests (max 20)' }, { status: 400 });
   }
 
   const start = new Date(startTime);
@@ -123,7 +133,7 @@ export async function POST(req: NextRequest) {
   );
 
   const founderEmails = (allMembers ?? connectedMembers).map(m => m.email);
-  const allEmails = [...new Set([...founderEmails, email])];
+  const allEmails = [...new Set([...founderEmails, email, ...cleanGuests])];
 
   const event = await createMeetingEvent(freeMembers[0].id, {
     summary: `Quick chat — ${name.trim()} × Adit, Srijay & Asim`,
