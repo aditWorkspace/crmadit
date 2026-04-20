@@ -24,6 +24,12 @@ type LeadRef = {
 
 type TeamMemberRef = { id: string; name: string } | null;
 
+type TriageMetadata = {
+  needs_response?: boolean;
+  reason?: string;
+  brief?: string;
+};
+
 type RawEmailRow = {
   id: string;
   type: string;
@@ -33,6 +39,7 @@ type RawEmailRow = {
   occurred_at: string;
   gmail_thread_id: string;
   gmail_message_id: string | null;
+  metadata: { triage?: TriageMetadata } | null;
   lead: LeadRef | null;
   team_member: TeamMemberRef;
 };
@@ -53,6 +60,11 @@ type ThreadAgg = {
   latest_at: string;
   latest_subject: string;
   latest_type: string;
+  /** Whether the latest inbound on this thread is flagged by AI as needing a
+   *  founder response. Fail-open: unclassified rows default to true. */
+  latest_needs_response: boolean;
+  latest_triage_reason: string | null;
+  latest_triage_brief: string | null;
   message_count: number;
   inbound_count: number;
   is_unread: boolean;
@@ -88,7 +100,7 @@ export async function GET(req: NextRequest) {
     .from('interactions')
     .select(
       `
-      id, type, subject, body, summary, occurred_at, gmail_thread_id, gmail_message_id,
+      id, type, subject, body, summary, occurred_at, gmail_thread_id, gmail_message_id, metadata,
       lead:leads!inner(id, contact_name, company_name, contact_email, stage, owned_by),
       team_member:team_members(id, name)
     `
@@ -112,11 +124,24 @@ export async function GET(req: NextRequest) {
 
     let thread = threadMap.get(tid);
     if (!thread) {
+      // Rows arrive sorted DESC by occurred_at, so the first row seen for a
+      // thread IS the latest. Seed the triage fields from this row.
+      const triage = row.metadata?.triage;
+      const isInbound = row.type === 'email_inbound';
       thread = {
         thread_id: tid,
         latest_at: row.occurred_at,
         latest_subject: row.subject || '(no subject)',
         latest_type: row.type,
+        // Only inbound messages can gate the Needs Response filter. For
+        // outbound-latest threads we keep true so other tabs don't drift.
+        latest_needs_response: isInbound
+          ? typeof triage?.needs_response === 'boolean'
+            ? triage.needs_response
+            : true
+          : true,
+        latest_triage_reason: isInbound ? triage?.reason ?? null : null,
+        latest_triage_brief: isInbound ? triage?.brief ?? null : null,
         message_count: 0,
         inbound_count: 0,
         is_unread: false,
@@ -193,7 +218,12 @@ export async function GET(req: NextRequest) {
 
     switch (filter) {
       case 'needs_response':
-        return t.latest_type === 'email_inbound' && !isSnoozed && !isArchived;
+        return (
+          t.latest_type === 'email_inbound' &&
+          t.latest_needs_response &&
+          !isSnoozed &&
+          !isArchived
+        );
       case 'sent':
         return t.latest_type === 'email_outbound' && !isArchived;
       case 'snoozed':

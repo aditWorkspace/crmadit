@@ -7,12 +7,14 @@ type RawRow = {
   type: string;
   occurred_at: string;
   gmail_thread_id: string;
+  metadata: { triage?: { needs_response?: boolean } } | null;
 };
 
 type ThreadSummary = {
   thread_id: string;
   latest_at: string;
   latest_type: string;
+  latest_needs_response: boolean;
   snoozed_until: string | null;
   archived_at: string | null;
   is_unread: boolean;
@@ -28,7 +30,7 @@ export async function GET(req: NextRequest) {
   // doesn't need to be perfectly precise past the most recent ~500 messages.
   const { data: rows, error } = await supabase
     .from('interactions')
-    .select('id, type, occurred_at, gmail_thread_id')
+    .select('id, type, occurred_at, gmail_thread_id, metadata')
     .in('type', ['email_inbound', 'email_outbound'])
     .not('gmail_thread_id', 'is', null)
     .order('occurred_at', { ascending: false })
@@ -42,10 +44,19 @@ export async function GET(req: NextRequest) {
     if (!r.gmail_thread_id) continue;
     if (threadMap.has(r.gmail_thread_id)) continue;
     // Because rows are sorted DESC by occurred_at, the first row per thread is the latest.
+    // First row per thread is the latest (rows arrive DESC). Fail-open:
+    // unclassified inbound defaults to needs_response=true.
+    const triage = r.metadata?.triage;
+    const isInbound = r.type === 'email_inbound';
     threadMap.set(r.gmail_thread_id, {
       thread_id: r.gmail_thread_id,
       latest_at: r.occurred_at,
       latest_type: r.type,
+      latest_needs_response: isInbound
+        ? typeof triage?.needs_response === 'boolean'
+          ? triage.needs_response
+          : true
+        : true,
       snoozed_until: null,
       archived_at: null,
       is_unread: false,
@@ -102,7 +113,14 @@ export async function GET(req: NextRequest) {
     if (isSnoozed) counts.snoozed++;
 
     if (!isArchived) counts.all++;
-    if (t.latest_type === 'email_inbound' && !isSnoozed && !isArchived) counts.needs_response++;
+    if (
+      t.latest_type === 'email_inbound' &&
+      t.latest_needs_response &&
+      !isSnoozed &&
+      !isArchived
+    ) {
+      counts.needs_response++;
+    }
     if (t.latest_type === 'email_outbound' && !isArchived) counts.sent++;
     if (t.is_unread && !isArchived) counts.unread++;
   }

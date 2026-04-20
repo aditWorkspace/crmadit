@@ -11,6 +11,7 @@ import { classifySchedulingIntent } from './scheduling-classifier';
 import { normalizeName } from '@/lib/name-utils';
 import { cancelQueuedAutoSendForLead } from '@/lib/automation/cancel-queued-autosend';
 import { tagInboundForReview } from '@/lib/automation/inbox-mentions';
+import { triageInboundEmail } from '@/lib/ai/inbox-triage';
 
 /** Returns true if `proposed` stage is forward from `current` in the pipeline. */
 function isForwardStage(current: string, proposed: string): boolean {
@@ -664,11 +665,15 @@ async function upsertInteraction(
     summary = await summarizeEmail(data.subject, data.body);
   }
 
-  const { error } = await supabase.from('interactions').insert({
-    ...data,
-    summary: summary || undefined,
-    metadata: {},
-  });
+  const { data: inserted, error } = await supabase
+    .from('interactions')
+    .insert({
+      ...data,
+      summary: summary || undefined,
+      metadata: {},
+    })
+    .select('id')
+    .single();
 
   // 23505 = unique_violation on gmail_message_id — expected deduplication
   if (!error || (error as { code?: string }).code === '23505') {
@@ -681,32 +686,127 @@ async function upsertInteraction(
           supabase,
         );
 
-        // Tag the lead owner with a notification-bell mention. Dedupes per
-        // thread — one open mention at a time, so rapid-fire replies on the
-        // same thread don't pile up. Best-effort: don't block sync on a
-        // mention-table write failure.
+        // Run AI triage: decides whether this inbound needs a founder reply
+        // and extracts any durable product insight. Best-effort — any failure
+        // leaves metadata empty, and downstream filters fail-open (so a
+        // classifier hiccup never hides a real reply).
+        let needsResponse = true;
         try {
-          const { data: lead } = await supabase
-            .from('leads')
-            .select('owned_by')
-            .eq('id', data.lead_id)
-            .maybeSingle();
-          if (lead?.owned_by) {
-            await tagInboundForReview({
+          if (inserted?.id) {
+            const triage = await runTriageAndPersist(
               supabase,
-              leadId: data.lead_id,
-              ownerId: lead.owned_by,
-              threadId: data.gmail_thread_id,
-              subject: data.subject,
-              bodyPreview: data.body,
-            });
+              inserted.id,
+              data.lead_id,
+              data.gmail_thread_id,
+              data.subject,
+              data.body,
+            );
+            needsResponse = triage.needs_response;
           }
-        } catch (mentionErr) {
-          console.error('[sync] inbound mention failed:', mentionErr);
+        } catch (triageErr) {
+          console.error('[sync] inbound triage failed:', triageErr);
+        }
+
+        // Tag the lead owner with a notification-bell mention — only when
+        // triage says this inbound actually needs a response. Acks and OOO
+        // auto-replies shouldn't light up the bell.
+        if (needsResponse) {
+          try {
+            const { data: lead } = await supabase
+              .from('leads')
+              .select('owned_by')
+              .eq('id', data.lead_id)
+              .maybeSingle();
+            if (lead?.owned_by) {
+              await tagInboundForReview({
+                supabase,
+                leadId: data.lead_id,
+                ownerId: lead.owned_by,
+                threadId: data.gmail_thread_id,
+                subject: data.subject,
+                bodyPreview: data.body,
+              });
+            }
+          } catch (mentionErr) {
+            console.error('[sync] inbound mention failed:', mentionErr);
+          }
         }
       }
     }
   } else {
     throw new Error(error.message);
   }
+}
+
+/**
+ * Fetch thread context + lead, run triage, persist to interactions.metadata,
+ * and append any extracted knowledge snippet. Returns the triage result so
+ * the caller can decide whether to fire the mention notification.
+ */
+async function runTriageAndPersist(
+  supabase: ReturnType<typeof import('@/lib/supabase/admin').createAdminClient>,
+  interactionId: string,
+  leadId: string,
+  threadId: string | undefined,
+  subject: string,
+  body: string,
+): Promise<{ needs_response: boolean }> {
+  // Most-recent outbound on this thread, if any — gives the classifier
+  // context for "did we ask a question that this reply answers?"
+  let priorOutbound: string | null = null;
+  if (threadId) {
+    const { data: prior } = await supabase
+      .from('interactions')
+      .select('body')
+      .eq('gmail_thread_id', threadId)
+      .eq('type', 'email_outbound')
+      .order('occurred_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    priorOutbound = prior?.body ?? null;
+  }
+
+  const { data: lead } = await supabase
+    .from('leads')
+    .select('stage, contact_name, company_name')
+    .eq('id', leadId)
+    .maybeSingle();
+
+  const triage = await triageInboundEmail({
+    inboundSubject: subject,
+    inboundBody: body,
+    priorOutboundBody: priorOutbound,
+    leadStage: lead?.stage ?? null,
+    contactName: lead?.contact_name ?? null,
+    companyName: lead?.company_name ?? null,
+  });
+
+  await supabase
+    .from('interactions')
+    .update({
+      metadata: {
+        triage: {
+          needs_response: triage.needs_response,
+          reason: triage.reason,
+          brief: triage.brief,
+        },
+      },
+    })
+    .eq('id', interactionId);
+
+  if (triage.knowledge) {
+    const when = new Date().toISOString().slice(0, 10);
+    const who = [lead?.contact_name, lead?.company_name].filter(Boolean).join(' @ ') || 'email';
+    const snippet = `\n---\n### ${when} — ${who} (inbox)\n- ${triage.knowledge.snippet}\n`;
+    try {
+      await supabase.rpc('append_knowledge_doc', {
+        p_doc_type: triage.knowledge.type,
+        p_content: snippet,
+      });
+    } catch (kErr) {
+      console.error('[sync] knowledge append failed:', kErr);
+    }
+  }
+
+  return { needs_response: triage.needs_response };
 }

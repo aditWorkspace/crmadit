@@ -34,7 +34,11 @@ export const ACTIVE_STAGES: LeadStage[] = [
 //                    followup should-send). JSON mode is reliable here.
 //   - WRITER_MODEL   Haiku 4.5. Every outbound prose body (first-reply,
 //                    fast-loop, info-reply, 48h followup). Warm voice.
-export const TRIAGE_MODEL = 'qwen/qwen3-14b:free';
+// NOTE: `qwen/qwen3-14b:free` was pulled from OpenRouter around 2026-04
+// ("No endpoints found"), so TRIAGE_MODEL now points at DeepSeek v3. It's ~
+// $0.0003 per classification, which is fine at our volume, and JSON mode is
+// reliable. If a free model comes back that's worth using, swap here.
+export const TRIAGE_MODEL = 'deepseek/deepseek-chat-v3-0324';
 export const DECIDER_MODEL = 'deepseek/deepseek-chat-v3-0324';
 export const WRITER_MODEL = 'anthropic/claude-haiku-4-5';
 
