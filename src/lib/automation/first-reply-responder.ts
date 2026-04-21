@@ -26,7 +26,9 @@ const MAX_LEADS_PER_RUN = 25;
 // Any inbound older than this is almost certainly not a "first reply we're
 // still fresh enough to auto-respond to". Prevents awkward auto-responses to
 // weeks-old replies that for whatever reason never got the flag flipped.
-const MAX_INBOUND_AGE_HOURS = 72;
+// Inbounds older than this are pushed to manual_review (NEEDS_FOUNDER) so
+// they surface on the dashboard instead of being silently dropped.
+const MAX_INBOUND_AGE_HOURS = 168; // 7 days
 
 export interface FirstReplyResult {
   processed: number;
@@ -185,14 +187,26 @@ export async function runFirstReplyAutoResponder(
       const inboundAgeHours =
         (Date.now() - new Date(lastInteraction.occurred_at).getTime()) / (1000 * 60 * 60);
       if (inboundAgeHours > MAX_INBOUND_AGE_HOURS) {
-        await rollbackLock(supabase, lead.id, dryRun);
-        result.skipped++;
+        // Don't auto-reply (too stale to feel natural), but DO surface for the
+        // founder. Keep the lock set so we don't re-create manual reviews on
+        // every cron run. The dashboard's NEEDS_FOUNDER strip picks this up.
+        if (!dryRun && lastInteraction.gmail_thread_id) {
+          await createManualReview(supabase, {
+            leadId: lead.id,
+            ownedBy: lead.owned_by,
+            threadId: lastInteraction.gmail_thread_id,
+            classification: 'unclear',
+            reason: `inbound_too_old_${Math.round(inboundAgeHours)}h`,
+            needsFounder: true,
+          });
+        }
+        result.manual_review++;
         recordDetail(
           result,
           lead.id,
-          'skipped',
-          `inbound too old (${Math.round(inboundAgeHours)}h)`,
-          'skipped'
+          'unclear',
+          `inbound too old (${Math.round(inboundAgeHours)}h) — surfaced for founder`,
+          'manual_review'
         );
         continue;
       }
