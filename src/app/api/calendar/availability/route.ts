@@ -82,10 +82,19 @@ export async function GET(req: NextRequest) {
       return overlaps(cursor, slotEnd, busyByMember[m.id]);
     }).length;
 
-    // When bookingOnly: skip slots where ANY founder is busy (all must be free)
-    if (bookingOnly && busyCount > 0) {
-      cursor.setTime(cursor.getTime() + intervalMs);
-      continue;
+    // When bookingOnly: Adit AND Srijay must both be free. Asim doesn't matter.
+    if (bookingOnly) {
+      const requiredMembers = (members ?? []).filter(m =>
+        m.name === 'Adit' || m.name === 'Srijay'
+      );
+      const requiredBusy = requiredMembers.some(m => {
+        if (!fetchedMemberIds.has(m.id)) return true; // assume busy if no data
+        return overlaps(cursor, slotEnd, busyByMember[m.id]);
+      });
+      if (requiredBusy) {
+        cursor.setTime(cursor.getTime() + intervalMs);
+        continue;
+      }
     }
 
     slots.push({
