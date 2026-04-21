@@ -23,6 +23,11 @@ import { autoReplyEnabled, infoReplyEnabled } from './kill-switch';
 // happens (e.g. a backlog after a cron outage).
 const MAX_LEADS_PER_RUN = 25;
 
+// Minimum classifier confidence required for any auto-send branch. Anything
+// below this routes to NEEDS_FOUNDER manual review so the founder handles the
+// long tail of weird/edge-case replies instead of the system guessing.
+const AUTO_REPLY_CONFIDENCE_THRESHOLD = 0.85;
+
 // Any inbound older than this is almost certainly not a "first reply we're
 // still fresh enough to auto-respond to". Prevents awkward auto-responses to
 // weeks-old replies that for whatever reason never got the flag flipped.
@@ -282,6 +287,38 @@ export async function runFirstReplyAutoResponder(
           category: 'question_technical',
           reason: `info_reply_disabled: ${decision.reason}`,
         };
+      }
+
+      // Confidence gate: anything below the threshold, plus the explicit
+      // 'other' edge-case bucket, goes to NEEDS_FOUNDER manual review. This
+      // keeps the system from auto-replying to the long tail of weird replies.
+      const decisionConfidence = decision.confidence ?? 0;
+      const isLowConfidence = decisionConfidence < AUTO_REPLY_CONFIDENCE_THRESHOLD;
+      const isEdgeCase = decision.category === 'other';
+      if (isEdgeCase || isLowConfidence) {
+        if (!dryRun) {
+          await createManualReview(supabase, {
+            leadId: lead.id,
+            ownedBy: lead.owned_by,
+            threadId,
+            category: decision.category,
+            reason: isEdgeCase
+              ? `other_edge_case: ${decision.reason}`
+              : `low_confidence_${decisionConfidence.toFixed(2)}: ${decision.category}: ${decision.reason}`,
+            needsFounder: true,
+          });
+        }
+        result.manual_review++;
+        recordDetail(
+          result,
+          lead.id,
+          decision.category,
+          isEdgeCase
+            ? `other_edge_case (conf ${decisionConfidence.toFixed(2)})`
+            : `low_confidence ${decisionConfidence.toFixed(2)} < ${AUTO_REPLY_CONFIDENCE_THRESHOLD}`,
+          'manual_review'
+        );
+        continue;
       }
 
       // Phase 7: Branch on category. Categories are grouped by action type.

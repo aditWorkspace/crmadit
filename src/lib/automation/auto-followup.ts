@@ -15,6 +15,12 @@ function firstNameOf(fullName: string | null | undefined, fallback = 'there'): s
 const FOLLOWUP_HOURS = 48;
 const MAX_AI_CALLS_PER_RUN = 50;
 
+// Minimum AI confidence required to queue an auto-follow-up. Anything below
+// this is skipped so the founder handles it manually. The AI is explicitly
+// told to score low when it isn't sure, so low-confidence responses are the
+// "other" bucket we never want to send automatically.
+const AUTO_FOLLOWUP_CONFIDENCE_THRESHOLD = 0.85;
+
 // Narrowed to 'scheduling' only: the 'replied' stage is now owned by the
 // first-reply auto-responder in first-reply-responder.ts.
 const AUTO_FOLLOWUP_STAGES = ['scheduling'];
@@ -31,6 +37,7 @@ interface AiFollowupDecision {
   should_send: boolean;
   reason: string;
   message: string | null;
+  confidence: number;
 }
 
 async function getFollowupDecision(
@@ -53,13 +60,20 @@ async function getFollowupDecision(
     jsonMode: true,
     systemPrompt: `You are a sales assistant deciding whether to send a follow-up email.
 
-Return JSON: { "should_send": boolean, "reason": string, "message": string | null }
+Return JSON: { "should_send": boolean, "reason": string, "message": string | null, "confidence": number }
 
 Rules:
-- should_send = true if my last email asked a question, shared something that needs a response, or proposed next steps
-- should_send = false if my last email was a natural close ("no worries", "sounds good", "talk soon", "thanks") or if following up would feel pushy/inappropriate
+- should_send = true ONLY if my last email clearly asked a question, shared something that needs a response, or proposed next steps, AND the thread is a normal back-and-forth a follow-up would fit into
+- should_send = false if my last email was a natural close ("no worries", "sounds good", "talk soon", "thanks"), or if the prospect was out-of-office / delayed / noncommittal, or if following up would feel pushy/inappropriate, or if anything about the thread is unusual
+- When in doubt at all, set should_send = false. A founder will handle the edge cases manually; we prefer missing a send over sending something weird.
 - If should_send = true: write a warm, 1-2 sentence follow-up in "message". Reference the context naturally.
 - If should_send = false: message = null
+- confidence: number between 0 and 1 reflecting how sure you are about should_send.
+  - 0.95+ only when the situation is textbook (e.g. I asked a direct question, no reply, nothing weird in the thread)
+  - 0.8-0.94 when you're clearly right but there's minor noise
+  - 0.6-0.79 when you're leaning one way but it could plausibly go the other
+  - below 0.6 when genuinely uncertain — in that case should_send MUST be false
+  An auto-send will only happen if confidence is high AND should_send is true, so be honest: if you're not sure, score low.
 - NEVER use em dashes (the — character). Use commas or periods instead. This rule is absolute.
 - NEVER describe, explain, or pitch what Proxi does. Sound like a curious student, not a salesperson.
 - No filler phrases ("I hope this finds you well", "Just following up", "Just wanted to check in")
@@ -80,11 +94,16 @@ Should I follow up?`,
   try {
     const parsed = aiFollowupDecisionSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) {
-      return { should_send: false, reason: `AI response validation failed: ${parsed.error.issues[0]?.message}`, message: null };
+      return {
+        should_send: false,
+        reason: `AI response validation failed: ${parsed.error.issues[0]?.message}`,
+        message: null,
+        confidence: 0,
+      };
     }
     return parsed.data;
   } catch {
-    return { should_send: false, reason: 'Failed to parse AI response', message: null };
+    return { should_send: false, reason: 'Failed to parse AI response', message: null, confidence: 0 };
   }
 }
 
@@ -196,6 +215,16 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
 
       if (!decision.should_send || !decision.message) {
         result.skipped++;
+        result.skipped_reasons['ai_declined'] = (result.skipped_reasons['ai_declined'] || 0) + 1;
+        continue;
+      }
+
+      // Confidence gate: treat any low-confidence decision as the "other"
+      // edge-case bucket and leave it for the founder to handle manually.
+      if ((decision.confidence ?? 0) < AUTO_FOLLOWUP_CONFIDENCE_THRESHOLD) {
+        result.skipped++;
+        result.skipped_reasons['low_confidence'] =
+          (result.skipped_reasons['low_confidence'] || 0) + 1;
         continue;
       }
 

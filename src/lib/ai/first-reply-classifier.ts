@@ -20,8 +20,9 @@ export const FIRST_REPLY_SYSTEM_PROMPT = `You are classifying a prospect's reply
 
 Return ONLY a JSON object:
 {
-  "category": "<one of 25 categories below>",
+  "category": "<one of the categories below>",
   "reason": "1-sentence explanation",
+  "confidence": <number between 0 and 1>,
   "follow_up_date": "YYYY-MM-DD" or null,
   "referral_name": "string" or null,
   "referral_email": "string" or null
@@ -69,7 +70,8 @@ GROUP G - MANUAL REVIEW:
 - question_pricing: Pricing question (cost, pricing model, free tier, enterprise pricing)
 
 FALLBACK:
-- unclear: Cannot determine intent, ambiguous, or doesn't fit any category
+- unclear: Intent is ambiguous but leans toward one of the above groups
+- other: The reply is a genuine edge case — random aside, off-topic remark, unusual tone, a request we don't have a template for, or anything that would feel weird to auto-reply to. Always use this for the ~1% of messages where a human founder should handle it personally.
 
 RULES:
 1. For delay_* categories: ALWAYS populate follow_up_date with best guess in YYYY-MM-DD format
@@ -81,7 +83,13 @@ RULES:
 2. For referral_named: Extract the name, and email if provided in the message
 3. decline_* categories should NEVER trigger an auto-reply
 4. When in doubt between categories, pick the one that requires LESS automation (safer)
-5. Return pure JSON only. No markdown fences, no explanation outside the object.`;
+5. CONFIDENCE: Return a number between 0 and 1 reflecting how certain you are in the chosen category.
+   - 0.95+ only when the reply is textbook for that category (e.g. "Unsubscribe" → decline_unsubscribe at 1.0)
+   - 0.8-0.94 when the classification is clearly right but the reply has some noise
+   - 0.6-0.79 when you're leaning toward a category but it could plausibly be another
+   - below 0.6 when genuinely uncertain — in that case prefer category "other" or "unclear" with a low confidence
+   Any reply the founder would want to read personally before we send something should score low. An auto-reply will only be sent if confidence is high, so be honest: if you're not sure, score low.
+6. Return pure JSON only. No markdown fences, no explanation outside the object.`;
 
 function buildUserMessage(opts: ClassifyFirstReplyOptions): string {
   const role = opts.contactRole ? `${opts.contactRole} at ${opts.companyName}` : opts.companyName;
@@ -168,6 +176,7 @@ export async function classifyFirstReply(
     return {
       category: 'unclear',
       reason: `ai_error: ${err instanceof Error ? err.message : String(err)}`,
+      confidence: 0,
     };
   }
 
@@ -178,6 +187,7 @@ export async function classifyFirstReply(
     return {
       category: 'unclear',
       reason: `json_parse_failed: ${err instanceof Error ? err.message : 'unknown'} | raw: ${raw.slice(0, 800)}`,
+      confidence: 0,
     };
   }
 
@@ -186,6 +196,7 @@ export async function classifyFirstReply(
     return {
       category: 'unclear',
       reason: `schema_invalid: ${parsed.error.issues[0]?.message ?? 'unknown'}`,
+      confidence: 0,
     };
   }
 
