@@ -1,16 +1,23 @@
 import { NextRequest } from 'next/server';
 import { createAdminClient } from './supabase/admin';
 import { TeamMember } from '@/types';
+import { SESSION_COOKIE_NAME, verifySession } from './auth/cookie-session';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// Simple in-process cache — only 3 members ever, TTL 5 min
+// In-process cache — only 3 members ever, TTL 5 min
 const memberCache = new Map<string, { member: TeamMember; expiresAt: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Reads team member from the signed session cookie. The legacy
+ * x-team-member-id header path has been REMOVED — without a valid
+ * cookie, every request is unauthenticated.
+ */
 export async function getSessionFromRequest(req: NextRequest): Promise<TeamMember | null> {
-  const memberId = req.headers.get('x-team-member-id');
-  if (!memberId || !UUID_RE.test(memberId)) return null;
+  const cookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+  const payload = verifySession(cookie);
+  if (!payload) return null;
+
+  const memberId = payload.tm;
 
   const cached = memberCache.get(memberId);
   if (cached && cached.expiresAt > Date.now()) return cached.member;
