@@ -43,12 +43,18 @@ export function useSessionState(): SessionContextValue {
     clearTimer();
     setUserState(null);
     try { sessionStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
-    // Best-effort server-side cookie clear. Don't block on it.
-    try { fetch('/api/auth/signout', { method: 'POST', credentials: 'include' }); } catch { /* ignore */ }
-    // Full reload wipes in-memory React state so the next user doesn't briefly
-    // see the previous user's cached data.
     if (redirect && typeof window !== 'undefined') {
-      window.location.href = '/';
+      // Navigate to GET /api/auth/signout so cookie clear + redirect happen
+      // in a single server response. Using fetch+navigate races: the browser
+      // cancels the in-flight POST when navigation starts, leaving the cookie
+      // intact and re-authing the user on the reload.
+      window.location.href = '/api/auth/signout';
+    } else {
+      // Non-redirect path (e.g. expiry timer in a hidden tab): keepalive lets
+      // the request survive even if the tab is closed mid-flight.
+      try {
+        fetch('/api/auth/signout', { method: 'POST', credentials: 'include', keepalive: true });
+      } catch { /* ignore */ }
     }
   };
 
