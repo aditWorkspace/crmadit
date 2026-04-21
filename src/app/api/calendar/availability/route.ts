@@ -1,7 +1,8 @@
 // src/app/api/calendar/availability/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { getFreeBusy, getEventsInRange } from '@/lib/google/calendar';
+import { getEventsInRange } from '@/lib/google/calendar';
+import { getCachedAvailability } from '@/lib/calendar/availability-cache';
 
 function overlaps(
   slotStart: Date,
@@ -37,28 +38,18 @@ export async function GET(req: NextRequest) {
     .select('id, name, email')
     .eq('gmail_connected', true);
 
-  // Fetch freebusy for all connected members in parallel.
-  // IMPORTANT: treat failed fetches as BUSY (fail-closed).
-  // If we can't confirm someone is free, we must not allow bookings during that time.
+  // Use cached availability for fast loads (warmed by cron every 15 min)
+  const { data: cachedData, fromCache, failedCount } = await getCachedAvailability(timeMin, timeMax);
+
   const busyByMember: Record<string, { start: string; end: string }[]> = {};
   const fetchedMemberIds = new Set<string>();
-  let failedCount = 0;
 
-  if (members?.length) {
-    const results = await Promise.allSettled(
-      members.map(m => getFreeBusy(m.id, timeMin, timeMax))
-    );
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      if (r.status === 'fulfilled') {
-        busyByMember[members[i].id] = r.value.busy;
-        fetchedMemberIds.add(members[i].id);
-      } else {
-        failedCount++;
-        console.error(`[availability] FreeBusy failed for ${members[i].name}:`, r.reason);
-      }
-    }
-  } else {
+  for (const c of cachedData) {
+    busyByMember[c.memberId] = c.busy;
+    fetchedMemberIds.add(c.memberId);
+  }
+
+  if (!members?.length && cachedData.length === 0) {
     console.warn('[availability] No gmail_connected members found');
   }
 

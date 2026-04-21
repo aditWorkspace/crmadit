@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getFreeBusy, createMeetingEvent } from '@/lib/google/calendar';
+import { sanitizeName, sanitizeText, sanitizeEmail } from '@/lib/utils/sanitize';
 
 function overlaps(
   slotStart: Date,
@@ -27,9 +28,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const { name, email, startTime, durationMinutes, note, guestEmails } = body;
+  const { name: rawName, email: rawEmail, startTime, durationMinutes, note: rawNote, guestEmails } = body;
 
-  if (!name?.trim() || !email?.trim() || !startTime || ![15, 30].includes(durationMinutes)) {
+  // Sanitize all user inputs to prevent XSS
+  const name = sanitizeName(rawName || '');
+  const email = sanitizeEmail(rawEmail || '');
+  const note = sanitizeText(rawNote || '');
+
+  if (!name || !email || !startTime || ![15, 30].includes(durationMinutes)) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
@@ -40,7 +46,7 @@ export async function POST(req: NextRequest) {
 
   const cleanGuests: string[] = Array.isArray(guestEmails)
     ? guestEmails
-        .map(g => (typeof g === 'string' ? g.trim() : ''))
+        .map(g => (typeof g === 'string' ? sanitizeEmail(g) : ''))
         .filter(g => g.length > 0 && emailRe.test(g))
     : [];
   if (cleanGuests.length > 20) {
@@ -122,18 +128,65 @@ export async function POST(req: NextRequest) {
     (a.name.toLowerCase() === 'adit' ? -1 : 0) - (b.name.toLowerCase() === 'adit' ? -1 : 0)
   );
 
+  // Idempotency check: prevent double-click creating duplicate events
+  // Key is email + startTime (same person booking same slot = duplicate)
+  const idempotencyKey = `${email}_${startTime}`;
+  const { data: existingBooking } = await supabase
+    .from('booking_idempotency')
+    .select('event_id')
+    .eq('idempotency_key', idempotencyKey)
+    .maybeSingle();
+
+  if (existingBooking?.event_id) {
+    // Return cached result instead of creating duplicate
+    return NextResponse.json({
+      meetLink: null,
+      eventLink: null,
+      eventId: existingBooking.event_id,
+      startTime: start.toISOString(),
+      endTime: end.toISOString(),
+      name,
+      email,
+      durationMinutes,
+      cached: true,
+    });
+  }
+
+  // Insert idempotency record BEFORE creating event (optimistic lock)
+  const { error: lockError } = await supabase
+    .from('booking_idempotency')
+    .insert({
+      idempotency_key: idempotencyKey,
+      booking_email: email,
+      start_time: start.toISOString(),
+    });
+
+  if (lockError?.code === '23505') {
+    // Unique constraint violation = concurrent request already locked
+    return NextResponse.json(
+      { error: 'Booking in progress, please wait...' },
+      { status: 409 }
+    );
+  }
+
   const founderEmails = (allMembers ?? connectedMembers).map(m => m.email);
   const allEmails = [...new Set([...founderEmails, email, ...cleanGuests])];
 
   const event = await createMeetingEvent(freeMembers[0].id, {
-    summary: `Quick chat — ${name.trim()} × Adit, Srijay & Asim`,
-    description: note?.trim()
-      ? `Booking note: ${note.trim()}\n\nsource:proxi_crm`
+    summary: `Quick chat — ${name} × Adit, Srijay & Asim`,
+    description: note
+      ? `Booking note: ${note}\n\nsource:proxi_crm`
       : 'source:proxi_crm',
     startTime: start,
     endTime: end,
     attendeeEmails: allEmails,
   });
+
+  // Update idempotency record with event ID
+  await supabase
+    .from('booking_idempotency')
+    .update({ event_id: event.eventId })
+    .eq('idempotency_key', idempotencyKey);
 
   // Send confirmation email to booker via Resend
   const resendApiKey = process.env.RESEND_API_KEY;
