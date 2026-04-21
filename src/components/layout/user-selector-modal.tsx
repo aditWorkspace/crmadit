@@ -3,8 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSession } from '@/hooks/use-session';
 import { TeamMember } from '@/types';
-import { Loader2, ArrowLeft, Fingerprint } from '@/lib/icons';
-import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
+import { Loader2, ArrowLeft } from '@/lib/icons';
 
 const AVATAR_COLORS = ['bg-blue-500', 'bg-violet-500', 'bg-emerald-500'];
 
@@ -17,7 +16,7 @@ export function UserSelectorModal() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);
-  const [step, setStep] = useState<'password' | '2fa' | 'register'>('password');
+  const [step, setStep] = useState<'password'>('password');
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -68,101 +67,10 @@ export function UserSelectorModal() {
         return;
       }
 
-      // Check if localhost - skip Touch ID on localhost (doesn't work reliably)
-      const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-
-      if (isLocalhost) {
-        // Localhost: password only, complete login
-        setUser({ team_member_id: selected!.id, name: selected!.name });
-        return;
-      }
-
-      // Production: require Touch ID
-      const statusRes = await fetch(`/api/auth/passkey/status?memberId=${selected!.id}`);
-      const statusData = await statusRes.json();
-
-      if (statusData.hasPasskey) {
-        setStep('2fa');
-      } else {
-        setStep('register');
-      }
-      setPin('');
+      // Password verified - complete login
+      setUser({ team_member_id: selected!.id, name: selected!.name });
     } catch {
       setError('Something went wrong. Try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleTouchID = async () => {
-    setError('');
-    setLoading(true);
-    try {
-      // Get authentication options
-      const optRes = await fetch(`/api/auth/passkey/login?memberId=${selected!.id}`);
-      const options = await optRes.json();
-      if (!optRes.ok) {
-        // No valid passkey - go to registration
-        setStep('register');
-        return;
-      }
-
-      // Prompt for Touch ID
-      const credential = await startAuthentication({ optionsJSON: options });
-
-      // Verify with server
-      const verifyRes = await fetch('/api/auth/passkey/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...credential, flowId: options.flowId }),
-      });
-      const verifyData = await verifyRes.json();
-      if (!verifyRes.ok) throw new Error(verifyData.error || 'Verification failed');
-
-      setUser({ team_member_id: selected!.id, name: selected!.name });
-    } catch (err) {
-      // If verification fails (e.g. passkey from wrong origin), go to registration
-      const errorMsg = err instanceof Error ? err.message : 'Touch ID failed';
-      if (errorMsg.includes('No passkeys') || errorMsg.includes('not allowed')) {
-        setStep('register');
-      } else {
-        setError(errorMsg);
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRegisterTouchID = async () => {
-    setError('');
-    setLoading(true);
-    try {
-      // Get registration options (need temp session for this)
-      const optRes = await fetch('/api/auth/passkey/register', {
-        headers: { 'x-team-member-id': selected!.id },
-      });
-      const options = await optRes.json();
-      if (!optRes.ok) throw new Error(options.error || 'Failed to start registration');
-
-      // Prompt for Touch ID registration
-      const credential = await startRegistration({ optionsJSON: options });
-
-      // Save credential to server
-      const saveRes = await fetch('/api/auth/passkey/register', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-team-member-id': selected!.id,
-        },
-        body: JSON.stringify(credential),
-      });
-      const saveData = await saveRes.json();
-      if (!saveRes.ok) throw new Error(saveData.error || 'Failed to save');
-
-      // Registration complete - now verify to complete login
-      setStep('2fa');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Touch ID setup failed');
     } finally {
       setLoading(false);
     }
@@ -199,86 +107,8 @@ export function UserSelectorModal() {
     );
   }
 
-  // ── PIN entry or 2FA ───────────────────────────────────────────────────────
+  // ── Password entry ──────────────────────────────────────────────────────────
   const colorIndex = members.findIndex(m => m.id === selected.id);
-
-  // Register step - Set up Touch ID (mandatory)
-  if (step === 'register') {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white">
-        <div className="w-full max-w-xs px-6">
-          <button onClick={reset} className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-600 mb-8 transition-colors">
-            <ArrowLeft className="h-4 w-4" /> Back
-          </button>
-
-          <div className="text-center mb-6">
-            <div className={`h-20 w-20 rounded-full ${AVATAR_COLORS[colorIndex >= 0 ? colorIndex : 0]} flex items-center justify-center text-3xl font-semibold text-white mx-auto mb-4 shadow-lg`}>
-              {selected.name[0]}
-            </div>
-            <h2 className="text-xl font-semibold text-gray-900">Set Up Touch ID</h2>
-            <p className="text-sm text-gray-500 mt-1">Touch ID is required for login security</p>
-          </div>
-
-          <button
-            onClick={handleRegisterTouchID}
-            disabled={loading}
-            className="w-full py-4 rounded-xl bg-gray-900 text-white font-semibold hover:bg-gray-800 disabled:opacity-40 transition-colors flex items-center justify-center gap-3 text-base"
-          >
-            {loading ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <>
-                <Fingerprint className="h-6 w-6" />
-                Register Touch ID
-              </>
-            )}
-          </button>
-
-          {error && <p className="text-sm text-red-500 text-center mt-3 font-medium">{error}</p>}
-        </div>
-      </div>
-    );
-  }
-
-  // 2FA step - Touch ID
-  if (step === '2fa') {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white">
-        <div className="w-full max-w-xs px-6">
-          <button onClick={reset} className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-600 mb-8 transition-colors">
-            <ArrowLeft className="h-4 w-4" /> Back
-          </button>
-
-          <div className="text-center mb-6">
-            <div className={`h-20 w-20 rounded-full ${AVATAR_COLORS[colorIndex >= 0 ? colorIndex : 0]} flex items-center justify-center text-3xl font-semibold text-white mx-auto mb-4 shadow-lg`}>
-              {selected.name[0]}
-            </div>
-            <h2 className="text-xl font-semibold text-gray-900">{selected.name}</h2>
-            <p className="text-sm text-gray-500 mt-1">Use Touch ID to continue</p>
-          </div>
-
-          <button
-            onClick={handleTouchID}
-            disabled={loading}
-            className="w-full py-4 rounded-xl bg-gray-900 text-white font-semibold hover:bg-gray-800 disabled:opacity-40 transition-colors flex items-center justify-center gap-3 text-base"
-          >
-            {loading ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <>
-                <Fingerprint className="h-6 w-6" />
-                Verify with Touch ID
-              </>
-            )}
-          </button>
-
-          {error && <p className="text-sm text-red-500 text-center mt-3 font-medium">{error}</p>}
-        </div>
-      </div>
-    );
-  }
-
-  // Password step
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-white">
       <div className="w-full max-w-xs px-6">
