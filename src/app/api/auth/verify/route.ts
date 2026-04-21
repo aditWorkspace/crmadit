@@ -6,14 +6,16 @@ import { signSession, sessionCookieOptions } from '@/lib/auth/cookie-session';
  * POST /api/auth/verify
  * Body: { memberId: string; memberName: string; password: string }
  *
- * Validates the PIN against server-only env vars (raw PINs never in JS bundle).
- * On success, sets an HTTP-only signed session cookie.
+ * Validates the password against server-only env vars (raw values never in JS bundle).
+ * On success, sets an HTTP-only signed session cookie. Accepts either the
+ * legacy FOUNDER_PIN_* or new FOUNDER_PASSWORD_* env names; whichever is set
+ * wins, with PASSWORD taking precedence.
  */
 
-const PIN_BY_NAME: Record<string, string | undefined> = {
-  srijay: process.env.FOUNDER_PIN_SRIJAY,
-  adit:   process.env.FOUNDER_PIN_ADIT,
-  asim:   process.env.FOUNDER_PIN_ASIM,
+const PASSWORD_BY_NAME: Record<string, string | undefined> = {
+  srijay: process.env.FOUNDER_PASSWORD_SRIJAY ?? process.env.FOUNDER_PIN_SRIJAY,
+  adit:   process.env.FOUNDER_PASSWORD_ADIT   ?? process.env.FOUNDER_PIN_ADIT,
+  asim:   process.env.FOUNDER_PASSWORD_ASIM   ?? process.env.FOUNDER_PIN_ASIM,
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -41,14 +43,14 @@ export async function POST(req: NextRequest) {
     }
 
     const key = memberName.toLowerCase().trim();
-    const expected = PIN_BY_NAME[key];
+    const expected = PASSWORD_BY_NAME[key];
 
     if (!expected) {
       return NextResponse.json({ error: 'Auth not configured' }, { status: 401 });
     }
 
     if (!constantTimeEq(password.trim(), expected.trim())) {
-      return NextResponse.json({ error: 'Incorrect PIN' }, { status: 401 });
+      return NextResponse.json({ error: 'Incorrect password' }, { status: 401 });
     }
 
     const token = signSession(memberId);

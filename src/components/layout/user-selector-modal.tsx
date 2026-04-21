@@ -40,7 +40,7 @@ export function UserSelectorModal() {
   };
 
   const handleVerify = async () => {
-    if (pin.length !== 4) { setError('Enter your 4-digit PIN'); return; }
+    if (pin.length < 1) { setError('Enter your password'); return; }
     setError('');
     setLoading(true);
     try {
@@ -52,7 +52,7 @@ export function UserSelectorModal() {
       const data = await res.json();
       if (!res.ok) {
         setPin('');
-        setError((data.error ?? 'Incorrect PIN') + (data.debug ? ` (${data.debug})` : ''));
+        setError((data.error ?? 'Incorrect password') + (data.debug ? ` (${data.debug})` : ''));
         // 3-second cooldown before next attempt
         setCooldown(3);
         const interval = setInterval(() => {
@@ -117,37 +117,28 @@ export function UserSelectorModal() {
             {selected.name[0]}
           </div>
           <h2 className="text-xl font-semibold text-gray-900">{selected.name}</h2>
-          <p className="text-sm text-gray-500 mt-1">Enter your 4-digit PIN</p>
-        </div>
-
-        {/* PIN dots */}
-        <div className="flex gap-4 justify-center my-5">
-          {[0,1,2,3].map(i => (
-            <div key={i} className={`h-3.5 w-3.5 rounded-full border-2 transition-all duration-150 ${
-              i < pin.length ? 'bg-gray-900 border-gray-900 scale-110' : 'bg-transparent border-gray-300'
-            }`} />
-          ))}
+          <p className="text-sm text-gray-500 mt-1">Enter your password</p>
         </div>
 
         <input
           ref={inputRef}
           type="password"
-          inputMode="numeric"
-          pattern="[0-9]*"
-          maxLength={4}
           value={pin}
-          onChange={e => { setPin(e.target.value.replace(/\D/g, '').slice(0, 4)); setError(''); }}
+          onChange={e => { setPin(e.target.value); setError(''); }}
           onKeyDown={e => { if (e.key === 'Enter') handleVerify(); }}
-          className="w-full text-center text-3xl tracking-[0.6em] rounded-xl border border-gray-200 px-4 py-3.5 outline-none focus:border-gray-900 focus:ring-2 focus:ring-gray-100 font-mono transition-colors"
-          placeholder="····"
-          autoComplete="off"
+          className="w-full rounded-xl border border-gray-200 px-4 py-3.5 outline-none focus:border-gray-900 focus:ring-2 focus:ring-gray-100 text-base transition-colors"
+          placeholder="Password"
+          autoComplete="current-password"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
         />
 
         {error && <p className="text-sm text-red-500 text-center mt-3 font-medium">{error}</p>}
 
         <button
           onClick={handleVerify}
-          disabled={loading || pin.length < 4 || cooldown > 0}
+          disabled={loading || pin.length < 1 || cooldown > 0}
           className="w-full mt-5 py-3.5 rounded-xl bg-gray-900 text-white font-semibold hover:bg-gray-800 disabled:opacity-40 transition-colors flex items-center justify-center gap-2 text-sm"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : cooldown > 0 ? `Try again in ${cooldown}s` : 'Unlock'}
