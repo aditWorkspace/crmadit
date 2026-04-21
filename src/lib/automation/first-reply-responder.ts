@@ -310,6 +310,7 @@ export async function runFirstReplyAutoResponder(
         decision = {
           category: 'calendly_sent',
           reason: `short-circuited via scheduling_classifier=${schedSignal}`,
+          confidence: 1,
         };
       } else {
         // Phase 6: Call the classifier (pure classification — no prose).
