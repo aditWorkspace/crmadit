@@ -76,25 +76,53 @@ export const aiFollowupDecisionSchema = z.object({
   message: z.string().nullable(),
 });
 
+// 25 categories for first-reply classification
+export const firstReplyCategorySchema = z.enum([
+  // GROUP A: Positive (auto-reply with booking link)
+  'positive_enthusiastic',
+  'positive_casual',
+  'positive_send_times',
+  'positive_specific_day',
+  // GROUP B: Async/email preference (auto-reply without call push)
+  'async_prefer_email',
+  'async_send_info',
+  'async_busy',
+  // GROUP C: Info request (auto-reply with Q&A answer)
+  'info_what_is_it',
+  'info_team',
+  'info_funding',
+  'info_general',
+  // GROUP D: Delay (schedule follow-up, brief ack)
+  'delay_specific_date',
+  'delay_after_event',
+  'delay_traveling',
+  'delay_generic',
+  'delay_ooo',
+  // GROUP E: Referral (ask for contact info)
+  'referral_named',
+  'referral_unknown',
+  // GROUP F: Decline (NO auto-reply)
+  'decline_polite',
+  'decline_firm',
+  'decline_unsubscribe',
+  // GROUP G: Manual review
+  'calendly_sent',
+  'question_compliance',
+  'question_technical',
+  'question_pricing',
+  // Fallback
+  'unclear',
+]);
+
 export const firstReplyDecisionSchema = z.object({
-  classification: z.enum([
-    'positive_book',
-    'async_request',
-    'info_request',
-    'calendly_sent',
-    'question_only',
-    'decline',
-    'ooo',
-    'unclear',
-  ]),
+  category: firstReplyCategorySchema,
   reason: z.string(),
-  // Classifier no longer writes prose. Non-null only on legacy runs where the
-  // classifier and writer still share a model.
-  message: z.string().nullable(),
-  // One-sentence plan for the writer module. Always populated for auto-send
-  // classifications (positive_book / async_request / info_request); null
-  // otherwise.
-  content_plan: z.string().nullable().optional(),
+  // For delay_* categories: the target follow-up date
+  follow_up_date: z.string().nullable().optional(),
+  // For referral_named: the referred person's name
+  referral_name: z.string().nullable().optional(),
+  // For referral_named: the referred person's email if provided
+  referral_email: z.string().nullable().optional(),
 });
 
 export const aiTranscriptAnalysisSchema = z.object({
@@ -137,4 +165,5 @@ export const aiTranscriptAnalysisSchema = z.object({
 
 export type AiFollowupDecision = z.infer<typeof aiFollowupDecisionSchema>;
 export type FirstReplyDecision = z.infer<typeof firstReplyDecisionSchema>;
+export type FirstReplyCategory = z.infer<typeof firstReplyCategorySchema>;
 export type AiTranscriptAnalysis = z.infer<typeof aiTranscriptAnalysisSchema>;

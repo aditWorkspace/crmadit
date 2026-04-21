@@ -131,7 +131,7 @@ async function T7_firstreply_dryrun() {
   if (r.details && r.details.length > 0) {
     ok('classifications surfaced', `${r.details.length} details`);
     for (const d of r.details.slice(0, 3)) {
-      console.log(`      ${d.classification.padEnd(15)} action=${d.action.padEnd(15)} reason=${d.reason.slice(0, 60)}`);
+      console.log(`      ${d.category.padEnd(20)} action=${d.action.padEnd(15)} reason=${d.reason.slice(0, 60)}`);
     }
   }
 }

@@ -57,7 +57,7 @@ interface NeedsFounderRow {
   contact_name: string;
   company_name: string;
   owner_name: string;
-  // 'calendly_sent' | 'question_only' | other (fallback)
+  // 'calendly_sent' | 'question_compliance' | 'question_technical' | 'question_pricing' | 'referral_named' | 'referral_unknown' | other
   kind: string;
   reason: string;
 }
@@ -266,8 +266,11 @@ export async function buildDailyDigest(): Promise<{
   // ── Text version ───────────────────────────────────────────────────────────
 
   const nudgeLabel = (kind: string): string => {
-    if (kind === 'calendly_sent') return 'prospect sent a calendar link — log in and book';
-    if (kind === 'question_only') return 'prospect asked a question that needs a human answer';
+    if (kind === 'calendly_sent') return 'prospect sent a calendar link - log in and book';
+    if (kind === 'question_compliance') return 'prospect asked a compliance question (SOC2, GDPR, etc.)';
+    if (kind === 'question_technical') return 'prospect asked a technical question (integrations, API, etc.)';
+    if (kind === 'question_pricing') return 'prospect asked about pricing';
+    if (kind.startsWith('referral_')) return 'prospect referred us to someone else';
     return 'needs founder attention';
   };
 

@@ -1,8 +1,8 @@
 import { callAI } from '@/lib/ai/openrouter';
 import { DECIDER_MODEL } from '@/lib/constants';
-import { firstReplyDecisionSchema, type FirstReplyDecision } from '@/lib/validation';
+import { firstReplyDecisionSchema, type FirstReplyDecision, type FirstReplyCategory } from '@/lib/validation';
 
-export type FirstReplyClassification = FirstReplyDecision['classification'];
+export type FirstReplyClassification = FirstReplyCategory;
 
 export interface ClassifyFirstReplyOptions {
   contactName: string;
@@ -14,59 +14,80 @@ export interface ClassifyFirstReplyOptions {
   threadContext: string;
 }
 
-// Pure classifier. Emits an intent label + one-line content plan for the
-// writer. Never writes prose — first-reply-writer.ts handles that on Haiku.
-// Tone, classification accuracy, and the info_request/question_only split
-// live here. Treat as load-bearing.
-export const FIRST_REPLY_SYSTEM_PROMPT = `You are classifying a prospect's first reply to an outreach email from Proxi, a PM command center tool built by three Berkeley student founders (Adit, Srijay, Asim).
-
-The prospect is a product manager, founder, or operator at a company we want to learn from. They are NOT a customer. This is the FIRST time they have replied to us.
+// 25-category classifier. Emits category + extracted metadata (dates, referrals).
+// Writer module handles prose generation separately on Haiku.
+export const FIRST_REPLY_SYSTEM_PROMPT = `You are classifying a prospect's reply to an outreach email from Proxi, a PM command center built by three Berkeley students (Adit, Srijay, Asim).
 
 Return ONLY a JSON object:
 {
-  "classification": "positive_book" | "async_request" | "info_request" | "calendly_sent" | "question_only" | "decline" | "ooo" | "unclear",
-  "reason": "one short sentence explaining your classification",
-  "content_plan": string | null,
-  "message": null
+  "category": "<one of 25 categories below>",
+  "reason": "1-sentence explanation",
+  "follow_up_date": "YYYY-MM-DD" or null,
+  "referral_name": "string" or null,
+  "referral_email": "string" or null
 }
 
-Always set "message" to null. A separate writer module composes the prose from "content_plan".
+CATEGORIES (pick the BEST match):
 
-CLASSIFICATIONS:
+GROUP A - POSITIVE (auto-reply with booking link):
+- positive_enthusiastic: Excited agreement ("Yes! Would love to!", "Absolutely!", "That sounds great!")
+- positive_casual: Casual agreement ("Sure, happy to chat", "Yeah I'm open", "Works for me")
+- positive_send_times: Asks for availability ("Send me some times", "What works for you?", "When are you free?")
+- positive_specific_day: Mentions specific day ("How about next Tuesday?", "Thursday works", "Maybe sometime next week?")
 
-positive_book: They are open to a call. Examples: "sure, happy to chat", "yes let's do it", "send me a time", "what's your availability", "sounds good let me know when". Mentioning a call, scheduling, or availability in a positive tone counts.
+GROUP B - ASYNC/EMAIL (auto-reply without call push):
+- async_prefer_email: Explicitly prefers email over call ("No time for a call but happy to answer over email", "Let's keep this async")
+- async_send_info: Wants more info first ("Send me more info", "Tell me more", "What exactly are you building?")
+- async_busy: Too busy, just email ("Super busy, just email me what you need", "Slammed right now")
 
-async_request: They want to handle this over email or explicitly decline a call while staying engaged. Examples: "don't really have time for a call but happy to answer questions", "send me more info", "I can respond over email".
+GROUP C - INFO REQUEST (auto-reply with Q&A answer):
+- info_what_is_it: Asks what Proxi is ("What is Proxi?", "What are you building?", "What does your tool do?")
+- info_team: Asks about team ("Who are you guys?", "What's your background?", "Tell me about the team")
+- info_funding: Asks about funding ("Are you funded?", "Do you have investors?", "Self-funded?")
+- info_general: Other light questions ("How does it work?", "Is it AI?", "How is this different?")
 
-info_request: They asked a LIGHT product-curiosity question that can be answered briefly without a human. Examples: "what is Proxi", "tell me more", "are you funded", "is it AI-based", "where are you based", "what does it do", "one-liner please", "who's on the team". These questions are answerable from a small reference Q&A without inventing details. If you are confident we can answer in 1-2 sentences without bluffing on specifics, choose info_request.
+GROUP D - DELAY (schedule follow-up, brief ack):
+- delay_specific_date: Mentions specific date ("Follow up after Feb 15th", "Reach back in March", "Let's talk after the 20th")
+- delay_after_event: After some event ("Once our product launch is done", "After Q1 planning", "When we close this round")
+- delay_traveling: Currently traveling ("I'm traveling until the 20th", "Back in office next Monday", "On vacation until...")
+- delay_generic: Vague delay ("Not a good time", "Circle back later", "Maybe in a few weeks", "Reach out again soon")
+- delay_ooo: Out-of-office auto-reply (detect "I am out of the office", "I will return on", auto-responder patterns)
 
-calendly_sent: They included a scheduling link (calendly.com, savvycal.com, cal.com/<user>, any other booking URL) OR said "here is my calendar" / "book a time on my link". A human should log in and book the slot.
+GROUP E - REFERRAL (ask for contact info):
+- referral_named: Names someone else ("Talk to Sarah Chen", "CC'ing my colleague Mike", "You should reach out to our PM lead")
+- referral_unknown: Says wrong person without naming alternative ("I'm not the right person", "Try someone else on the team")
 
-question_only: A SPECIFIC question requiring a human answer: pricing details, concrete integrations list, security/compliance (SOC 2, GDPR, data residency), technical architecture, SSO/SAML, sales terms, or whether you support feature X. Err on the side of question_only when the answer requires commitment or concrete spec we cannot guess at.
+GROUP F - DECLINE (NO auto-reply):
+- decline_polite: Polite rejection ("Thanks but not a fit right now", "Appreciate it but no", "Not what we need")
+- decline_firm: Firm rejection ("Not interested", "Please don't contact me again", "Stop emailing me")
+- decline_unsubscribe: Explicit unsubscribe ("Unsubscribe", "Remove me from your list", "Take me off")
 
-decline: No, not a fit, pass, wrong person, unsubscribe, please remove me, not interested. Err toward decline if tone is clearly negative.
+GROUP G - MANUAL REVIEW:
+- calendly_sent: Sent a scheduling link (calendly.com, cal.com, savvycal.com, any booking URL)
+- question_compliance: Compliance question (SOC 2, GDPR, data residency, HIPAA, security audit)
+- question_technical: Technical question (specific integrations, API, architecture, data format)
+- question_pricing: Pricing question (cost, pricing model, free tier, enterprise pricing)
 
-ooo: Automatic out-of-office / vacation reply. Watch for "I am out of the office", "I am on vacation", "auto-reply", "I will return on".
-
-unclear: You honestly cannot tell. Default here when uncertain. Do not guess.
-
-CONTENT_PLAN FIELD:
-
-For positive_book / async_request / info_request: a ONE-sentence plan telling the writer what to cover. Examples:
-- "thank them, acknowledge interest in learning from their prioritization process, include the booking link"
-- "they prefer email; ask how they prioritized this quarter and what feedback tool they use"
-- "they asked what Proxi does; answer briefly that it's a PM command center, pivot by asking how they handle prioritization today"
-
-For calendly_sent / question_only / decline / ooo / unclear: content_plan = null.
+FALLBACK:
+- unclear: Cannot determine intent, ambiguous, or doesn't fit any category
 
 RULES:
-- Do NOT write any prose in "message". It is always null.
-- Do NOT include em dashes, em-dash equivalents, or any forbidden marketing words in content_plan (keep it short).
-- Return pure JSON. No markdown fences, no explanation outside the object.`;
+1. For delay_* categories: ALWAYS populate follow_up_date with best guess in YYYY-MM-DD format
+   - "next month" → 1st of next month
+   - "after Feb 15th" → 2026-02-16
+   - "in a few weeks" → 3 weeks from today
+   - "after Q1" → 2026-04-01
+   - OOO with "back Jan 10" → 2026-01-11
+2. For referral_named: Extract the name, and email if provided in the message
+3. decline_* categories should NEVER trigger an auto-reply
+4. When in doubt between categories, pick the one that requires LESS automation (safer)
+5. Return pure JSON only. No markdown fences, no explanation outside the object.`;
 
 function buildUserMessage(opts: ClassifyFirstReplyOptions): string {
   const role = opts.contactRole ? `${opts.contactRole} at ${opts.companyName}` : opts.companyName;
-  return `SENDER_FIRST_NAME: ${opts.senderFirstName}
+  const today = new Date().toISOString().split('T')[0];
+  return `TODAY'S DATE: ${today}
+SENDER_FIRST_NAME: ${opts.senderFirstName}
 BOOKING_URL: ${opts.bookingUrl}
 COMPANY_NAME: ${opts.companyName}
 
@@ -145,10 +166,8 @@ export async function classifyFirstReply(
     });
   } catch (err) {
     return {
-      classification: 'unclear',
+      category: 'unclear',
       reason: `ai_error: ${err instanceof Error ? err.message : String(err)}`,
-      message: null,
-      content_plan: null,
     };
   }
 
@@ -157,26 +176,18 @@ export async function classifyFirstReply(
     parsedJson = tolerantJsonParse(raw);
   } catch (err) {
     return {
-      classification: 'unclear',
+      category: 'unclear',
       reason: `json_parse_failed: ${err instanceof Error ? err.message : 'unknown'} | raw: ${raw.slice(0, 800)}`,
-      message: null,
-      content_plan: null,
     };
   }
 
   const parsed = firstReplyDecisionSchema.safeParse(parsedJson);
   if (!parsed.success) {
     return {
-      classification: 'unclear',
+      category: 'unclear',
       reason: `schema_invalid: ${parsed.error.issues[0]?.message ?? 'unknown'}`,
-      message: null,
-      content_plan: null,
     };
   }
 
-  // Force message to null — prose comes from the writer module now. If a
-  // legacy deploy or a retry path ever reads stale classifier output with
-  // message populated, we ignore it deliberately.
-  parsed.data.message = null;
   return parsed.data;
 }

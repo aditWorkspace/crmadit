@@ -48,12 +48,16 @@ export function PendingFollowups({ followUps, onUpdate }: PendingFollowupsProps)
         const isCallConfirmation = f.type === 'call_confirmation';
         const isPostCallFollowup = f.type === 'post_call_followup';
         const isManualReview = f.type === 'first_reply_manual_review';
-        // Responder flags "needs founder" cases (calendly_sent / question_only)
-        // by prefixing the reason text. Sub-classify so we can show the right
-        // verb (log in and book vs answer the question).
+        // Responder flags "needs founder" cases by prefixing the reason text.
+        // Sub-classify so we can show the right verb.
         const needsFounder = isManualReview && f.reason?.startsWith('NEEDS_FOUNDER:') === true;
         const isCalendarNudge = needsFounder && f.reason?.includes('calendly_sent') === true;
-        const isQuestionNudge = needsFounder && f.reason?.includes('question_only') === true;
+        const isQuestionNudge = needsFounder && (
+          f.reason?.includes('question_compliance') ||
+          f.reason?.includes('question_technical') ||
+          f.reason?.includes('question_pricing')
+        );
+        const isReferralNudge = needsFounder && f.reason?.includes('referral_') === true;
         const lead = f.lead as { id: string; contact_name: string; company_name: string } | undefined;
 
         return (
