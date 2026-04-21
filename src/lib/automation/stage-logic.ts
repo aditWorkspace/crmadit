@@ -83,13 +83,18 @@ const stageRegistry: Record<string, StageTrigger> = {
 
   scheduling: {
     onEnter: async (lead) => {
+      // Reminder only. The AI auto-followup cron owns actual auto-sends and
+      // writes a separate queue row with `scheduled_for` set. If we wrote
+      // `auto_send: true` here we'd both (a) starve the drainer of a
+      // scheduled_for value and (b) trip the "already queued" guard that
+      // stops the AI path from queueing a real one.
       await createFollowUp({
         lead_id: lead.id,
         assigned_to: lead.owned_by,
         type: 'auto_email_followup',
         reason: 'No call booked after 48 hours — follow up to schedule',
         due_at: addHours(new Date(), 48).toISOString(),
-        auto_send: true,
+        auto_send: false,
         suggested_message: `Hi ${lead.contact_name.split(' ')[0]}, just circling back — still happy to jump on a quick call if it works for you!`,
       });
     },

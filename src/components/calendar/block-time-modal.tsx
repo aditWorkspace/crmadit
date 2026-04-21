@@ -30,7 +30,10 @@ const QUICK_PRESETS = [
 ] as const;
 
 export function BlockTimeModal({ onClose, onBlock, teamMemberId }: BlockTimeModalProps) {
-  const today = format(new Date(), 'yyyy-MM-dd');
+  // Calendar operations live in Pacific Time. Using the browser's local date
+  // would misfire for a founder in ET: "Today" at 1 AM ET is still Monday PT,
+  // so the block would be created for the wrong day.
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
   const [date, setDate] = useState(today);
   const [allDay, setAllDay] = useState(true);
   const [startTime, setStartTime] = useState('09:00');
