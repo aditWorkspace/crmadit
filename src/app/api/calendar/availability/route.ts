@@ -55,9 +55,11 @@ export async function GET(req: NextRequest) {
         fetchedMemberIds.add(members[i].id);
       } else {
         failedCount++;
-        // Do NOT add to busyByMember — absence = treated as fully busy below
+        console.error(`[availability] FreeBusy failed for ${members[i].name}:`, r.reason);
       }
     }
+  } else {
+    console.warn('[availability] No gmail_connected members found');
   }
 
   // Build slots across the full range. Default 30-min intervals; pass

@@ -24,6 +24,9 @@ const PUBLIC_API_PREFIXES = [
   '/api/health',
   '/api/team/members',
   '/api/gmail/callback',
+  '/api/calendar/availability',  // Public booking page needs this
+  '/api/calendar/book',          // Public booking page needs this
+  '/api/calendar/reschedule',    // Public reschedule flow
 ];
 
 function isPublicPath(pathname: string): boolean {
