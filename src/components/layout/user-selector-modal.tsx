@@ -56,8 +56,14 @@ export function UserSelectorModal() {
       const data = await res.json();
       if (!res.ok) {
         setPin('');
-        setError((data.error ?? 'Incorrect password') + (data.debug ? ` (${data.debug})` : ''));
-        setCooldown(3);
+        const errMsg = data.error ?? 'Incorrect password';
+        setError(errMsg);
+
+        // Parse lockout time from server (429 = rate limited)
+        const lockoutMatch = errMsg.match(/Try again in (\d+)s/);
+        const waitTime = lockoutMatch ? parseInt(lockoutMatch[1], 10) : (res.status === 429 ? 60 : 3);
+
+        setCooldown(waitTime);
         const interval = setInterval(() => {
           setCooldown(prev => {
             if (prev <= 1) { clearInterval(interval); inputRef.current?.focus(); return 0; }

@@ -8,8 +8,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
  * Body: { memberId: string; memberName: string; password: string }
  *
  * Validates the password against server-only env vars.
- * If user has passkey registered, returns needs2FA: true.
- * If no passkey, sets session cookie immediately.
+ * Rate limited: 5 attempts per 15 minutes, then locked out.
  */
 
 const PASSWORD_BY_NAME: Record<string, string | undefined> = {
@@ -19,6 +18,46 @@ const PASSWORD_BY_NAME: Record<string, string | undefined> = {
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Rate limiting: 5 failed attempts per 15 minutes
+const MAX_ATTEMPTS = 5;
+const LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes
+const failedAttempts = new Map<string, { count: number; firstAttempt: number }>();
+
+function checkRateLimit(key: string): { allowed: boolean; retryAfter?: number } {
+  const now = Date.now();
+  const record = failedAttempts.get(key);
+
+  if (!record) return { allowed: true };
+
+  // Reset if window expired
+  if (now - record.firstAttempt > LOCKOUT_MS) {
+    failedAttempts.delete(key);
+    return { allowed: true };
+  }
+
+  if (record.count >= MAX_ATTEMPTS) {
+    const retryAfter = Math.ceil((record.firstAttempt + LOCKOUT_MS - now) / 1000);
+    return { allowed: false, retryAfter };
+  }
+
+  return { allowed: true };
+}
+
+function recordFailure(key: string): void {
+  const now = Date.now();
+  const record = failedAttempts.get(key);
+
+  if (!record || now - record.firstAttempt > LOCKOUT_MS) {
+    failedAttempts.set(key, { count: 1, firstAttempt: now });
+  } else {
+    record.count++;
+  }
+}
+
+function clearFailures(key: string): void {
+  failedAttempts.delete(key);
+}
 
 function constantTimeEq(a: string, b: string): boolean {
   const A = Buffer.from(a, 'utf8');
@@ -42,59 +81,51 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid member id' }, { status: 400 });
     }
 
+    // Rate limit check (by member ID to prevent brute force)
+    const rateKey = `login:${memberId}`;
+    const rateCheck = checkRateLimit(rateKey);
+    if (!rateCheck.allowed) {
+      return NextResponse.json(
+        { error: `Too many attempts. Try again in ${rateCheck.retryAfter}s` },
+        { status: 429 }
+      );
+    }
+
     const key = memberName.toLowerCase().trim();
     const expected = PASSWORD_BY_NAME[key];
 
     if (!expected) {
+      recordFailure(rateKey);
       return NextResponse.json({ error: 'Auth not configured' }, { status: 401 });
     }
 
     if (!constantTimeEq(password.trim(), expected.trim())) {
+      recordFailure(rateKey);
+      // Log failed attempt
+      const supabase = createAdminClient();
+      void supabase.from('activity_log').insert({
+        action: 'login_failed',
+        team_member_id: memberId,
+        details: { ip: req.headers.get('x-forwarded-for') || 'unknown' },
+      }); // Fire and forget
       return NextResponse.json({ error: 'Incorrect password' }, { status: 401 });
     }
 
-    // Check if localhost - skip 2FA on localhost (WebAuthn doesn't work reliably)
-    const host = req.headers.get('host') || '';
-    const isLocalhost = host.includes('localhost') || host.includes('127.0.0.1');
+    // Success - clear rate limit and log
+    clearFailures(rateKey);
 
-    if (isLocalhost) {
-      // Localhost: password only, set session directly
-      const token = signSession(memberId);
-      const opts = sessionCookieOptions();
-      const res = NextResponse.json({ ok: true, memberId, needs2FA: false });
-      res.cookies.set(opts.name, token, {
-        httpOnly: opts.httpOnly,
-        secure: opts.secure,
-        sameSite: opts.sameSite,
-        path: opts.path,
-        maxAge: opts.maxAge,
-      });
-      return res;
-    }
+    // Log successful login
+    const supabase = createAdminClient();
+    void supabase.from('activity_log').insert({
+      action: 'login_success',
+      team_member_id: memberId,
+      details: { ip: req.headers.get('x-forwarded-for') || 'unknown' },
+    }); // Fire and forget
 
-    // Production: check if user has passkey for 2FA
-    let hasPasskey = false;
-    try {
-      const supabase = createAdminClient();
-      const { data: member } = await supabase
-        .from('team_members')
-        .select('passkey_credential_id')
-        .eq('id', memberId)
-        .single();
-      hasPasskey = !!member?.passkey_credential_id;
-    } catch {
-      // Column doesn't exist yet - skip 2FA check
-    }
-
-    if (hasPasskey) {
-      // Require 2FA - don't set session yet
-      return NextResponse.json({ ok: true, memberId, needs2FA: true });
-    }
-
-    // No passkey registered yet - complete login (production will force registration on client)
+    // Set session cookie
     const token = signSession(memberId);
     const opts = sessionCookieOptions();
-    const res = NextResponse.json({ ok: true, memberId, needs2FA: false });
+    const res = NextResponse.json({ ok: true, memberId });
     res.cookies.set(opts.name, token, {
       httpOnly: opts.httpOnly,
       secure: opts.secure,
