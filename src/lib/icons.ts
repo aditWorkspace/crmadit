@@ -77,6 +77,7 @@ export {
   ChatText as MessageSquare,
   Chats as MessageSquarePlus,
   ArrowBendUpLeft as MessageSquareReply,
+  Fingerprint,
   Moon,
   PhoneCall,
   Quotes as Quote,

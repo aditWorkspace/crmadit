@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSession } from '@/hooks/use-session';
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
-import { Mail, CheckCircle, XCircle, RefreshCw, Loader2, Calendar } from '@/lib/icons';
+import { Mail, CheckCircle, XCircle, RefreshCw, Loader2, Calendar, Fingerprint } from '@/lib/icons';
+import { startRegistration } from '@simplewebauthn/browser';
 
 interface MemberGmailStatus {
   id: string;
@@ -21,6 +22,8 @@ export default function SettingsPage() {
   const [syncing, setSyncing] = useState<string | null>(null);
   const [syncingCalendar, setSyncingCalendar] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const [hasPasskey, setHasPasskey] = useState(false);
+  const [registeringPasskey, setRegisteringPasskey] = useState(false);
 
   const fetchMembers = useCallback(async () => {
     if (!user) return;
@@ -41,6 +44,46 @@ export default function SettingsPage() {
   useEffect(() => {
     fetchMembers();
   }, [fetchMembers]);
+
+  useEffect(() => {
+    if (!user) return;
+    fetch(`/api/auth/passkey/status?memberId=${user.team_member_id}`)
+      .then(r => r.json())
+      .then(d => setHasPasskey(d.hasPasskey ?? false))
+      .catch(() => {});
+  }, [user]);
+
+  const handleRegisterPasskey = async () => {
+    if (!user) return;
+    setRegisteringPasskey(true);
+    try {
+      const optRes = await fetch('/api/auth/passkey/register', {
+        headers: { 'x-team-member-id': user.team_member_id },
+      });
+      const options = await optRes.json();
+      if (!optRes.ok) throw new Error(options.error || 'Failed to start registration');
+
+      const credential = await startRegistration({ optionsJSON: options });
+
+      const verifyRes = await fetch('/api/auth/passkey/register', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-team-member-id': user.team_member_id,
+        },
+        body: JSON.stringify(credential),
+      });
+      const verifyData = await verifyRes.json();
+      if (!verifyRes.ok) throw new Error(verifyData.error || 'Registration failed');
+
+      setHasPasskey(true);
+      toast.success('Touch ID registered! You can now use it for login.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to register Touch ID');
+    } finally {
+      setRegisteringPasskey(false);
+    }
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -139,7 +182,50 @@ export default function SettingsPage() {
         <p className="text-sm text-gray-500 mt-0.5">Manage integrations and team preferences.</p>
       </div>
 
-      <div className="flex-1 overflow-auto px-8 py-6 max-w-3xl">
+      <div className="flex-1 overflow-auto px-8 py-6 max-w-3xl space-y-6">
+        {/* Touch ID Section */}
+        <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-3">
+            <Fingerprint className="h-5 w-5 text-gray-500" />
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">Touch ID / Biometric Login</h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Enable Touch ID as a second factor after password for secure login.
+              </p>
+            </div>
+          </div>
+          <div className="px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {hasPasskey ? (
+                <>
+                  <CheckCircle className="h-4 w-4 text-green-500" />
+                  <span className="text-sm text-green-600 font-medium">Touch ID enabled</span>
+                </>
+              ) : (
+                <>
+                  <XCircle className="h-4 w-4 text-gray-300" />
+                  <span className="text-sm text-gray-500">Touch ID not set up</span>
+                </>
+              )}
+            </div>
+            {!hasPasskey && (
+              <button
+                onClick={handleRegisterPasskey}
+                disabled={registeringPasskey}
+                className="flex items-center gap-1.5 text-xs text-white bg-gray-900 hover:bg-gray-700 rounded-lg px-3 py-1.5 transition-colors disabled:opacity-50"
+              >
+                {registeringPasskey ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Fingerprint className="h-3.5 w-3.5" />
+                )}
+                {registeringPasskey ? 'Registering...' : 'Set Up Touch ID'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Gmail Section */}
         <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-3">
             <Mail className="h-5 w-5 text-gray-500" />
