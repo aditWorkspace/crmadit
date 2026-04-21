@@ -63,10 +63,10 @@ export async function writePositiveBookReply(opts: BaseWriteOpts): Promise<strin
   const system = `${SHARED_RULES}
 
 Specific to this reply:
-- Thank them briefly (one short phrase, not a full sentence).
-- Say you'd love to learn from how they think about prioritization at their company.
-- Include the booking link on its own paragraph, exactly once.
-- Close with a single friendly sentence inviting them to grab any time.`;
+- They already agreed to chat. Do NOT ask any questions. Do NOT say "I'd love to learn" or anything that sounds like a question.
+- Thank them briefly in one short phrase (e.g. "Thanks for being open to this").
+- Include the booking link on its own line, exactly once.
+- Close with one short sentence inviting them to grab any time that works. That's it. Nothing else.`;
   return write(system, buildShared(opts), opts.senderFirstName);
 }
 

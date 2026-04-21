@@ -62,14 +62,8 @@ function firstNameOf(fullName: string | null | undefined): string {
   return trimmed.split(/\s+/)[0];
 }
 
-function buildBookingUrl(contactEmail: string): string {
-  try {
-    const u = new URL(BOOKING_URL);
-    u.searchParams.set('email', contactEmail);
-    return u.toString();
-  } catch {
-    return BOOKING_URL;
-  }
+function buildBookingUrl(_contactEmail: string): string {
+  return BOOKING_URL;
 }
 
 function buildThreadContext(
