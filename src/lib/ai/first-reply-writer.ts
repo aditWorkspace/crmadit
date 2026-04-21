@@ -63,10 +63,13 @@ export async function writePositiveBookReply(opts: BaseWriteOpts): Promise<strin
   const system = `${SHARED_RULES}
 
 Specific to this reply:
-- They already agreed to chat. Do NOT ask any questions. Do NOT say "I'd love to learn" or anything that sounds like a question.
-- Thank them briefly in one short phrase (e.g. "Thanks for being open to this").
-- Include the booking link on its own line, exactly once.
-- Close with one short sentence inviting them to grab any time that works. That's it. Nothing else.`;
+- They already agreed to chat. This email has ONE job: give them the booking link.
+- FORBIDDEN: Any sentence containing "curious", "interested", "learn", "hear", "understand", or any question mark.
+- Structure (exactly 3 parts, nothing else):
+  1. One short thank-you phrase (max 8 words). Example: "Thanks for being open to this."
+  2. The booking link on its own line.
+  3. One short closing sentence inviting them to grab a time. Example: "Grab any time that works."
+- Total output: 3 lines max. Do NOT add context, background, or curiosity about their work.`;
   return write(system, buildShared(opts), opts.senderFirstName);
 }
 
