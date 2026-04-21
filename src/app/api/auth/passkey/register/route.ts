@@ -8,10 +8,15 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
 
 const RP_NAME = 'Proxi CRM';
-const RP_ID = process.env.NODE_ENV === 'production' ? 'pmcrminternal.vercel.app' : 'localhost';
-const ORIGIN = process.env.NODE_ENV === 'production'
-  ? 'https://pmcrminternal.vercel.app'
-  : ['http://localhost:3000', 'http://localhost:3001'];
+
+function getWebAuthnConfig(req: NextRequest) {
+  const host = req.headers.get('host') || 'localhost';
+  const isLocalhost = host.includes('localhost') || host.includes('127.0.0.1');
+  const protocol = isLocalhost ? 'http' : 'https';
+  const rpId = host.split(':')[0]; // Remove port if present
+  const origin = `${protocol}://${host}`;
+  return { rpId, origin };
+}
 
 // In-memory challenge store (fine for 3 users)
 const challengeStore = new Map<string, string>();
@@ -38,9 +43,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Member not found' }, { status: 404 });
   }
 
+  const { rpId } = getWebAuthnConfig(req);
   const options = await generateRegistrationOptions({
     rpName: RP_NAME,
-    rpID: RP_ID,
+    rpID: rpId,
     userID: new TextEncoder().encode(member.id),
     userName: member.email || member.name,
     userDisplayName: member.name,
@@ -77,11 +83,12 @@ export async function POST(req: NextRequest) {
   const body: RegistrationResponseJSON = await req.json();
 
   try {
+    const { rpId, origin } = getWebAuthnConfig(req);
     const verification = await verifyRegistrationResponse({
       response: body,
       expectedChallenge,
-      expectedOrigin: ORIGIN,
-      expectedRPID: RP_ID,
+      expectedOrigin: origin,
+      expectedRPID: rpId,
     });
 
     if (!verification.verified || !verification.registrationInfo) {

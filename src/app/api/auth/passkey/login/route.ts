@@ -7,10 +7,14 @@ import {
 import { createAdminClient } from '@/lib/supabase/admin';
 import { signSession, sessionCookieOptions } from '@/lib/auth/cookie-session';
 
-const RP_ID = process.env.NODE_ENV === 'production' ? 'pmcrminternal.vercel.app' : 'localhost';
-const ORIGIN = process.env.NODE_ENV === 'production'
-  ? 'https://pmcrminternal.vercel.app'
-  : ['http://localhost:3000', 'http://localhost:3001'];
+function getWebAuthnConfig(req: NextRequest) {
+  const host = req.headers.get('host') || 'localhost';
+  const isLocalhost = host.includes('localhost') || host.includes('127.0.0.1');
+  const protocol = isLocalhost ? 'http' : 'https';
+  const rpId = host.split(':')[0]; // Remove port if present
+  const origin = `${protocol}://${host}`;
+  return { rpId, origin };
+}
 
 // Challenge store keyed by a random ID (since user isn't logged in yet)
 const challengeStore = new Map<string, { challenge: string; memberId: string }>();
@@ -33,8 +37,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'No passkey registered' }, { status: 404 });
   }
 
+  const { rpId } = getWebAuthnConfig(req);
   const options = await generateAuthenticationOptions({
-    rpID: RP_ID,
+    rpID: rpId,
     allowCredentials: [{
       id: member.passkey_credential_id, // already base64url string
       transports: ['internal'],
@@ -71,11 +76,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const { rpId, origin } = getWebAuthnConfig(req);
     const verification = await verifyAuthenticationResponse({
       response: body,
       expectedChallenge: stored.challenge,
-      expectedOrigin: ORIGIN,
-      expectedRPID: RP_ID,
+      expectedOrigin: origin,
+      expectedRPID: rpId,
       credential: {
         id: member.passkey_credential_id,
         publicKey: Buffer.from(member.passkey_public_key, 'base64url'),
