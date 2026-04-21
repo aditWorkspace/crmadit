@@ -74,6 +74,7 @@ export const aiFollowupDecisionSchema = z.object({
   should_send: z.boolean(),
   reason: z.string(),
   message: z.string().nullable(),
+  confidence: z.number().min(0).max(1).default(0),
 });
 
 // 25 categories for first-reply classification
@@ -112,11 +113,18 @@ export const firstReplyCategorySchema = z.enum([
   'question_pricing',
   // Fallback
   'unclear',
+  // Dedicated edge-case bucket: the ~1% of replies that don't cleanly fit any
+  // other category (random asides, off-topic remarks, unusual tone, etc.).
+  // Always routed to the founder for manual handling.
+  'other',
 ]);
 
 export const firstReplyDecisionSchema = z.object({
   category: firstReplyCategorySchema,
   reason: z.string(),
+  // 0-1 confidence in the chosen category. Low values route to manual review
+  // regardless of category so the founder handles anything ambiguous.
+  confidence: z.number().min(0).max(1).default(0),
   // For delay_* categories: the target follow-up date
   follow_up_date: z.string().nullable().optional(),
   // For referral_named: the referred person's name

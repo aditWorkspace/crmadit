@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { sendReplyInThread } from '@/lib/gmail/send';
 import { autoReplyEnabled } from './kill-switch';
+import { detectOutOfOffice } from './ooo-detector';
 
 // ── Business-hours window (Pacific Time) ────────────────────────────────────
 // Auto-emails queue for delivery inside this window. Anything decided outside
@@ -178,7 +179,7 @@ export async function drainScheduledEmails(): Promise<DrainResult> {
   // Find queue entries that are due
   const { data: due } = await supabase
     .from('follow_up_queue')
-    .select('id, lead_id, assigned_to, suggested_message, gmail_thread_id, type')
+    .select('id, lead_id, assigned_to, suggested_message, gmail_thread_id, type, created_at')
     .eq('auto_send', true)
     .eq('status', 'pending')
     .lte('scheduled_for', now)
@@ -221,6 +222,41 @@ export async function drainScheduledEmails(): Promise<DrainResult> {
         // Conditions changed — dismiss instead of sending
         await supabase.from('follow_up_queue').update({ status: 'dismissed' }).eq('id', entry.id);
         continue;
+      }
+
+      // Fresh-reply + OOO guard: re-fetch the latest inbound right before
+      // sending. If the prospect replied after we queued this, or the latest
+      // inbound looks like an out-of-office auto-reply, we NEVER send — the
+      // founder should handle whatever came in. Bad auto-sends to someone on
+      // vacation are exactly what we're protecting against.
+      const { data: latestInbound } = await supabase
+        .from('interactions')
+        .select('subject, body, occurred_at')
+        .eq('lead_id', entry.lead_id)
+        .eq('type', 'email_inbound')
+        .order('occurred_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestInbound) {
+        const inboundAt = new Date(latestInbound.occurred_at).getTime();
+        const queuedAt = entry.created_at ? new Date(entry.created_at).getTime() : 0;
+        const isFreshReply = inboundAt > queuedAt;
+        const ooo = detectOutOfOffice(latestInbound.subject, latestInbound.body);
+
+        if (isFreshReply || ooo.isOoo) {
+          await supabase
+            .from('follow_up_queue')
+            .update({
+              status: 'dismissed',
+              dismissed_at: new Date().toISOString(),
+              reason: ooo.isOoo
+                ? `cancelled_ooo_detected:${ooo.reason}`
+                : 'cancelled_prospect_replied_after_queue',
+            })
+            .eq('id', entry.id);
+          continue;
+        }
       }
 
       // Look up sender

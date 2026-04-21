@@ -17,11 +17,17 @@ import { isWithinSendingWindow, hasMinimumGap } from './send-guards';
 import { formatEmailBody } from '@/lib/format/email-body';
 import { scheduleFastLoopFollowup } from './fast-loop';
 import { autoReplyEnabled, infoReplyEnabled } from './kill-switch';
+import { detectOutOfOffice } from './ooo-detector';
 
 // Cap how many leads we process per cron run. At 3-user scale this is
 // effectively unbounded but it bounds the worst case if something pathological
 // happens (e.g. a backlog after a cron outage).
 const MAX_LEADS_PER_RUN = 25;
+
+// Minimum classifier confidence required for any auto-send branch. Anything
+// below this routes to NEEDS_FOUNDER manual review so the founder handles the
+// long tail of weird/edge-case replies instead of the system guessing.
+const AUTO_REPLY_CONFIDENCE_THRESHOLD = 0.85;
 
 // Any inbound older than this is almost certainly not a "first reply we're
 // still fresh enough to auto-respond to". Prevents awkward auto-responses to
@@ -213,6 +219,43 @@ export async function runFirstReplyAutoResponder(
         continue;
       }
 
+      // Phase 3.5: Deterministic OOO check BEFORE the AI classifier.
+      // Never let the model decide whether to auto-reply to an out-of-office
+      // note — that path is exactly how we sent a tone-deaf "grabbed your OOO
+      // note" follow-up. If any OOO signal fires, schedule a recontact for
+      // after the prospect returns and surface for the founder.
+      const oooCheck = detectOutOfOffice(lastInteraction.subject, lastInteraction.body);
+      if (oooCheck.isOoo) {
+        // Release the lock so if the founder manually reopens this lead after
+        // the prospect returns, the responder runs again on a real reply.
+        await rollbackLock(supabase, lead.id, dryRun);
+
+        const followUpDate =
+          oooCheck.returnDate || getDefaultFollowUpDate('delay_ooo');
+        if (!dryRun) {
+          await supabase.from('follow_up_queue').insert({
+            lead_id: lead.id,
+            assigned_to: lead.owned_by,
+            type: 'scheduled_recontact',
+            status: 'pending',
+            auto_send: false, // founder re-runs the flow manually after return
+            scheduled_for: `${followUpDate}T10:00:00Z`,
+            due_at: `${followUpDate}T10:00:00Z`,
+            reason: `NEEDS_FOUNDER: delay_ooo: ${oooCheck.reason}`,
+            gmail_thread_id: threadId,
+          });
+        }
+        result.rolled_back++;
+        recordDetail(
+          result,
+          lead.id,
+          'delay_ooo',
+          `ooo_detected:${oooCheck.reason}; recontact ${followUpDate}`,
+          'rolled_back'
+        );
+        continue;
+      }
+
       // Phase 4: Fetch owner (for Gmail send + sender first name).
       const { data: owner } = await supabase
         .from('team_members')
@@ -267,6 +310,7 @@ export async function runFirstReplyAutoResponder(
         decision = {
           category: 'calendly_sent',
           reason: `short-circuited via scheduling_classifier=${schedSignal}`,
+          confidence: 1,
         };
       } else {
         // Phase 6: Call the classifier (pure classification — no prose).
@@ -282,6 +326,38 @@ export async function runFirstReplyAutoResponder(
           category: 'question_technical',
           reason: `info_reply_disabled: ${decision.reason}`,
         };
+      }
+
+      // Confidence gate: anything below the threshold, plus the explicit
+      // 'other' edge-case bucket, goes to NEEDS_FOUNDER manual review. This
+      // keeps the system from auto-replying to the long tail of weird replies.
+      const decisionConfidence = decision.confidence ?? 0;
+      const isLowConfidence = decisionConfidence < AUTO_REPLY_CONFIDENCE_THRESHOLD;
+      const isEdgeCase = decision.category === 'other';
+      if (isEdgeCase || isLowConfidence) {
+        if (!dryRun) {
+          await createManualReview(supabase, {
+            leadId: lead.id,
+            ownedBy: lead.owned_by,
+            threadId,
+            category: decision.category,
+            reason: isEdgeCase
+              ? `other_edge_case: ${decision.reason}`
+              : `low_confidence_${decisionConfidence.toFixed(2)}: ${decision.category}: ${decision.reason}`,
+            needsFounder: true,
+          });
+        }
+        result.manual_review++;
+        recordDetail(
+          result,
+          lead.id,
+          decision.category,
+          isEdgeCase
+            ? `other_edge_case (conf ${decisionConfidence.toFixed(2)})`
+            : `low_confidence ${decisionConfidence.toFixed(2)} < ${AUTO_REPLY_CONFIDENCE_THRESHOLD}`,
+          'manual_review'
+        );
+        continue;
       }
 
       // Phase 7: Branch on category. Categories are grouped by action type.
