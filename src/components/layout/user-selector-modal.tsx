@@ -101,7 +101,11 @@ export function UserSelectorModal() {
       // Get authentication options
       const optRes = await fetch(`/api/auth/passkey/login?memberId=${selected!.id}`);
       const options = await optRes.json();
-      if (!optRes.ok) throw new Error(options.error || 'Failed to start');
+      if (!optRes.ok) {
+        // No valid passkey - go to registration
+        setStep('register');
+        return;
+      }
 
       // Prompt for Touch ID
       const credential = await startAuthentication({ optionsJSON: options });
@@ -117,7 +121,13 @@ export function UserSelectorModal() {
 
       setUser({ team_member_id: selected!.id, name: selected!.name });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Touch ID failed');
+      // If verification fails (e.g. passkey from wrong origin), go to registration
+      const errorMsg = err instanceof Error ? err.message : 'Touch ID failed';
+      if (errorMsg.includes('No passkeys') || errorMsg.includes('not allowed')) {
+        setStep('register');
+      } else {
+        setError(errorMsg);
+      }
     } finally {
       setLoading(false);
     }
