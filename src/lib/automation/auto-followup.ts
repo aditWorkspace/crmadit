@@ -4,6 +4,7 @@ import { WRITER_MODEL } from '@/lib/constants';
 import { aiFollowupDecisionSchema } from '@/lib/validation';
 import { canSendOutbound, hasMinimumGap, pickRandomSendTime } from './send-guards';
 import { formatEmailBody } from '@/lib/format/email-body';
+import { detectOutOfOffice } from './ooo-detector';
 
 function firstNameOf(fullName: string | null | undefined, fallback = 'there'): string {
   if (!fullName) return fallback;
@@ -189,6 +190,20 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
 
       const hasInbound = recentInteractions.some(i => i.type === 'email_inbound');
       if (!hasInbound) continue;
+
+      // Deterministic OOO guard: if the most recent INBOUND from the prospect
+      // is an out-of-office auto-reply, skip the 48h follow-up entirely. Never
+      // let the AI write "grabbed your OOO note" prose against an autoresponder.
+      const latestInbound = recentInteractions.find(i => i.type === 'email_inbound');
+      if (latestInbound) {
+        const ooo = detectOutOfOffice(latestInbound.subject, latestInbound.body);
+        if (ooo.isOoo) {
+          result.skipped++;
+          result.skipped_reasons['ooo_detected'] =
+            (result.skipped_reasons['ooo_detected'] || 0) + 1;
+          continue;
+        }
+      }
 
       const threadId = lastInteraction.gmail_thread_id;
       if (!threadId) continue;

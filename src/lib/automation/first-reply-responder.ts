@@ -17,6 +17,7 @@ import { isWithinSendingWindow, hasMinimumGap } from './send-guards';
 import { formatEmailBody } from '@/lib/format/email-body';
 import { scheduleFastLoopFollowup } from './fast-loop';
 import { autoReplyEnabled, infoReplyEnabled } from './kill-switch';
+import { detectOutOfOffice } from './ooo-detector';
 
 // Cap how many leads we process per cron run. At 3-user scale this is
 // effectively unbounded but it bounds the worst case if something pathological
@@ -215,6 +216,43 @@ export async function runFirstReplyAutoResponder(
         await rollbackLock(supabase, lead.id, dryRun);
         result.skipped++;
         recordDetail(result, lead.id, 'skipped', 'missing gmail_thread_id', 'skipped');
+        continue;
+      }
+
+      // Phase 3.5: Deterministic OOO check BEFORE the AI classifier.
+      // Never let the model decide whether to auto-reply to an out-of-office
+      // note — that path is exactly how we sent a tone-deaf "grabbed your OOO
+      // note" follow-up. If any OOO signal fires, schedule a recontact for
+      // after the prospect returns and surface for the founder.
+      const oooCheck = detectOutOfOffice(lastInteraction.subject, lastInteraction.body);
+      if (oooCheck.isOoo) {
+        // Release the lock so if the founder manually reopens this lead after
+        // the prospect returns, the responder runs again on a real reply.
+        await rollbackLock(supabase, lead.id, dryRun);
+
+        const followUpDate =
+          oooCheck.returnDate || getDefaultFollowUpDate('delay_ooo');
+        if (!dryRun) {
+          await supabase.from('follow_up_queue').insert({
+            lead_id: lead.id,
+            assigned_to: lead.owned_by,
+            type: 'scheduled_recontact',
+            status: 'pending',
+            auto_send: false, // founder re-runs the flow manually after return
+            scheduled_for: `${followUpDate}T10:00:00Z`,
+            due_at: `${followUpDate}T10:00:00Z`,
+            reason: `NEEDS_FOUNDER: delay_ooo: ${oooCheck.reason}`,
+            gmail_thread_id: threadId,
+          });
+        }
+        result.rolled_back++;
+        recordDetail(
+          result,
+          lead.id,
+          'delay_ooo',
+          `ooo_detected:${oooCheck.reason}; recontact ${followUpDate}`,
+          'rolled_back'
+        );
         continue;
       }
 
