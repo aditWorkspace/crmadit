@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/session';
 import { getCalendarClientForMember } from '@/lib/google/calendar';
+import { createAdminClient } from '@/lib/supabase/admin';
 
 export async function POST(req: NextRequest) {
   const session = await getSessionFromRequest(req);
@@ -24,16 +25,16 @@ export async function POST(req: NextRequest) {
     transparency: 'opaque',
   };
 
+  // Determine the date being blocked for cache invalidation
+  let blockedDate: Date;
   if (allDay) {
-    // All-day event: use `date` format (not dateTime)
-    // Google Calendar all-day events use exclusive end date, so block a single day
-    // by setting end = day + 1
-    const startDate = new Date(date);
-    const endDate = new Date(startDate);
+    blockedDate = new Date(date);
+    const endDate = new Date(blockedDate);
     endDate.setDate(endDate.getDate() + 1);
     requestBody.start = { date: date };
     requestBody.end = { date: endDate.toISOString().split('T')[0] };
   } else {
+    blockedDate = new Date(start);
     requestBody.start = { dateTime: start, timeZone: 'America/Los_Angeles' };
     requestBody.end = { dateTime: end, timeZone: 'America/Los_Angeles' };
   }
@@ -42,6 +43,15 @@ export async function POST(req: NextRequest) {
     calendarId: 'primary',
     requestBody,
   });
+
+  // Invalidate the availability cache for this member so the booking page
+  // immediately reflects the blocked time. We delete all cache entries for
+  // this member - they'll be re-fetched fresh on next availability request.
+  const supabase = createAdminClient();
+  await supabase
+    .from('availability_cache')
+    .delete()
+    .eq('member_id', session.id);
 
   return NextResponse.json({
     eventId: res.data.id,
