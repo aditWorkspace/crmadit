@@ -82,8 +82,8 @@ export async function GET(req: NextRequest) {
       return overlaps(cursor, slotEnd, busyByMember[m.id]);
     }).length;
 
-    // When bookingOnly: also skip slots where not enough people are free
-    if (bookingOnly && busyCount > 1) {
+    // When bookingOnly: skip slots where ANY founder is busy (all must be free)
+    if (bookingOnly && busyCount > 0) {
       cursor.setTime(cursor.getTime() + intervalMs);
       continue;
     }
