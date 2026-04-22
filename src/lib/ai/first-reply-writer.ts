@@ -63,13 +63,19 @@ export async function writePositiveBookReply(opts: BaseWriteOpts): Promise<strin
   const system = `${SHARED_RULES}
 
 Specific to this reply:
-- They already agreed to chat. This email has ONE job: give them the booking link.
+- They already agreed to chat. Main goal: give them the booking link.
 - FORBIDDEN: Any sentence containing "curious", "interested", "learn", "hear", "understand", or any question mark.
-- Structure (exactly 3 parts, nothing else):
+
+SPECIAL CASE: If they asked "how did you find us/me" or "how did you come across" our company:
+- First, answer briefly in ONE sentence: we were researching high-growth tech companies and their product/prioritization approach, and they stood out.
+- Keep it casual and honest, like "We were researching high-growth companies and how they think about product, and you all stood out."
+- Then proceed to the booking link structure below.
+
+Standard structure (adapt if you answered a "how did you find us" question above):
   1. One short thank-you phrase (max 8 words). Example: "Thanks for being open to this."
   2. The booking link on its own line.
   3. One short closing sentence inviting them to grab a time. Example: "Grab any time that works."
-- Total output: 3 lines max. Do NOT add context, background, or curiosity about their work.`;
+- Total output: 4 lines max. Do NOT add extra context beyond what's specified above.`;
   return write(system, buildShared(opts), opts.senderFirstName);
 }
 

@@ -2,7 +2,8 @@ export const maxDuration = 60;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runAutoFollowup } from '@/lib/automation/auto-followup';
-import { runFirstReplyAutoResponder } from '@/lib/automation/first-reply-responder';
+import { runAutoReplyPipeline } from '@/lib/automation/auto-reply-pipeline';
+import { drainAutoReplyQueue } from '@/lib/automation/drain-auto-reply-queue';
 import { drainScheduledEmails } from '@/lib/automation/send-guards';
 import { verifyCronAuth } from '@/lib/auth/cron';
 
@@ -11,22 +12,28 @@ async function handler(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Three jobs run in parallel:
-  // 1. first-reply-responder: classifies new prospect replies, sends during biz hours
-  // 2. runAutoFollowup: evaluates scheduling-stage leads, queues follow-ups
-  // 3. drainScheduledEmails: sends any queued emails whose scheduled_for has passed
-  const [firstReplySettled, nudgeSettled, drainSettled] = await Promise.allSettled([
-    runFirstReplyAutoResponder(),
+  // Four jobs run in parallel:
+  // 1. auto-reply-pipeline: multi-stage classification + queuing (30-60 min delay)
+  // 2. drainAutoReplyQueue: sends queued auto-replies after delay, re-checks human reply
+  // 3. runAutoFollowup: evaluates scheduling-stage leads, queues follow-ups
+  // 4. drainScheduledEmails: sends any queued emails whose scheduled_for has passed
+  const [pipelineSettled, autoReplyDrainSettled, nudgeSettled, drainSettled] = await Promise.allSettled([
+    runAutoReplyPipeline(),
+    drainAutoReplyQueue(),
     runAutoFollowup(),
     drainScheduledEmails(),
   ]);
 
   return NextResponse.json({
     status: 'done',
-    first_reply:
-      firstReplySettled.status === 'fulfilled'
-        ? firstReplySettled.value
-        : { error: String(firstReplySettled.reason) },
+    pipeline:
+      pipelineSettled.status === 'fulfilled'
+        ? pipelineSettled.value
+        : { error: String(pipelineSettled.reason) },
+    auto_reply_drain:
+      autoReplyDrainSettled.status === 'fulfilled'
+        ? autoReplyDrainSettled.value
+        : { error: String(autoReplyDrainSettled.reason) },
     nudge:
       nudgeSettled.status === 'fulfilled'
         ? nudgeSettled.value
