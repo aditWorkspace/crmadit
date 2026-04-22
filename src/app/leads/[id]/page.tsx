@@ -531,7 +531,6 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
             .then(r => r.json())
             .then(data => { if (data.transcripts?.[0]) setTranscript(data.transcripts[0] as Transcript); });
         }}
-        members={members}
       />
 
       {showBookMeeting && user && lead && (
