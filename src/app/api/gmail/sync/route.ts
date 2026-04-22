@@ -20,7 +20,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Gmail not connected' }, { status: 400 });
   }
 
-  const result = member.gmail_history_id
+  // Support ?full=true to force a full resync
+  const url = new URL(req.url);
+  const forceFull = url.searchParams.get('full') === 'true';
+
+  const result = (member.gmail_history_id && !forceFull)
     ? await runIncrementalSync(session.id)
     : await runInitialSync(session.id);
 
