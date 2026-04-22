@@ -4,6 +4,7 @@ import { appendToKnowledgeDocs } from '@/lib/ai/knowledge-doc-updater';
 import { changeStage } from '@/lib/automation/stage-logic';
 import { addDays } from '@/lib/utils';
 import { format } from 'date-fns';
+import { LeadStage } from '@/types';
 
 export interface ProcessResult {
   success: boolean;
@@ -51,7 +52,7 @@ export async function processAndApplyTranscript(transcriptId: string): Promise<P
     const analysis = await processTranscript(transcript.raw_text);
 
     // 3. Save AI results to transcript
-    await supabase.from('transcripts').update({
+    const { error: updateError } = await supabase.from('transcripts').update({
       ai_summary: analysis.summary,
       ai_next_steps: analysis.next_steps,
       ai_action_items: analysis.action_items,
@@ -65,6 +66,9 @@ export async function processAndApplyTranscript(transcriptId: string): Promise<P
       processing_status: 'completed',
       processed_at: new Date().toISOString(),
     }).eq('id', transcriptId);
+    if (updateError) {
+      throw new Error(`Failed to save AI results: ${updateError.message}`);
+    }
 
     // 4. Auto-apply to lead
     const leadId = transcript.lead_id;
@@ -75,43 +79,68 @@ export async function processAndApplyTranscript(transcriptId: string): Promise<P
       return { success: true, transcriptId };
     }
 
-    // Update lead with call summary and next steps
-    await supabase.from('leads').update({
-      call_summary: analysis.summary,
-      next_steps: analysis.next_steps,
-      updated_at: new Date().toISOString(),
-    }).eq('id', leadId);
+    // Run independent mutations in parallel
+    await Promise.all([
+      // Update lead with call summary and next steps
+      supabase.from('leads').update({
+        call_summary: analysis.summary,
+        next_steps: analysis.next_steps,
+        updated_at: new Date().toISOString(),
+      }).eq('id', leadId),
 
-    // Insert action items (map AI field names to DB field names)
-    if (analysis.action_items?.length) {
-      await supabase.from('action_items').insert(
-        analysis.action_items.map(item => ({
-          lead_id: leadId,
-          text: item.text,
-          assigned_to: item.suggested_assignee || null,
-          due_date: item.suggested_due_date || null,
-          source: 'ai_extracted',
-        }))
-      );
-    }
+      // Insert action items (map AI field names to DB field names)
+      analysis.action_items?.length
+        ? supabase.from('action_items').insert(
+            analysis.action_items.map(item => ({
+              lead_id: leadId,
+              text: item.text,
+              assigned_to: item.suggested_assignee,
+              due_date: item.suggested_due_date || null,
+              source: 'ai_extracted',
+            }))
+          )
+        : Promise.resolve(),
 
-    // Create follow-ups from suggestions
-    if (analysis.follow_up_suggestions?.length) {
-      await supabase.from('follow_up_queue').insert(
-        analysis.follow_up_suggestions.map(s => ({
-          lead_id: leadId,
-          assigned_to: lead.owned_by || null,
-          type: 'check_in',
-          reason: s.action,
-          suggested_message: s.reason,
-          due_at: addDays(new Date(), 1).toISOString(),
-          status: 'pending',
-        }))
-      );
-    }
+      // Create follow-ups from suggestions
+      analysis.follow_up_suggestions?.length
+        ? supabase.from('follow_up_queue').insert(
+            analysis.follow_up_suggestions.map(s => ({
+              lead_id: leadId,
+              assigned_to: lead.owned_by || null,
+              type: 'check_in',
+              reason: s.action,
+              suggested_message: s.reason,
+              due_at: addDays(new Date(), 1).toISOString(),
+              status: 'pending',
+            }))
+          )
+        : Promise.resolve(),
+
+      // Log interaction
+      supabase.from('interactions').insert({
+        lead_id: leadId,
+        team_member_id: lead.owned_by || null,
+        type: 'call',
+        subject: 'Call transcript auto-processed',
+        body: analysis.summary,
+        occurred_at: new Date().toISOString(),
+      }),
+
+      // Log activity
+      supabase.from('activity_log').insert({
+        lead_id: leadId,
+        team_member_id: lead.owned_by || null,
+        action: 'transcript_auto_applied',
+        details: {
+          transcript_id: transcriptId,
+          action_items_count: analysis.action_items?.length || 0,
+          follow_ups_count: analysis.follow_up_suggestions?.length || 0,
+        },
+      }),
+    ]);
 
     // 5. Auto-advance to call_completed if in pre-call stage
-    const preCallStages = ['replied', 'scheduling', 'scheduled'];
+    const preCallStages: LeadStage[] = ['replied', 'scheduling', 'scheduled'];
     if (preCallStages.includes(lead.stage)) {
       // Use lead owner as the actor for background processing
       const actorId = lead.owned_by;
@@ -119,28 +148,6 @@ export async function processAndApplyTranscript(transcriptId: string): Promise<P
         await changeStage(leadId, 'call_completed', actorId);
       }
     }
-
-    // 6. Log interaction
-    await supabase.from('interactions').insert({
-      lead_id: leadId,
-      team_member_id: lead.owned_by || null,
-      type: 'call',
-      subject: 'Call transcript auto-processed',
-      body: analysis.summary,
-      occurred_at: new Date().toISOString(),
-    });
-
-    // Log activity
-    await supabase.from('activity_log').insert({
-      lead_id: leadId,
-      team_member_id: lead.owned_by || null,
-      action: 'transcript_auto_applied',
-      details: {
-        transcript_id: transcriptId,
-        action_items_count: analysis.action_items?.length || 0,
-        follow_ups_count: analysis.follow_up_suggestions?.length || 0,
-      },
-    });
 
     // 7. Update knowledge docs
     if (lead.contact_name && lead.company_name) {
