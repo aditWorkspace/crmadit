@@ -580,25 +580,28 @@ async function processMessage(
     return;
   }
 
-  // ── Path 3: Contact-email match (manually-added leads) ───────────────────
-  // Only link inbound emails — outbound from us doesn't need linkage here
+  // ── Path 3: Contact-email match (any thread with known contact) ───────────
+  // Syncs BOTH inbound AND outbound for threads that don't match outreach pattern
+  // but are linked to existing leads via contact_email
+  const leadId = await findLeadByContactEmail(supabase, contactEmail, member.id);
+  if (!leadId) return;
+
+  const occurredAt = message.internalDate
+    ? new Date(parseInt(message.internalDate)).toISOString()
+    : new Date().toISOString();
+  const threadId = message.threadId || undefined;
+
+  // Update lead timestamps and detect scheduling signals
+  const { data: lead } = await supabase
+    .from('leads')
+    .select('first_reply_at, our_first_response_at, stage')
+    .eq('id', leadId)
+    .single();
+
+  const updates: Record<string, unknown> = { last_contact_at: occurredAt };
+
   if (!isOutbound) {
-    const leadId = await findLeadByContactEmail(supabase, contactEmail, member.id);
-    if (!leadId) return;
-
-    const occurredAt = message.internalDate
-      ? new Date(parseInt(message.internalDate)).toISOString()
-      : new Date().toISOString();
-    const threadId = message.threadId || undefined;
-
-    // Update lead last_contact_at, first_reply_at, and detect scheduling signals
-    const { data: lead } = await supabase
-      .from('leads')
-      .select('first_reply_at, stage')
-      .eq('id', leadId)
-      .single();
-
-    const updates: Record<string, unknown> = { last_contact_at: occurredAt };
+    // Inbound: update first_reply_at and potentially advance stage
     if (lead && !lead.first_reply_at) {
       updates.first_reply_at = occurredAt;
       if (!lead.stage || isForwardStage(lead.stage, 'replied')) {
@@ -606,7 +609,7 @@ async function processMessage(
       }
     }
 
-    // Detect scheduling signals to advance stage
+    // Detect scheduling signals in inbound emails
     if (lead && ['replied', 'scheduling'].includes(lead.stage)) {
       try {
         const signal = await classifySchedulingIntent(headers.subject, bodyPreview);
@@ -619,31 +622,36 @@ async function processMessage(
         // Classifier failure should never block email sync
       }
     }
-
-    await supabase.from('leads').update(updates).eq('id', leadId);
-
-    // Bug #8 fix — log auto-stage for contact-email match path
-    if (updates.stage) {
-      await supabase.from('activity_log').insert({
-        lead_id: leadId,
-        team_member_id: member.id,
-        action: 'auto_stage_changed',
-        details: { from: 'new', to: updates.stage, trigger: 'contact_email_match', contact_email: contactEmail },
-      }).then(({ error: logErr }) => { if (logErr) console.error('[sync] Failed to log auto-stage change:', logErr.message); });
+  } else {
+    // Outbound: update our_first_response_at if this is our first reply
+    if (lead && !lead.our_first_response_at && lead.first_reply_at) {
+      updates.our_first_response_at = occurredAt;
     }
+  }
 
-    await upsertInteraction(supabase, {
+  await supabase.from('leads').update(updates).eq('id', leadId);
+
+  // Log auto-stage changes
+  if (updates.stage && lead) {
+    await supabase.from('activity_log').insert({
       lead_id: leadId,
       team_member_id: member.id,
-      type: 'email_inbound',
-      subject: headers.subject,
-      body: bodyPreview,
-      gmail_message_id: message.id ?? undefined,
-      gmail_thread_id: threadId,
-      rfc_message_id: headers.rfcMessageId || undefined,
-      occurred_at: occurredAt,
-    }, result);
+      action: 'auto_stage_changed',
+      details: { from: lead.stage, to: updates.stage, trigger: 'contact_email_match', contact_email: contactEmail },
+    }).then(({ error: logErr }) => { if (logErr) console.error('[sync] Failed to log auto-stage change:', logErr.message); });
   }
+
+  await upsertInteraction(supabase, {
+    lead_id: leadId,
+    team_member_id: isOutbound ? senderMemberId : member.id,
+    type: isOutbound ? 'email_outbound' : 'email_inbound',
+    subject: headers.subject,
+    body: bodyPreview,
+    gmail_message_id: message.id ?? undefined,
+    gmail_thread_id: threadId,
+    rfc_message_id: headers.rfcMessageId || undefined,
+    occurred_at: occurredAt,
+  }, result);
 }
 
 async function summarizeEmail(subject: string, body: string): Promise<string | null> {
