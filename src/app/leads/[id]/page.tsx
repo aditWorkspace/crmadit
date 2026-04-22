@@ -4,7 +4,6 @@ import { useState, useEffect, use } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from '@/hooks/use-session';
 import { Lead, ActionItem, Interaction, ActivityLog, TeamMember, LeadStage, Transcript } from '@/types';
-import { createClient } from '@/lib/supabase/client';
 import { STAGE_LABELS, PRIORITY_COLORS, PRIORITY_LABELS } from '@/lib/constants';
 import { StageBadge } from '@/components/leads/stage-badge';
 import { LeadSteps } from '@/components/leads/lead-steps';
@@ -60,27 +59,19 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
     const headers: Record<string, string> = { 'x-team-member-id': user.team_member_id, 'Content-Type': 'application/json' };
     (async () => {
       try {
-        const supabase = createClient();
         const [leadRes, aiRes, intRes, actRes, memRes, transcriptRes] = await Promise.all([
           fetch(`/api/leads/${id}`, { headers }).then(r => r.json()),
           fetch(`/api/leads/${id}/action-items`, { headers }).then(r => r.json()),
           fetch(`/api/leads/${id}/interactions`, { headers }).then(r => r.json()),
-          supabase
-            .from('activity_log')
-            .select('*, team_member:team_members(id, name)')
-            .eq('lead_id', id)
-            .order('created_at', { ascending: false })
-            .limit(50),
-          supabase
-            .from('team_members')
-            .select('id, name, email, gmail_connected, created_at'),
+          fetch(`/api/leads/${id}/activity`, { headers }).then(r => r.json()),
+          fetch(`/api/team/members`).then(r => r.json()),
           fetch(`/api/leads/${id}/transcripts`, { headers }).then(r => r.json()),
         ]);
         if (leadRes.lead) setLead(leadRes.lead);
         if (aiRes.action_items) setActionItems(aiRes.action_items);
         if (intRes.interactions) setInteractions(intRes.interactions);
-        if (actRes.data) setActivities(actRes.data as ActivityLog[]);
-        if (memRes.data) setMembers(memRes.data as TeamMember[]);
+        if (actRes.activities) setActivities(actRes.activities as ActivityLog[]);
+        if (memRes.members) setMembers(memRes.members as TeamMember[]);
         if (transcriptRes.transcripts?.[0]) setTranscript(transcriptRes.transcripts[0] as Transcript);
       } finally {
         setLoading(false);
