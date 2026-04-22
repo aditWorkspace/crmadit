@@ -1,6 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
+import { processAndApplyTranscript } from '@/lib/automation/process-and-apply-transcript';
 
 export async function POST(req: NextRequest) {
   const session = await getSessionFromRequest(req);
@@ -54,11 +55,27 @@ export async function POST(req: NextRequest) {
       file_path: filePath,
       raw_text: transcriptText,
       processing_status: 'pending',
+      uploaded_by: session.id,
     })
     .select()
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  return NextResponse.json({ transcript }, { status: 201 });
+  // Trigger background processing via Next.js after() API
+  after(async () => {
+    console.log(`[transcript-upload] Starting background processing for ${transcript.id}`);
+    const result = await processAndApplyTranscript(transcript.id);
+    if (result.success) {
+      console.log(`[transcript-upload] Successfully processed ${transcript.id}`);
+    } else {
+      console.error(`[transcript-upload] Failed to process ${transcript.id}: ${result.error}`);
+    }
+  });
+
+  return NextResponse.json({
+    transcript,
+    processing: 'background',
+    message: 'Transcript uploaded. Processing in background.',
+  }, { status: 201 });
 }
