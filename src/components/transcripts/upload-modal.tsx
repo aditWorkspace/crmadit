@@ -155,7 +155,7 @@ export function TranscriptUploadModal({ open, leadId, onClose, onSuccess }: Uplo
                 <Label>Transcript Text</Label>
                 {charCount > 0 && <span className="text-xs text-gray-400">{charCount.toLocaleString()} chars</span>}
               </div>
-              <Textarea placeholder="Paste your transcript..." value={pasteText} onChange={e => setPasteText(e.target.value)} rows={12} className="font-mono text-xs leading-relaxed" disabled={uploading} />
+              <Textarea placeholder="Paste your transcript..." value={pasteText} onChange={e => setPasteText(e.target.value)} rows={12} className="font-mono text-xs leading-relaxed resize-none max-h-64 overflow-y-auto" disabled={uploading} />
             </div>
             <Button className="w-full" disabled={!pasteText.trim() || uploading} onClick={() => handleUpload('paste')}>
               {uploading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
