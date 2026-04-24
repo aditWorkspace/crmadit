@@ -62,7 +62,7 @@ export const CLASSIFIER_MODEL = DECIDER_MODEL;
 export const CHAT_ROUTER_MODEL = DECIDER_MODEL;
 export const LOOKUP_MODEL = 'anthropic/claude-sonnet-4-20250514';
 export const ADVOCATE_MODEL = 'anthropic/claude-haiku-4-5';
-export const JUDGE_MODEL = 'anthropic/claude-opus-4.1';
+export const JUDGE_MODEL = 'anthropic/claude-opus-4.7';
 
 // Fast-loop follow-up window (in minutes from the original auto-reply).
 // Clamped to the business-hours window by pickFastLoopTime.

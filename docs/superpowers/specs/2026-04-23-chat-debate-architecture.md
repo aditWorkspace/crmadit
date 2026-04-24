@@ -52,7 +52,7 @@ Response to user
 | Router | `deepseek/deepseek-chat-v3-0324` | reuses existing `DECIDER_MODEL` |
 | Lookup (single-call) | `anthropic/claude-sonnet-4-20250514` | `LOOKUP_MODEL` |
 | Advocate FOR / AGAINST | `anthropic/claude-haiku-4-5` | `ADVOCATE_MODEL` |
-| Judge | `anthropic/claude-opus-4.1` (temp; togglable) | `JUDGE_MODEL` |
+| Judge | `anthropic/claude-opus-4.7` (temp; togglable) | `JUDGE_MODEL` |
 
 Opus is the only judge-level call. Budget-preserving.
 
