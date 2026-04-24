@@ -64,16 +64,26 @@ export async function GET(req: NextRequest) {
   while (cursor < timeMax) {
     const slotEnd = new Date(cursor.getTime() + intervalMs);
 
-    // When bookingOnly: skip non-bookable slots entirely (nights, weekends,
-    // past, outside 9:30am-5pm PT).
+    // When bookingOnly: skip non-bookable slots entirely (nights, past, outside hours).
+    // Weekdays: 9:30am-5pm PT | Weekends: 11am-10pm PT
     if (bookingOnly) {
       const ptDay = cursor.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short' });
-      if (ptDay === 'Sat' || ptDay === 'Sun') { cursor.setTime(cursor.getTime() + intervalMs); continue; }
+      const isWeekend = ptDay === 'Sat' || ptDay === 'Sun';
       if (cursor.getTime() < nowMs) { cursor.setTime(cursor.getTime() + intervalMs); continue; }
       const ptH = parseInt(cursor.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false }));
       const ptM = parseInt(cursor.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', minute: '2-digit' }));
-      const afterEarliest = ptH > 9 || (ptH === 9 && ptM >= 30);
-      const beforeLatest = ptH < 17;
+
+      let afterEarliest: boolean;
+      let beforeLatest: boolean;
+      if (isWeekend) {
+        // Weekends: 11am - 10pm PT
+        afterEarliest = ptH >= 11;
+        beforeLatest = ptH < 22;
+      } else {
+        // Weekdays: 9:30am - 5pm PT
+        afterEarliest = ptH > 9 || (ptH === 9 && ptM >= 30);
+        beforeLatest = ptH < 17;
+      }
       if (!afterEarliest || !beforeLatest) { cursor.setTime(cursor.getTime() + intervalMs); continue; }
     }
 

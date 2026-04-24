@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Please book at least 2 hours in advance' }, { status: 400 });
   }
 
-  // Must be within 9:30am-5:00pm PT on a weekday (last slot starts at 4:30pm, ends at 5:00pm)
+  // Must be within booking hours. Weekdays: 9:30am-5pm PT | Weekends: 11am-10pm PT
   const ptHour = parseInt(
     new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false })
   );
@@ -72,10 +72,22 @@ export async function POST(req: NextRequest) {
     new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', minute: '2-digit' })
   );
   const ptDay = new Date(start).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short' });
-  const beforeEarliest = ptHour < 9 || (ptHour === 9 && ptMin < 30);
-  const pastCutoff = ptHour >= 17;
-  if (['Sat', 'Sun'].includes(ptDay) || beforeEarliest || pastCutoff) {
-    return NextResponse.json({ error: 'Slot is outside booking hours (Mon-Fri, 9:30am-5pm PT)' }, { status: 400 });
+  const isWeekend = ['Sat', 'Sun'].includes(ptDay);
+
+  let beforeEarliest: boolean;
+  let pastCutoff: boolean;
+  if (isWeekend) {
+    // Weekends: 11am - 10pm PT
+    beforeEarliest = ptHour < 11;
+    pastCutoff = ptHour >= 22;
+  } else {
+    // Weekdays: 9:30am - 5pm PT
+    beforeEarliest = ptHour < 9 || (ptHour === 9 && ptMin < 30);
+    pastCutoff = ptHour >= 17;
+  }
+  if (beforeEarliest || pastCutoff) {
+    const hoursMsg = isWeekend ? 'Sat-Sun 11am-10pm PT' : 'Mon-Fri 9:30am-5pm PT';
+    return NextResponse.json({ error: `Slot is outside booking hours (${hoursMsg})` }, { status: 400 });
   }
 
   const supabase = createAdminClient();
