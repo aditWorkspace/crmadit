@@ -1,9 +1,10 @@
-export const maxDuration = 30;
+export const maxDuration = 120;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
-import { getAIAnswer } from '@/lib/ai/chat-helper';
+import { answerInsightsChat } from '@/lib/ai/chat-helper';
+import type { HistoryMessage } from '@/lib/ai/chat/types';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSessionFromRequest(req);
@@ -25,6 +26,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   if (sessionErr || !chatSession) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
 
+  // Pull prior messages for history (ascending order). We take the last 12
+  // inside the orchestrator; fetching all is fine at this scale.
+  const { data: priorMessages } = await supabase
+    .from('chat_messages')
+    .select('role, content')
+    .eq('session_id', id)
+    .order('created_at', { ascending: true });
+
+  const history: HistoryMessage[] = (priorMessages || [])
+    .filter(m => m.role === 'user' || m.role === 'assistant')
+    .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
   // Insert user message
   const { data: userMsg, error: userErr } = await supabase
     .from('chat_messages')
@@ -36,7 +49,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   // Get AI answer
   try {
-    const answer = await getAIAnswer(message);
+    const answer = await answerInsightsChat(message, history);
 
     const { data: assistantMsg, error: assistantErr } = await supabase
       .from('chat_messages')
@@ -46,7 +59,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     if (assistantErr) return NextResponse.json({ error: assistantErr.message }, { status: 500 });
 
-    // Bump session updated_at
     await supabase
       .from('chat_sessions')
       .update({ updated_at: new Date().toISOString() })

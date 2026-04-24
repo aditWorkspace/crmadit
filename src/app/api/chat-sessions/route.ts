@@ -1,9 +1,9 @@
-export const maxDuration = 30;
+export const maxDuration = 120;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getSessionFromRequest } from '@/lib/session';
-import { getAIAnswer } from '@/lib/ai/chat-helper';
+import { answerInsightsChat } from '@/lib/ai/chat-helper';
 
 export async function GET(req: NextRequest) {
   const session = await getSessionFromRequest(req);
@@ -48,9 +48,9 @@ export async function POST(req: NextRequest) {
 
   if (userErr) return NextResponse.json({ error: userErr.message }, { status: 500 });
 
-  // Get AI answer
+  // Get AI answer (new session -> no prior history).
   try {
-    const answer = await getAIAnswer(message);
+    const answer = await answerInsightsChat(message, []);
 
     const { data: assistantMsg, error: assistantErr } = await supabase
       .from('chat_messages')
@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
     if (assistantErr) return NextResponse.json({ error: assistantErr.message }, { status: 500 });
 
     return NextResponse.json({ session: chatSession, messages: [userMsg, assistantMsg] });
-  } catch (err) {
+  } catch {
     // Still return session with user message even if AI fails
     const errorMsg = { id: crypto.randomUUID(), role: 'assistant', content: 'Failed to generate answer. Please try again.', created_at: new Date().toISOString() };
     return NextResponse.json({ session: chatSession, messages: [userMsg, errorMsg] });

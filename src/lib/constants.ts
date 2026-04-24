@@ -51,6 +51,19 @@ export const QWEN_FREE_MODEL = TRIAGE_MODEL;
 // so CLASSIFIER_MODEL was Haiku. New code should import DECIDER_MODEL directly.
 export const CLASSIFIER_MODEL = DECIDER_MODEL;
 
+// Insights-chat debate pipeline. The budget rule is "Opus only where deep
+// reasoning matters" (judge). Everything else rides cheaper tiers.
+//   - CHAT_ROUTER_MODEL   DeepSeek. Classifies lookup vs scope + emits FTS terms.
+//   - LOOKUP_MODEL        Sonnet 4.5. Single-call path for factual questions.
+//   - ADVOCATE_MODEL      Haiku 4.5. FOR/AGAINST advocates in scope-question debates.
+//   - JUDGE_MODEL         Opus 4. The one reasoning-heavy call per scope question.
+// JUDGE_MODEL is intentionally expensive and currently opt-in — the founder
+// asked to trial Opus on insights chat and will call when to downgrade.
+export const CHAT_ROUTER_MODEL = DECIDER_MODEL;
+export const LOOKUP_MODEL = 'anthropic/claude-sonnet-4-20250514';
+export const ADVOCATE_MODEL = 'anthropic/claude-haiku-4-5';
+export const JUDGE_MODEL = 'anthropic/claude-opus-4.1';
+
 // Fast-loop follow-up window (in minutes from the original auto-reply).
 // Clamped to the business-hours window by pickFastLoopTime.
 export const FAST_LOOP_MIN_MINUTES = 30;

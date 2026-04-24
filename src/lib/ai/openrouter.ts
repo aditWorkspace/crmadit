@@ -10,9 +10,36 @@ export interface AiCallParams {
   maxTokens?: number;
 }
 
+export interface AiMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface AiCallMessagesParams {
+  messages: AiMessage[];
+  jsonMode?: boolean;
+  model?: string;
+  maxTokens?: number;
+  timeoutMs?: number;
+}
+
 export async function callAI(params: AiCallParams): Promise<string> {
+  return callAIMessages({
+    messages: [
+      { role: 'system', content: params.systemPrompt },
+      { role: 'user', content: params.userMessage },
+    ],
+    jsonMode: params.jsonMode,
+    model: params.model,
+    maxTokens: params.maxTokens,
+  });
+}
+
+// Full messages-array variant. Use when you need conversation history,
+// multi-turn assistant replies, or any system+user+assistant interleaving.
+export async function callAIMessages(params: AiCallMessagesParams): Promise<string> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 55_000);
+  const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 55_000);
 
   try {
     const response = await fetch(OPENROUTER_API_URL, {
@@ -26,10 +53,7 @@ export async function callAI(params: AiCallParams): Promise<string> {
       body: JSON.stringify({
         model: params.model || DEFAULT_MODEL,
         max_tokens: params.maxTokens || DEFAULT_MAX_TOKENS,
-        messages: [
-          { role: 'system', content: params.systemPrompt },
-          { role: 'user', content: params.userMessage },
-        ],
+        messages: params.messages,
         ...(params.jsonMode ? { response_format: { type: 'json_object' } } : {}),
       }),
       signal: controller.signal,
