@@ -10,7 +10,7 @@ import {
   Send, RefreshCw, Loader2, BookOpen, MessageSquare,
   AlertTriangle, MessageCircle, Lightbulb, Layers, Bot, User,
   Quote, Users, ChevronDown, ChevronUp, ChevronLeft, ChevronRight,
-  MessageSquarePlus, Trash2, Check, Sparkles, Brain, Search,
+  MessageSquarePlus, Trash2, Check, Sparkles, Brain, Search, Download,
 } from '@/lib/icons';
 
 /* ─── Markdown → Structured Parsing ──────────────────────────────── */
@@ -214,6 +214,31 @@ export default function InsightsPage() {
     const stored = typeof window !== 'undefined' ? window.localStorage.getItem('insights:docsCollapsed') : null;
     if (stored === '1') setDocsCollapsed(true);
   }, []);
+  // Export knowledge docs + per-call detailed summaries to a zip of two
+  // markdown files. Triggered from the header button.
+  const [exporting, setExporting] = useState(false);
+  const handleExport = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const res = await fetch('/api/insights/export');
+      if (!res.ok) throw new Error(`export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `proxi-insights-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const toggleDocs = () => {
     setDocsCollapsed(prev => {
       const next = !prev;
@@ -535,6 +560,15 @@ export default function InsightsPage() {
             )}
           </div>
           <div className="flex items-center gap-1">
+            <button
+              onClick={handleExport}
+              disabled={exporting}
+              className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-900 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Export all knowledge docs + per-call detailed summaries as a .zip"
+            >
+              {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              {exporting ? 'Exporting…' : 'Export'}
+            </button>
             <button
               onClick={toggleDocs}
               className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-50 transition-colors"
