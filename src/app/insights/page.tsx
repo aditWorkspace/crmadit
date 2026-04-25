@@ -6,7 +6,6 @@ import { KnowledgeDoc, KnowledgeDocType, ProblemThemesData, ChatSession, ChatMes
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Send, RefreshCw, Loader2, BookOpen, MessageSquare,
   AlertTriangle, MessageCircle, Lightbulb, Layers, Bot, User,
@@ -177,17 +176,36 @@ export default function InsightsPage() {
   const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
   const [docsLoading, setDocsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<KnowledgeDocType>('problems');
-
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState('');
-  const [chatLoading, setChatLoading] = useState(false);
   const [aggregating, setAggregating] = useState(false);
+  const [input, setInput] = useState('');
 
-  // Chat session state
+  // ── Multi-session chat state ──────────────────────────────────────
+  // Each "key" is either a real session UUID or a transient draft key
+  // (`__draft_<uuid>`) for a New Chat that hasn't sent its first message
+  // yet. State per key lets multiple chats run in parallel — sending in
+  // session A while viewing B keeps A's request alive, and switching back
+  // to A shows its progress and final answer when ready.
+  type SessionState = { messages: ChatMessage[]; loading: boolean; loadingStartedAt?: number };
+  const newDraftKey = () => `__draft_${crypto.randomUUID()}`;
+  const [sessionStates, setSessionStates] = useState<Record<string, SessionState>>(() => ({ [newDraftKey()]: { messages: [], loading: false } }));
+  // Pick the initial draft key. Re-derived only on first render.
+  const [activeKey, setActiveKey] = useState<string>(() => Object.keys({ initial: 1 })[0] === 'initial' ? '' : '');
+  // We need to set activeKey to the draft key created above. Done in an effect below.
+
+  // ── Server-side session list (real sessions only) ────────────────
   const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionsLoading, setSessionsLoading] = useState(true);
-  const [sessionsOpen, setSessionsOpen] = useState(false);
+
+  const isDraftKey = (k: string) => k.startsWith('__draft_');
+  const getState = (k: string): SessionState => sessionStates[k] ?? { messages: [], loading: false };
+  const updateState = (k: string, updater: (prev: SessionState) => SessionState) => {
+    setSessionStates(prev => ({ ...prev, [k]: updater(prev[k] ?? { messages: [], loading: false }) }));
+  };
+  // Set initial activeKey to the first draft key (run once on mount).
+  useEffect(() => {
+    setActiveKey(prev => prev || Object.keys(sessionStates)[0]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Right-panel (knowledge docs) collapse state. Defaults to OPEN on first
   // mount but persisted to localStorage so the user's preference sticks.
@@ -239,23 +257,24 @@ export default function InsightsPage() {
   }, [user?.team_member_id]);
 
   const loadSession = useCallback(async (sessionId: string) => {
+    setActiveKey(sessionId);
+    // If we already have state for this session and it's not actively
+    // loading, show whatever's cached and skip the network round-trip.
+    const cached = sessionStates[sessionId];
+    if (cached && cached.messages.length > 0 && !cached.loading) return;
     try {
-      setChatLoading(true);
       const res = await fetch(`/api/chat-sessions/${sessionId}`, { headers });
       const data = await res.json();
       if (data.messages) {
-        setMessages(data.messages);
-        setActiveSessionId(sessionId);
+        updateState(sessionId, prev => ({ ...prev, messages: data.messages, loading: prev.loading }));
       }
     } catch {
       // silent
-    } finally {
-      setChatLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.team_member_id]);
+  }, [user?.team_member_id, sessionStates]);
 
-  // Load session list on mount — always start with fresh "New Chat"
+  // Load session list on mount.
   useEffect(() => {
     if (!user) return;
     fetchSessions();
@@ -263,9 +282,9 @@ export default function InsightsPage() {
   }, [user?.team_member_id]);
 
   const startNewChat = () => {
-    setActiveSessionId(null);
-    setMessages([]);
-    setSessionsOpen(false);
+    const k = newDraftKey();
+    setSessionStates(prev => ({ ...prev, [k]: { messages: [], loading: false } }));
+    setActiveKey(k);
     inputRef.current?.focus();
   };
 
@@ -273,7 +292,13 @@ export default function InsightsPage() {
     try {
       await fetch(`/api/chat-sessions/${sessionId}`, { method: 'DELETE', headers });
       setSessions(prev => prev.filter(s => s.id !== sessionId));
-      if (activeSessionId === sessionId) startNewChat();
+      // Drop cached state for the deleted session.
+      setSessionStates(prev => {
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+      if (activeKey === sessionId) startNewChat();
     } catch {
       // silent
     }
@@ -292,67 +317,106 @@ export default function InsightsPage() {
     }
   };
 
+  // Auto-scroll when active session's messages change.
+  const activeMessages = getState(activeKey).messages;
+  const activeLoading = getState(activeKey).loading;
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [activeMessages.length, activeKey]);
 
-  const handleSend = async () => {
+  // Non-blocking send. Captures the target key at send-time so that
+  // switching sessions mid-flight updates the originating session, not
+  // whatever the user is currently looking at.
+  const handleSend = () => {
     const q = input.trim();
-    if (!q || chatLoading) return;
+    if (!q) return;
 
-    // Optimistic user message
-    const tempUserMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: q, created_at: new Date().toISOString() };
-    setMessages(prev => [...prev, tempUserMsg]);
+    const targetKey = activeKey;
+    const targetIsDraft = isDraftKey(targetKey);
+    const targetSessionId = targetIsDraft ? null : targetKey;
+
+    // Refuse if THIS session is already loading. Other sessions can still
+    // be in-flight independently.
+    if (getState(targetKey).loading) return;
+
+    const tempUserMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: q,
+      created_at: new Date().toISOString(),
+    };
+    updateState(targetKey, prev => ({
+      ...prev,
+      messages: [...prev.messages, tempUserMsg],
+      loading: true,
+      loadingStartedAt: Date.now(),
+    }));
     setInput('');
-    setChatLoading(true);
+    inputRef.current?.focus();
 
-    try {
-      if (activeSessionId) {
-        // Send in existing session
-        const res = await fetch(`/api/chat-sessions/${activeSessionId}/messages`, {
-          method: 'POST',
-          headers: { ...headers, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: q }),
+    // Fire-and-forget; resolve into the captured target key.
+    (async () => {
+      try {
+        if (targetSessionId) {
+          const res = await fetch(`/api/chat-sessions/${targetSessionId}/messages`, {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: q }),
+          });
+          const data = await res.json();
+          if (data.error && !data.assistantMessage) throw new Error(data.error);
+
+          updateState(targetSessionId, prev => ({
+            ...prev,
+            // Replace the optimistic user msg with the persisted versions.
+            messages: [...prev.messages.slice(0, -1), data.userMessage, data.assistantMessage].filter(Boolean),
+            loading: false,
+          }));
+          setSessions(prev => prev
+            .map(s => s.id === targetSessionId ? { ...s, updated_at: new Date().toISOString() } : s)
+            .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
+          );
+        } else {
+          // New session — POST creates it server-side.
+          const res = await fetch('/api/chat-sessions', {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: q }),
+          });
+          const data = await res.json();
+          if (data.error && !data.messages) throw new Error(data.error);
+
+          const newId: string = data.session.id;
+          // Promote draft state -> real session id. Drop the draft key.
+          setSessionStates(prev => {
+            const next = { ...prev };
+            delete next[targetKey];
+            next[newId] = { messages: data.messages, loading: false };
+            return next;
+          });
+          // If the user is still viewing this draft, follow it to the new
+          // session id; otherwise leave them where they are.
+          setActiveKey(prev => prev === targetKey ? newId : prev);
+          setSessions(prev => [data.session, ...prev]);
+        }
+        fetchDocs();
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : 'request failed';
+        const errorMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `Failed to get a response: ${detail}`,
+          created_at: new Date().toISOString(),
+        };
+        // Use the post-promotion key if we promoted; otherwise stick with
+        // the original target key.
+        setSessionStates(prev => {
+          const k = prev[targetKey] ? targetKey : Object.keys(prev).find(x => !isDraftKey(x) && prev[x].loading) ?? targetKey;
+          const cur = prev[k] ?? { messages: [], loading: false };
+          return { ...prev, [k]: { ...cur, messages: [...cur.messages, errorMsg], loading: false } };
         });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-
-        // Replace optimistic msg with real one, add assistant msg
-        setMessages(prev => [
-          ...prev.slice(0, -1),
-          data.userMessage,
-          data.assistantMessage,
-        ]);
-        // Bump session to top of list
-        setSessions(prev => prev.map(s =>
-          s.id === activeSessionId ? { ...s, updated_at: new Date().toISOString() } : s
-        ).sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()));
-      } else {
-        // Create new session
-        const res = await fetch('/api/chat-sessions', {
-          method: 'POST',
-          headers: { ...headers, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: q }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-
-        setActiveSessionId(data.session.id);
-        setMessages(data.messages);
-        setSessions(prev => [data.session, ...prev]);
       }
-      fetchDocs();
-    } catch {
-      setMessages(prev => [...prev, {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: 'Failed to get a response. Please try again.',
-        created_at: new Date().toISOString(),
-      }]);
-    } finally {
-      setChatLoading(false);
-      inputRef.current?.focus();
-    }
+    })();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -363,79 +427,114 @@ export default function InsightsPage() {
   };
 
   const activeDoc = docs.find(d => d.doc_type === activeTab);
-  const config = DOC_CONFIG[activeTab];
+  const activeSessionMeta = isDraftKey(activeKey) ? null : sessions.find(s => s.id === activeKey);
+  // Sidebar items: real sessions + any drafts that have at least one
+  // message (suppress empty drafts to avoid clutter).
+  const sidebarDrafts = Object.entries(sessionStates)
+    .filter(([k, st]) => isDraftKey(k) && (st.messages.length > 0 || st.loading))
+    .map(([k, st]) => ({ key: k, st }));
 
   return (
     <div className="flex h-[calc(100vh-1rem)] gap-4 p-4">
-      {/* ── Left panel: Chat ──────────────────────────────────────── */}
-      <div className={cn(
-        "flex flex-col min-w-0 bg-white rounded-xl border border-gray-200 shadow-sm transition-all duration-300",
-        docsCollapsed ? "flex-1" : "w-[58%]",
-      )}>
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
-          <Popover open={sessionsOpen} onOpenChange={setSessionsOpen}>
-            <PopoverTrigger className="flex items-center gap-2.5 hover:bg-gray-50 rounded-lg px-2 py-1 -ml-2 transition-colors cursor-pointer border-0 bg-transparent">
-              <MessageSquare className="h-4.5 w-4.5 text-gray-700" />
-              <span className="text-sm font-semibold text-gray-900">
-                {activeSessionId
-                  ? sessions.find(s => s.id === activeSessionId)?.title || 'Chat'
-                  : 'New Chat'}
-              </span>
-              <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-72 p-0">
-              <div className="p-2 border-b border-gray-100">
-                <button
-                  onClick={startNewChat}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
+      {/* ── Sidebar: chat list ──────────────────────────────────── */}
+      <div className="flex flex-col w-[240px] flex-shrink-0 bg-white rounded-xl border border-gray-200 shadow-sm">
+        <div className="px-3 pt-3 pb-2 border-b border-gray-100">
+          <button
+            onClick={startNewChat}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            <MessageSquarePlus className="h-4 w-4" />
+            New chat
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+          {sessionsLoading && sessions.length === 0 ? (
+            <div className="flex justify-center py-6">
+              <Loader2 className="h-4 w-4 text-gray-300 animate-spin" />
+            </div>
+          ) : (
+            <>
+              {/* Drafts with content shown at top */}
+              {sidebarDrafts.map(({ key, st }) => (
+                <div
+                  key={key}
+                  onClick={() => setActiveKey(key)}
+                  className={cn(
+                    'group flex items-center gap-2 px-2.5 py-2 rounded-lg cursor-pointer transition-colors',
+                    activeKey === key ? 'bg-gray-100' : 'hover:bg-gray-50',
+                  )}
                 >
-                  <MessageSquarePlus className="h-4 w-4" />
-                  New Chat
-                </button>
-              </div>
-              <div className="max-h-64 overflow-y-auto p-1">
-                {sessionsLoading ? (
-                  <div className="flex justify-center py-4">
-                    <Loader2 className="h-4 w-4 text-gray-300 animate-spin" />
-                  </div>
-                ) : sessions.length === 0 ? (
-                  <p className="text-xs text-gray-400 text-center py-4">No past chats</p>
-                ) : (
-                  sessions.map(s => (
-                    <div
-                      key={s.id}
-                      className={cn(
-                        'group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors',
-                        s.id === activeSessionId ? 'bg-gray-100' : 'hover:bg-gray-50',
-                      )}
-                    >
-                      <button
-                        onClick={() => { loadSession(s.id); setSessionsOpen(false); }}
-                        className="flex-1 min-w-0 text-left"
-                      >
-                        <p className="text-sm text-gray-800 truncate">{s.title}</p>
-                        <p className="text-[10px] text-gray-400">{formatRelativeTime(s.updated_at)}</p>
-                      </button>
+                  <MessageSquare className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                  <span className="flex-1 min-w-0 text-sm text-gray-700 truncate italic">
+                    {st.messages[0]?.content?.slice(0, 40) || 'New chat'}
+                  </span>
+                  {st.loading && <Loader2 className="h-3 w-3 text-gray-400 animate-spin flex-shrink-0" />}
+                </div>
+              ))}
+              {/* Empty draft slot if currently viewing one */}
+              {isDraftKey(activeKey) && getState(activeKey).messages.length === 0 && (
+                <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-gray-100">
+                  <MessageSquarePlus className="h-3.5 w-3.5 text-gray-500 flex-shrink-0" />
+                  <span className="flex-1 text-sm text-gray-700 truncate">New chat</span>
+                </div>
+              )}
+              {/* Real sessions */}
+              {sessions.map(s => {
+                const isActive = activeKey === s.id;
+                const isLoading = sessionStates[s.id]?.loading;
+                return (
+                  <div
+                    key={s.id}
+                    onClick={() => loadSession(s.id)}
+                    className={cn(
+                      'group flex items-center gap-2 px-2.5 py-2 rounded-lg cursor-pointer transition-colors',
+                      isActive ? 'bg-gray-100' : 'hover:bg-gray-50',
+                    )}
+                  >
+                    <MessageSquare className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-gray-800 truncate">{s.title}</p>
+                      <p className="text-[10px] text-gray-400">{formatRelativeTime(s.updated_at)}</p>
+                    </div>
+                    {isLoading ? (
+                      <Loader2 className="h-3 w-3 text-gray-500 animate-spin flex-shrink-0" />
+                    ) : (
                       <button
                         onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 transition-all"
+                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 transition-all flex-shrink-0"
                       >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        <Trash2 className="h-3 w-3" />
                       </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </PopoverContent>
-          </Popover>
+                    )}
+                  </div>
+                );
+              })}
+              {sessions.length === 0 && sidebarDrafts.length === 0 && (
+                <p className="text-xs text-gray-400 text-center py-6">No chats yet</p>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ── Center: Chat ──────────────────────────────────────── */}
+      <div className={cn(
+        "flex flex-col min-w-0 bg-white rounded-xl border border-gray-200 shadow-sm transition-all duration-300",
+        docsCollapsed ? "flex-1" : "flex-1",
+      )}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <MessageSquare className="h-4.5 w-4.5 text-gray-700 flex-shrink-0" />
+            <span className="text-sm font-semibold text-gray-900 truncate">
+              {activeSessionMeta?.title || 'New chat'}
+            </span>
+            {activeLoading && (
+              <span className="ml-2 inline-flex items-center gap-1 text-[10px] text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+                <Loader2 className="h-3 w-3 animate-spin" /> running
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-1">
-            <button
-              onClick={startNewChat}
-              className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-50 transition-colors"
-              title="New chat"
-            >
-              <MessageSquarePlus className="h-4.5 w-4.5" />
-            </button>
             <button
               onClick={toggleDocs}
               className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-50 transition-colors"
@@ -447,7 +546,7 @@ export default function InsightsPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-          {messages.length === 0 && (
+          {activeMessages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-center space-y-3 py-12">
               <div className="h-12 w-12 rounded-full bg-gray-50 flex items-center justify-center">
                 <BookOpen className="h-6 w-6 text-gray-300" />
@@ -476,7 +575,7 @@ export default function InsightsPage() {
             </div>
           )}
 
-          {messages.map(msg => (
+          {activeMessages.map(msg => (
             <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
               {msg.role === 'assistant' && (
                 <div className="h-7 w-7 rounded-full bg-gray-900 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -501,7 +600,7 @@ export default function InsightsPage() {
             </div>
           ))}
 
-          {chatLoading && <ThinkingIndicator />}
+          {activeLoading && <ThinkingIndicator startedAt={getState(activeKey).loadingStartedAt} />}
           <div ref={chatEndRef} />
         </div>
 
@@ -518,7 +617,7 @@ export default function InsightsPage() {
             />
             <Button
               onClick={handleSend}
-              disabled={!input.trim() || chatLoading}
+              disabled={!input.trim() || activeLoading}
               size="sm"
               className="h-10 w-10 rounded-xl p-0"
             >
@@ -586,7 +685,7 @@ export default function InsightsPage() {
 // If a question is a lookup, the debate/judge steps still display but
 // finish under their estimates and the answer arrives mid-stage. That's
 // fine; the UI will just unmount when the response lands.
-function ThinkingIndicator() {
+function ThinkingIndicator({ startedAt }: { startedAt?: number }) {
   const stages = [
     { label: 'Routing question', icon: Sparkles, durationMs: 2500 },
     { label: 'Searching transcripts', icon: Search, durationMs: 2500 },
@@ -598,10 +697,13 @@ function ThinkingIndicator() {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
-    const start = Date.now();
+    // Use startedAt when provided so switching away and back resumes
+    // the timer from when the request *actually* started, not from when
+    // the indicator re-mounted.
+    const start = startedAt ?? Date.now();
     const tick = setInterval(() => setElapsed(Date.now() - start), 250);
     return () => clearInterval(tick);
-  }, []);
+  }, [startedAt]);
 
   useEffect(() => {
     let cumulative = 0;
