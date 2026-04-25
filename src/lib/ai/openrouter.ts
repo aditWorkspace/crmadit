@@ -22,6 +22,9 @@ export interface AiCallMessagesParams {
   model?: string;
   maxTokens?: number;
   timeoutMs?: number;
+  // Try these models in order if `model` returns 429 (rate limit) or 5xx.
+  // Cheap insurance against upstream provider blips on a single model.
+  fallbackModels?: string[];
 }
 
 export async function callAI(params: AiCallParams): Promise<string> {
@@ -40,6 +43,27 @@ export async function callAI(params: AiCallParams): Promise<string> {
 // Full messages-array variant. Use when you need conversation history,
 // multi-turn assistant replies, or any system+user+assistant interleaving.
 export async function callAIMessages(params: AiCallMessagesParams): Promise<string> {
+  const candidates = [params.model || DEFAULT_MODEL, ...(params.fallbackModels || [])];
+  let lastErr: Error | null = null;
+
+  for (const model of candidates) {
+    try {
+      return await singleAttempt({ ...params, model });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      lastErr = err instanceof Error ? err : new Error(message);
+      // Retryable: 429 (rate limit) or 5xx (server error). Anything else is
+      // a permanent failure (bad model id, auth, malformed payload) that
+      // would fail on every fallback the same way — bail immediately.
+      const retryable = /API error (429|5\d\d)/.test(message);
+      if (!retryable) throw lastErr;
+      console.warn(`[openrouter] ${model} failed (${message.slice(0, 100)}), trying next fallback`);
+    }
+  }
+  throw lastErr ?? new Error('OpenRouter call failed with no specific error');
+}
+
+async function singleAttempt(params: AiCallMessagesParams): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 55_000);
 

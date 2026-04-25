@@ -66,6 +66,8 @@ Argue ${args.side.toUpperCase()} the user's claim now.`;
     messages,
     model: ADVOCATE_MODEL,
     maxTokens: 800,
+    timeoutMs: 60_000,
+    fallbackModels: ['deepseek/deepseek-v4-flash', 'deepseek/deepseek-v3.2'],
   });
 
   return { side: args.side, argument };

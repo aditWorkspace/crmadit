@@ -66,9 +66,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ userMessage: userMsg, assistantMessage: assistantMsg });
   } catch (err) {
-    return NextResponse.json({
-      error: 'Failed to generate answer',
-      details: err instanceof Error ? err.message : String(err),
-    }, { status: 500 });
+    console.error('[chat-sessions messages POST] AI pipeline failed:', err);
+    // Persist a visible assistant turn carrying the error so the user sees
+    // it inline in the thread (instead of the UI silently breaking).
+    const detail = err instanceof Error ? err.message : String(err);
+    const { data: assistantMsg } = await supabase
+      .from('chat_messages')
+      .insert({
+        session_id: id,
+        role: 'assistant',
+        content: `Failed to generate answer:\n\n\`\`\`\n${detail}\n\`\`\``,
+      })
+      .select('id, role, content, created_at')
+      .single();
+    return NextResponse.json({ userMessage: userMsg, assistantMessage: assistantMsg });
   }
 }

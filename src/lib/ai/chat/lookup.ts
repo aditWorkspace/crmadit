@@ -53,5 +53,7 @@ ${args.question}`;
     messages,
     model: LOOKUP_MODEL,
     maxTokens: 1200,
+    timeoutMs: 60_000,
+    fallbackModels: ['deepseek/deepseek-v4-flash', 'deepseek/deepseek-v3.2'],
   });
 }

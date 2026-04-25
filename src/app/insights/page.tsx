@@ -10,7 +10,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import {
   Send, RefreshCw, Loader2, BookOpen, MessageSquare,
   AlertTriangle, MessageCircle, Lightbulb, Layers, Bot, User,
-  Quote, Users, ChevronDown, ChevronUp, MessageSquarePlus, Trash2,
+  Quote, Users, ChevronDown, ChevronUp, ChevronLeft, ChevronRight,
+  MessageSquarePlus, Trash2, Check, Sparkles, Brain, Search,
 } from '@/lib/icons';
 
 /* ─── Markdown → Structured Parsing ──────────────────────────────── */
@@ -188,6 +189,21 @@ export default function InsightsPage() {
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sessionsOpen, setSessionsOpen] = useState(false);
 
+  // Right-panel (knowledge docs) collapse state. Defaults to OPEN on first
+  // mount but persisted to localStorage so the user's preference sticks.
+  const [docsCollapsed, setDocsCollapsed] = useState(false);
+  useEffect(() => {
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem('insights:docsCollapsed') : null;
+    if (stored === '1') setDocsCollapsed(true);
+  }, []);
+  const toggleDocs = () => {
+    setDocsCollapsed(prev => {
+      const next = !prev;
+      if (typeof window !== 'undefined') window.localStorage.setItem('insights:docsCollapsed', next ? '1' : '0');
+      return next;
+    });
+  };
+
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -352,7 +368,10 @@ export default function InsightsPage() {
   return (
     <div className="flex h-[calc(100vh-1rem)] gap-4 p-4">
       {/* ── Left panel: Chat ──────────────────────────────────────── */}
-      <div className="flex flex-col w-[58%] min-w-0 bg-white rounded-xl border border-gray-200 shadow-sm">
+      <div className={cn(
+        "flex flex-col min-w-0 bg-white rounded-xl border border-gray-200 shadow-sm transition-all duration-300",
+        docsCollapsed ? "flex-1" : "w-[58%]",
+      )}>
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
           <Popover open={sessionsOpen} onOpenChange={setSessionsOpen}>
             <PopoverTrigger className="flex items-center gap-2.5 hover:bg-gray-50 rounded-lg px-2 py-1 -ml-2 transition-colors cursor-pointer border-0 bg-transparent">
@@ -409,13 +428,22 @@ export default function InsightsPage() {
               </div>
             </PopoverContent>
           </Popover>
-          <button
-            onClick={startNewChat}
-            className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-50 transition-colors"
-            title="New chat"
-          >
-            <MessageSquarePlus className="h-4.5 w-4.5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={startNewChat}
+              className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-50 transition-colors"
+              title="New chat"
+            >
+              <MessageSquarePlus className="h-4.5 w-4.5" />
+            </button>
+            <button
+              onClick={toggleDocs}
+              className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-50 transition-colors"
+              title={docsCollapsed ? 'Show knowledge docs' : 'Hide knowledge docs'}
+            >
+              {docsCollapsed ? <ChevronLeft className="h-4.5 w-4.5" /> : <ChevronRight className="h-4.5 w-4.5" />}
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
@@ -473,20 +501,7 @@ export default function InsightsPage() {
             </div>
           ))}
 
-          {chatLoading && (
-            <div className="flex gap-3">
-              <div className="h-7 w-7 rounded-full bg-gray-900 flex items-center justify-center flex-shrink-0">
-                <Bot className="h-3.5 w-3.5 text-white" />
-              </div>
-              <div className="bg-gray-50 border border-gray-100 rounded-xl px-4 py-3">
-                <div className="flex gap-1">
-                  <span className="h-2 w-2 rounded-full bg-gray-300 animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="h-2 w-2 rounded-full bg-gray-300 animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="h-2 w-2 rounded-full bg-gray-300 animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-              </div>
-            </div>
-          )}
+          {chatLoading && <ThinkingIndicator />}
           <div ref={chatEndRef} />
         </div>
 
@@ -514,6 +529,7 @@ export default function InsightsPage() {
       </div>
 
       {/* ── Right panel: Knowledge Docs ───────────────────────────── */}
+      {!docsCollapsed && (
       <div className="flex flex-col w-[42%] min-w-0 bg-white rounded-xl border border-gray-200 shadow-sm">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
           <div className="flex items-center gap-2.5">
@@ -556,6 +572,85 @@ export default function InsightsPage() {
             </TabsContent>
           ))}
         </Tabs>
+      </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Thinking Indicator ──────────────────────────────────────────── */
+// Multi-stage progress while the chat pipeline runs. Stage timing is
+// approximate — the API doesn't stream progress yet, so we cycle through
+// stages on a timer calibrated against typical end-to-end latency.
+//   router (~1s) → retrieving (~2s) → debate (~25s) → judge (~30s)
+// If a question is a lookup, the debate/judge steps still display but
+// finish under their estimates and the answer arrives mid-stage. That's
+// fine; the UI will just unmount when the response lands.
+function ThinkingIndicator() {
+  const stages = [
+    { label: 'Routing question', icon: Sparkles, durationMs: 2500 },
+    { label: 'Searching transcripts', icon: Search, durationMs: 2500 },
+    { label: 'Building case for + against (in parallel)', icon: Users, durationMs: 25000 },
+    { label: 'Judge deliberating', icon: Brain, durationMs: 60000 },
+  ];
+
+  const [currentStage, setCurrentStage] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const start = Date.now();
+    const tick = setInterval(() => setElapsed(Date.now() - start), 250);
+    return () => clearInterval(tick);
+  }, []);
+
+  useEffect(() => {
+    let cumulative = 0;
+    for (let i = 0; i < stages.length; i++) {
+      cumulative += stages[i].durationMs;
+      if (elapsed < cumulative) {
+        setCurrentStage(i);
+        return;
+      }
+    }
+    setCurrentStage(stages.length - 1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elapsed]);
+
+  return (
+    <div className="flex gap-3">
+      <div className="h-7 w-7 rounded-full bg-gray-900 flex items-center justify-center flex-shrink-0">
+        <Bot className="h-3.5 w-3.5 text-white" />
+      </div>
+      <div className="bg-gray-50 border border-gray-100 rounded-xl px-4 py-3 min-w-[260px] space-y-1.5">
+        {stages.map((stage, i) => {
+          const Icon = stage.icon;
+          const isDone = i < currentStage;
+          const isActive = i === currentStage;
+          return (
+            <div key={i} className="flex items-center gap-2.5 text-xs">
+              <span className={cn(
+                "h-4 w-4 rounded-full flex items-center justify-center flex-shrink-0",
+                isDone ? "bg-emerald-100 text-emerald-700" : isActive ? "bg-gray-900 text-white" : "bg-gray-200 text-gray-400",
+              )}>
+                {isDone ? (
+                  <Check className="h-2.5 w-2.5" />
+                ) : isActive ? (
+                  <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                ) : (
+                  <Icon className="h-2.5 w-2.5" />
+                )}
+              </span>
+              <span className={cn(
+                isDone ? "text-gray-400 line-through decoration-gray-300" : isActive ? "text-gray-900 font-medium" : "text-gray-400",
+              )}>
+                {stage.label}
+              </span>
+            </div>
+          );
+        })}
+        <div className="text-[10px] text-gray-400 pt-1 pl-6">
+          {(elapsed / 1000).toFixed(0)}s elapsed
+        </div>
       </div>
     </div>
   );

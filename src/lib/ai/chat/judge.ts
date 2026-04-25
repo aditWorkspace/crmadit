@@ -85,5 +85,9 @@ Render your judgment now.`;
     messages,
     model: JUDGE_MODEL,
     maxTokens: 1500,
+    timeoutMs: 110_000,
+    // Fallback to DeepSeek v3 (still DeepSeek — no Anthropic) when v4-pro
+    // returns 429/5xx. Founder asked to keep the chat on DeepSeek only.
+    fallbackModels: ['deepseek/deepseek-v4-flash', 'deepseek/deepseek-v3.2'],
   });
 }

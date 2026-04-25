@@ -61,9 +61,17 @@ export async function POST(req: NextRequest) {
     if (assistantErr) return NextResponse.json({ error: assistantErr.message }, { status: 500 });
 
     return NextResponse.json({ session: chatSession, messages: [userMsg, assistantMsg] });
-  } catch {
-    // Still return session with user message even if AI fails
-    const errorMsg = { id: crypto.randomUUID(), role: 'assistant', content: 'Failed to generate answer. Please try again.', created_at: new Date().toISOString() };
+  } catch (err) {
+    console.error('[chat-sessions POST] AI pipeline failed:', err);
+    // Still return session with user message even if AI fails — surface
+    // the error message so the founder can see it instead of "try again"
+    const detail = err instanceof Error ? err.message : String(err);
+    const errorMsg = {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: `Failed to generate answer:\n\n\`\`\`\n${detail}\n\`\`\``,
+      created_at: new Date().toISOString(),
+    };
     return NextResponse.json({ session: chatSession, messages: [userMsg, errorMsg] });
   }
 }
