@@ -8,6 +8,7 @@ export interface AiCallParams {
   jsonMode?: boolean;
   model?: string;
   maxTokens?: number;
+  timeoutMs?: number;
 }
 
 export interface AiMessage {
@@ -32,6 +33,7 @@ export async function callAI(params: AiCallParams): Promise<string> {
     jsonMode: params.jsonMode,
     model: params.model,
     maxTokens: params.maxTokens,
+    timeoutMs: params.timeoutMs,
   });
 }
 

@@ -103,6 +103,10 @@ export async function processTranscript(rawText: string): Promise<TranscriptAnal
     userMessage,
     jsonMode: true,
     maxTokens: 4000,
+    // Long Granola transcripts (50K+ chars) routinely take >55s with DeepSeek.
+    // Bumped to 240s to comfortably cover the worst case; Vercel function
+    // maxDuration on these routes is 300s so we still leave headroom.
+    timeoutMs: 240_000,
   });
 
   const parsed = aiTranscriptAnalysisSchema.safeParse(JSON.parse(raw));
