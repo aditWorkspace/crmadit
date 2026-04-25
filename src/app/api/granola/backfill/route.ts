@@ -13,12 +13,25 @@ import { syncAllKeys } from '@/lib/granola/sync';
 
 export async function POST(req: NextRequest) {
   if (!verifyCronAuth(req).ok) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    // Diagnostic-only: tells us WHICH part of the auth failed without
+    // leaking secret content. Safe because the response is a 401 —
+    // attacker already knows auth failed.
+    const auth = req.headers.get('authorization');
+    const xCron = req.headers.get('x-cron-secret');
+    const expectedLen = (process.env.CRON_SECRET || '').length;
+    return NextResponse.json({
+      error: 'Unauthorized',
+      diag: {
+        has_auth_header: !!auth,
+        auth_prefix: auth ? auth.slice(0, 7) : null,
+        auth_len: auth?.length ?? 0,
+        has_x_cron: !!xCron,
+        x_cron_len: xCron?.length ?? 0,
+        env_cron_secret_len: expectedLen,
+      },
+    }, { status: 401 });
   }
 
-  // Backfill mode ignores last_synced_at and walks the whole feed.
-  // maxNotes=2000 is generous; under-budget for one Vercel function run
-  // even with 5 req/s rate limit (~6 minutes for 2000 notes worst case).
   const results = await syncAllKeys({ mode: 'backfill', maxNotes: 2000 });
   return NextResponse.json({ ok: true, results });
 }
