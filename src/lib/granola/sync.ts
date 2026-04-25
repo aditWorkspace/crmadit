@@ -59,7 +59,11 @@ export async function syncOneKey(key: GranolaKey, options: SyncOptions = {}): Pr
       .select('last_synced_at')
       .eq('api_key_label', key.label)
       .single();
-    if (state?.last_synced_at) createdAfter = state.last_synced_at;
+    if (state?.last_synced_at) {
+      // Granola wants strict ISO 8601 with Z suffix; Postgres serializes
+      // as `2026-04-25T21:46:48.876+00:00` which Granola rejects as invalid.
+      createdAfter = new Date(state.last_synced_at).toISOString();
+    }
   }
 
   const result: SyncResult = {
