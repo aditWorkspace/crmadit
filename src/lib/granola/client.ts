@@ -2,7 +2,7 @@
 // Public docs: https://docs.granola.ai/introduction
 // Rate limit: 25 req / 5s burst, 5 req/s sustained -> we sleep 250ms between requests.
 
-const GRANOLA_BASE = 'https://api.granola.ai/v1';
+const GRANOLA_BASE = 'https://public-api.granola.ai/v1';
 
 export interface GranolaNoteSummary {
   id: string;                 // not_xxxxxxxxxxxxxx
