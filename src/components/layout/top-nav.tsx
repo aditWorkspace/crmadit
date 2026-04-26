@@ -11,6 +11,7 @@ import {
   BookOpen,
   Settings,
   Mail,
+  Zap,
 } from '@/lib/icons';
 import { WorkspaceSwitcher } from './workspace-switcher';
 import { UserMenu } from './user-menu';
@@ -29,6 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/follow-ups', label: 'Follow-ups', icon: Clock },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/insights', label: 'Insights', icon: BookOpen },
+  { href: '/actions', label: 'Actions', icon: Zap },
   { href: '/inbox', label: 'Inbox', icon: Mail },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];

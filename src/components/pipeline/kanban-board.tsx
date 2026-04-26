@@ -36,7 +36,13 @@ export function KanbanBoard() {
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      activationConstraint: { delay: 200, tolerance: 5 }, // hold 200ms to drag; quick clicks pass through
+      // Distance activation: drag fires the moment the pointer moves >=8px
+      // from press. Plain clicks (no movement) still pass through to card
+      // handlers. No delay — old `delay: 200, tolerance: 5` config was the
+      // "have to click 4 times before it grabs" behavior; the delay makes
+      // the drag feel unresponsive AND aborts if any movement happens
+      // before 200ms elapses.
+      activationConstraint: { distance: 8 },
     })
   );
 
