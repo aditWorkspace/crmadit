@@ -68,7 +68,7 @@ interface IdentifyArgs {
   filter?: LeadFilter;
 }
 
-async function identifyLeads(args: IdentifyArgs): Promise<{ ids: string[]; resolved_inputs: Array<{ input: string; id: string }>; errors: string[] }> {
+async function identifyLeads(args: IdentifyArgs, selfId?: string): Promise<{ ids: string[]; resolved_inputs: Array<{ input: string; id: string }>; errors: string[] }> {
   const supabase = createAdminClient();
   const ids = new Set<string>();
   const resolved_inputs: Array<{ input: string; id: string }> = [];
@@ -94,7 +94,7 @@ async function identifyLeads(args: IdentifyArgs): Promise<{ ids: string[]; resol
   if (args.filter) {
     const tmap = await teamMemberMap();
     let q = supabase.from('leads').select('id, contact_name, company_name');
-    q = applyLeadFilter(q, args.filter, { teamMemberByName: tmap });
+    q = applyLeadFilter(q, args.filter, { teamMemberByName: tmap, selfId });
     if (args.filter.limit) q = q.limit(args.filter.limit);
     else q = q.limit(500);
     const { data, error } = await q;
@@ -122,7 +122,7 @@ const findLeadsTool: ToolDef<{ filter: LeadFilter; limit?: number }, ReadResult>
     required: ['filter'],
   },
   parse: raw => z.object({ filter: leadFilterSchema, limit: z.number().int().positive().max(500).optional() }).parse(raw),
-  execute: async ({ filter, limit }): Promise<ReadResult> => {
+  execute: async ({ filter, limit }, ctx): Promise<ReadResult> => {
     const supabase = createAdminClient();
     const tmap = await teamMemberMap();
     const names = await teamMemberNames();
@@ -130,7 +130,7 @@ const findLeadsTool: ToolDef<{ filter: LeadFilter; limit?: number }, ReadResult>
     let q = supabase
       .from('leads')
       .select('id, contact_name, contact_email, company_name, stage, priority, owned_by, last_contact_at, call_scheduled_for, tags, heat_score', { count: 'exact' });
-    q = applyLeadFilter(q, filter, { teamMemberByName: tmap });
+    q = applyLeadFilter(q, filter, { teamMemberByName: tmap, selfId: ctx.teamMemberId });
     q = q.order('last_contact_at', { ascending: false, nullsFirst: false }).limit(cap);
     const { data, error, count } = await q;
     if (error) throw new Error(error.message);
@@ -202,12 +202,12 @@ const countLeadsTool: ToolDef<{ filter: LeadFilter; group_by?: 'stage' | 'priori
     required: ['filter'],
   },
   parse: raw => z.object({ filter: leadFilterSchema, group_by: z.enum(['stage', 'priority', 'owner']).optional() }).parse(raw),
-  execute: async ({ filter, group_by }): Promise<ReadResult> => {
+  execute: async ({ filter, group_by }, ctx): Promise<ReadResult> => {
     const supabase = createAdminClient();
     const tmap = await teamMemberMap();
     const names = await teamMemberNames();
     let q = supabase.from('leads').select('stage, priority, owned_by', { count: 'exact' });
-    q = applyLeadFilter(q, filter, { teamMemberByName: tmap });
+    q = applyLeadFilter(q, filter, { teamMemberByName: tmap, selfId: ctx.teamMemberId });
     q = q.limit(10_000);
     const { data, count, error } = await q;
     if (error) throw new Error(error.message);
@@ -294,14 +294,14 @@ const exportCsvTool: ToolDef<{ filter: LeadFilter; columns?: string[] }, ReadRes
     required: ['filter'],
   },
   parse: raw => z.object({ filter: leadFilterSchema, columns: z.array(z.string()).optional() }).parse(raw),
-  execute: async ({ filter, columns }): Promise<ReadResult> => {
+  execute: async ({ filter, columns }, ctx): Promise<ReadResult> => {
     const supabase = createAdminClient();
     const tmap = await teamMemberMap();
     const names = await teamMemberNames();
     let q = supabase
       .from('leads')
       .select('id, contact_name, contact_email, company_name, stage, priority, owned_by, last_contact_at, call_scheduled_for, tags, heat_score, contact_role, company_url, call_completed_at, demo_sent_at');
-    q = applyLeadFilter(q, filter, { teamMemberByName: tmap });
+    q = applyLeadFilter(q, filter, { teamMemberByName: tmap, selfId: ctx.teamMemberId });
     q = q.limit(filter.limit ?? 5000);
     const { data, error } = await q;
     if (error) throw new Error(error.message);
@@ -363,8 +363,8 @@ const moveLeadsToStageTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; fi
   }).refine(d => d.to_stage || d.bump, { message: 'either to_stage or bump required' })
     .refine(d => d.lead_ids?.length || d.emails?.length || d.filter, { message: 'must provide lead_ids, emails, or filter' })
     .parse(raw),
-  preview: async (args): Promise<MutationPreview> => {
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+  preview: async (args, ctx): Promise<MutationPreview> => {
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     const leads = await fetchLeadsByIds(ident.ids);
     const affected: PreviewRow[] = [];
     const warnings: string[] = [...ident.errors];
@@ -390,7 +390,7 @@ const moveLeadsToStageTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; fi
     };
   },
   execute: async (args, ctx) => {
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     const leads = await fetchLeadsByIds(ident.ids);
     const errors: string[] = [];
     let moved = 0;
@@ -432,8 +432,8 @@ const updateLeadPriorityTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; 
     filter: leadFilterSchema.optional(),
     to_priority: priorityEnum,
   }).parse(raw),
-  preview: async (args): Promise<MutationPreview> => {
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+  preview: async (args, ctx): Promise<MutationPreview> => {
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     const leads = await fetchLeadsByIds(ident.ids);
     const affected: PreviewRow[] = leads
       .filter(l => l.priority !== args.to_priority)
@@ -444,8 +444,8 @@ const updateLeadPriorityTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; 
       warnings: ident.errors.length ? ident.errors : undefined,
     };
   },
-  execute: async (args) => {
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+  execute: async (args, ctx) => {
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     if (!ident.ids.length) return { ok: true, updated: 0, errors: ident.errors };
     const supabase = createAdminClient();
     const { error } = await supabase.from('leads').update({ priority: args.to_priority }).in('id', ident.ids);
@@ -478,7 +478,7 @@ const updateLeadOwnerTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; fil
     const owner = await resolveTeamMember(args.to_owner, ctx.teamMemberId);
     if (!owner) return { summary: `Could not resolve owner "${args.to_owner}"`, affected: [], warnings: [`unknown team member: ${args.to_owner}`] };
     const names = await teamMemberNames();
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     const leads = await fetchLeadsByIds(ident.ids);
     const affected: PreviewRow[] = leads
       .filter(l => l.owned_by !== owner.id)
@@ -492,7 +492,7 @@ const updateLeadOwnerTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; fil
   execute: async (args, ctx) => {
     const owner = await resolveTeamMember(args.to_owner, ctx.teamMemberId);
     if (!owner) throw new Error(`unknown team member: ${args.to_owner}`);
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     if (!ident.ids.length) return { ok: true, updated: 0, errors: ident.errors };
     const supabase = createAdminClient();
     const { error } = await supabase.from('leads').update({ owned_by: owner.id }).in('id', ident.ids);
@@ -521,8 +521,8 @@ const tagsTool = (mode: 'add' | 'remove'): ToolDef<{ lead_ids?: string[]; emails
     filter: leadFilterSchema.optional(),
     tags: z.array(z.string().min(1)).min(1),
   }).parse(raw),
-  preview: async (args): Promise<MutationPreview> => {
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+  preview: async (args, ctx): Promise<MutationPreview> => {
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     const leads = await fetchLeadsByIds(ident.ids);
     const affected: PreviewRow[] = leads.map(l => {
       const cur = (l.tags || []) as string[];
@@ -535,8 +535,8 @@ const tagsTool = (mode: 'add' | 'remove'): ToolDef<{ lead_ids?: string[]; emails
       warnings: ident.errors.length ? ident.errors : undefined,
     };
   },
-  execute: async (args) => {
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+  execute: async (args, ctx) => {
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     if (!ident.ids.length) return { ok: true, updated: 0, errors: ident.errors };
     const supabase = createAdminClient();
     const { data: leads } = await supabase.from('leads').select('id, tags').in('id', ident.ids);
@@ -571,8 +571,8 @@ const addNoteTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; filter?: Le
     filter: leadFilterSchema.optional(),
     text: z.string().min(1),
   }).parse(raw),
-  preview: async (args): Promise<MutationPreview> => {
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+  preview: async (args, ctx): Promise<MutationPreview> => {
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     const leads = await fetchLeadsByIds(ident.ids);
     const trimmed = args.text.length > 60 ? args.text.slice(0, 57) + '…' : args.text;
     return {
@@ -582,7 +582,7 @@ const addNoteTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; filter?: Le
     };
   },
   execute: async (args, ctx) => {
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     const supabase = createAdminClient();
     let created = 0;
     for (const id of ident.ids) {
@@ -618,8 +618,8 @@ const pauseLeadsTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; filter?:
     filter: leadFilterSchema.optional(),
     until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   }).parse(raw),
-  preview: async (args): Promise<MutationPreview> => {
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+  preview: async (args, ctx): Promise<MutationPreview> => {
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     const leads = await fetchLeadsByIds(ident.ids);
     return {
       summary: `Pause ${leads.length} lead${leads.length === 1 ? '' : 's'}${args.until ? ` until ${args.until}` : ''}`,
@@ -629,7 +629,7 @@ const pauseLeadsTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; filter?:
     };
   },
   execute: async (args, ctx) => {
-    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter });
+    const ident = await identifyLeads({ lead_ids: args.lead_ids, emails: args.emails, filter: args.filter }, ctx.teamMemberId);
     let paused = 0;
     const errors: string[] = [...ident.errors];
     for (const id of ident.ids) {
@@ -662,8 +662,8 @@ const markDeadTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; filter?: L
     emails: z.array(z.string()).optional(),
     filter: leadFilterSchema.optional(),
   }).refine(d => d.lead_ids?.length || d.emails?.length || d.filter, { message: 'must identify leads' }).parse(raw),
-  preview: async (args): Promise<MutationPreview> => {
-    const ident = await identifyLeads(args);
+  preview: async (args, ctx): Promise<MutationPreview> => {
+    const ident = await identifyLeads(args, ctx.teamMemberId);
     const leads = await fetchLeadsByIds(ident.ids);
     return {
       summary: `Mark ${leads.length} lead${leads.length === 1 ? '' : 's'} as dead`,
@@ -673,7 +673,7 @@ const markDeadTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; filter?: L
     };
   },
   execute: async (args, ctx) => {
-    const ident = await identifyLeads(args);
+    const ident = await identifyLeads(args, ctx.teamMemberId);
     let killed = 0;
     const errors: string[] = [...ident.errors];
     for (const id of ident.ids) {
@@ -702,8 +702,8 @@ const archiveLeadsTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; filter
     emails: z.array(z.string()).optional(),
     filter: leadFilterSchema.optional(),
   }).refine(d => d.lead_ids?.length || d.emails?.length || d.filter, { message: 'must identify leads' }).parse(raw),
-  preview: async (args): Promise<MutationPreview> => {
-    const ident = await identifyLeads(args);
+  preview: async (args, ctx): Promise<MutationPreview> => {
+    const ident = await identifyLeads(args, ctx.teamMemberId);
     const leads = await fetchLeadsByIds(ident.ids);
     return {
       summary: `Archive ${leads.length} lead${leads.length === 1 ? '' : 's'}`,
@@ -711,8 +711,8 @@ const archiveLeadsTool: ToolDef<{ lead_ids?: string[]; emails?: string[]; filter
       warnings: ident.errors.length ? ident.errors : undefined,
     };
   },
-  execute: async (args) => {
-    const ident = await identifyLeads(args);
+  execute: async (args, ctx) => {
+    const ident = await identifyLeads(args, ctx.teamMemberId);
     if (!ident.ids.length) return { ok: true, archived: 0, errors: ident.errors };
     const supabase = createAdminClient();
     const { error } = await supabase.from('leads').update({ is_archived: true }).in('id', ident.ids);

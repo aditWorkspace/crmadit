@@ -51,7 +51,10 @@ export async function POST(req: NextRequest) {
     .order('created_at', { ascending: true });
   const history = (priorRows || []).slice(-20).map(r => normalizeHistoryRow(r));
 
-  // Persist the new user message.
+  // Persist the new user message. Capture this run's start timestamp BEFORE
+  // the orchestrator starts so we can later fetch every message it created
+  // (was: gte 5s window — dropped tool messages from longer runs).
+  const runStartedAt = new Date().toISOString();
   const { data: userRow, error: userErr } = await supabase
     .from('action_chat_messages')
     .insert({
@@ -104,7 +107,7 @@ export async function POST(req: NextRequest) {
     .from('action_chat_messages')
     .select('id, role, content, created_at')
     .eq('session_id', sessionId)
-    .gte('created_at', userRow ? new Date(Date.now() - 5_000).toISOString() : new Date().toISOString())
+    .gte('created_at', runStartedAt)
     .order('created_at', { ascending: true });
 
   return NextResponse.json({

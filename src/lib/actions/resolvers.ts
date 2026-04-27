@@ -135,7 +135,7 @@ export async function resolveTeamMember(input: string, ownerSelfId?: string): Pr
 export function applyLeadFilter<T = any>(
   query: T,
   filter: LeadFilter,
-  options: { teamMemberByName?: Record<string, string> } = {},
+  options: { teamMemberByName?: Record<string, string>; selfId?: string } = {},
 ): T {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let q: any = query;
@@ -149,7 +149,18 @@ export function applyLeadFilter<T = any>(
     q = q.in('priority', ps as Priority[]);
   }
   if (filter.owner) {
-    const ownerId = options.teamMemberByName?.[filter.owner.toLowerCase()] ?? filter.owner;
+    const lower = filter.owner.toLowerCase();
+    let ownerId: string;
+    if (lower === 'me' || lower === 'myself') {
+      if (!options.selfId) {
+        // Caller didn't supply selfId — there's no way to resolve "me".
+        // Skip the filter rather than emit garbage SQL that errors out.
+        return q;
+      }
+      ownerId = options.selfId;
+    } else {
+      ownerId = options.teamMemberByName?.[lower] ?? filter.owner;
+    }
     q = q.eq('owned_by', ownerId);
   }
   if (filter.tag) {
