@@ -17,8 +17,13 @@ import { TEAM_NAMES } from '@/lib/constants';
 // (Adit / Srijay / Asim) are excluded entirely — those would otherwise
 // catch every title containing a co-founder's name, which is most of them.
 
-const STRONG_TIME_WINDOW_MS = 6 * 60 * 60 * 1000;       // 6h
-const TIGHT_TIME_WINDOW_MS = 4 * 60 * 60 * 1000;        // 4h
+// Wider than you'd think: Granola's note created_at is when the call
+// HAPPENED, but lead.call_scheduled_for / call_completed_at can drift
+// (rescheduled, manually re-entered, time-zone slop). 24h+ is generous
+// without being permissive — the title still has to contain the
+// company or full contact name for these windows to apply.
+const STRONG_TIME_WINDOW_MS = 24 * 60 * 60 * 1000;      // 24h
+const TIGHT_TIME_WINDOW_MS = 12 * 60 * 60 * 1000;       // 12h
 const CALL_STAGES = new Set([
   'scheduled',
   'call_completed',

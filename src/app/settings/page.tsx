@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSession } from '@/hooks/use-session';
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
-import { Mail, CheckCircle, XCircle, RefreshCw, Loader2, Calendar, Fingerprint } from '@/lib/icons';
+import { Mail, CheckCircle, XCircle, RefreshCw, Loader2, Calendar, Fingerprint, Sparkles } from '@/lib/icons';
 import { startRegistration } from '@simplewebauthn/browser';
 
 interface MemberGmailStatus {
@@ -24,6 +24,30 @@ export default function SettingsPage() {
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const [hasPasskey, setHasPasskey] = useState(false);
   const [registeringPasskey, setRegisteringPasskey] = useState(false);
+  const [syncingGranola, setSyncingGranola] = useState(false);
+  const [granolaResult, setGranolaResult] = useState<null | { total_imported: number; by_key: Array<{ label: string; scanned: number; imported: number; dup: number; no_match: number; low_confidence: number; errors: number; imported_log: Array<{ note_id: string; lead?: string; reason?: string }> }> }>(null);
+
+  const handleGranolaSync = async (mode: 'incremental' | 'backfill' = 'incremental') => {
+    if (syncingGranola) return;
+    setSyncingGranola(true);
+    setGranolaResult(null);
+    try {
+      const res = await fetch(`/api/granola/sync?mode=${mode}`, { method: 'POST' });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setGranolaResult(data);
+      const imported = data.total_imported ?? 0;
+      if (imported > 0) toast.success(`Synced ${imported} new transcript${imported === 1 ? '' : 's'} from Granola`);
+      else toast.message('No new Granola transcripts to sync');
+    } catch (err) {
+      toast.error(`Granola sync failed: ${err instanceof Error ? err.message : 'unknown'}`);
+    } finally {
+      setSyncingGranola(false);
+    }
+  };
 
   const fetchMembers = useCallback(async () => {
     if (!user) return;
@@ -324,6 +348,55 @@ export default function SettingsPage() {
               );
             })}
           </div>
+        </div>
+
+        {/* Granola Sync Section */}
+        <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-3">
+            <Sparkles className="h-5 w-5 text-gray-500" />
+            <div className="flex-1">
+              <h2 className="text-sm font-semibold text-gray-900">Granola Transcript Sync</h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Pulls Adit&apos;s and Srijay&apos;s Granola notes from the last 48 hours and imports any that match a CRM lead. The cron runs every 30 min on its own; this button is for when you don&apos;t want to wait.
+              </p>
+            </div>
+          </div>
+          <div className="px-6 py-4 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => handleGranolaSync('incremental')}
+              disabled={syncingGranola}
+              className="inline-flex items-center gap-1.5 text-sm text-white bg-gray-900 hover:bg-gray-700 rounded-lg px-3.5 py-2 transition-colors disabled:opacity-50"
+            >
+              {syncingGranola ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              {syncingGranola ? 'Syncing…' : 'Sync recent (last 48h)'}
+            </button>
+            <button
+              onClick={() => handleGranolaSync('backfill')}
+              disabled={syncingGranola}
+              className="inline-flex items-center gap-1.5 text-sm text-gray-700 border border-gray-200 hover:bg-gray-50 rounded-lg px-3.5 py-2 transition-colors disabled:opacity-50"
+              title="Walks the full Granola history; takes longer."
+            >
+              {syncingGranola ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              Full backfill
+            </button>
+            {granolaResult && (
+              <span className="ml-2 text-xs text-gray-500">
+                {granolaResult.total_imported} imported · {granolaResult.by_key.map(k => `${k.label}: ${k.scanned} scanned, ${k.imported} new, ${k.dup} dup, ${k.no_match} no-match, ${k.low_confidence} low-conf${k.errors ? `, ${k.errors} errors` : ''}`).join(' · ')}
+              </span>
+            )}
+          </div>
+          {granolaResult && granolaResult.total_imported > 0 && (
+            <div className="px-6 py-3 border-t border-gray-100 bg-gray-50/60">
+              <p className="text-[11px] uppercase tracking-wide text-gray-400 mb-2">Imported</p>
+              <ul className="space-y-1 text-xs text-gray-700">
+                {granolaResult.by_key.flatMap(k => k.imported_log.map((l, i) => (
+                  <li key={`${k.label}-${i}`}>
+                    <span className="text-gray-400">[{k.label}]</span> {l.lead} <span className="text-gray-400">— {l.reason}</span>
+                  </li>
+                )))}
+              </ul>
+            </div>
+          )}
         </div>
       </div>
     </div>

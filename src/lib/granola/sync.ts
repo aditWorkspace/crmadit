@@ -51,19 +51,21 @@ export async function syncOneKey(key: GranolaKey, options: SyncOptions = {}): Pr
   const { mode = 'incremental', acceptWeakMatches = false, maxNotes = 500 } = options;
   const supabase = createAdminClient();
 
-  // Pull cursor.
+  // Pull cursor. In `incremental` mode we use a fixed 48h lookback rather
+  // than the historic last_synced_at because:
+  //   1) Granola's /v1/notes only returns notes that already have a
+  //      transcript. A note created at 19:30 may not appear in the list
+  //      until ~20:30 once Granola finishes processing.
+  //   2) If a sync run advances last_synced_at to 20:00 between those
+  //      points, the note (created_at 19:30) is permanently behind the
+  //      cursor and never imported.
+  //   3) granola_note_id is a unique index, so re-scanning the same
+  //      window across runs is cheap and safe — duplicates are no-ops.
+  // 48h is plenty: even a meeting that was rescheduled by a day still
+  // gets caught.
   let createdAfter: string | undefined;
   if (mode === 'incremental') {
-    const { data: state } = await supabase
-      .from('granola_sync_state')
-      .select('last_synced_at')
-      .eq('api_key_label', key.label)
-      .single();
-    if (state?.last_synced_at) {
-      // Granola wants strict ISO 8601 with Z suffix; Postgres serializes
-      // as `2026-04-25T21:46:48.876+00:00` which Granola rejects as invalid.
-      createdAfter = new Date(state.last_synced_at).toISOString();
-    }
+    createdAfter = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
   }
 
   const result: SyncResult = {
