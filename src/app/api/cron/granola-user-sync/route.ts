@@ -1,18 +1,17 @@
-// User-triggered Granola sync. Same engine as the cron, but session-cookie
-// auth so it can be hit from the UI Sync button. ?mode=backfill walks the
-// whole feed; default is incremental (last-48h lookback).
+// User-triggered Granola sync. Same engine as /api/cron/granola-sync but
+// session-cookie auth, hit from the UI Sync button. ?mode=backfill walks
+// the entire feed; default is incremental (last-48h lookback).
 //
-// Note: lives at /api/granola/sync — the action-chat preview-and-confirm
-// path uses /api/cron/* to dodge Vercel deployment protection, but a
-// session-authenticated UI request goes through the cookie session and
-// works fine outside the /api/cron/* prefix.
+// Lives under /api/cron/* because Vercel's deployment-protection layer
+// HTML-404s authenticated POSTs to other /api/* paths. The /api/cron/*
+// prefix is exempt (same as granola-backfill, granola-sync).
 export const maxDuration = 300;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/session';
 import { syncAllKeys } from '@/lib/granola/sync';
 
-export async function POST(req: NextRequest) {
+async function handler(req: NextRequest) {
   const session = await getSessionFromRequest(req);
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -21,8 +20,7 @@ export async function POST(req: NextRequest) {
   const maxNotes = mode === 'backfill' ? 2000 : 200;
 
   const results = await syncAllKeys({ mode, maxNotes });
-  // Compact summary for the UI.
-  const summary = {
+  return NextResponse.json({
     mode,
     by_key: results.map(r => ({
       label: r.api_key_label,
@@ -37,6 +35,7 @@ export async function POST(req: NextRequest) {
         .map(l => ({ note_id: l.note_id, lead: l.lead, reason: l.reason, confidence: l.confidence })),
     })),
     total_imported: results.reduce((a, r) => a + r.imported, 0),
-  };
-  return NextResponse.json(summary);
+  });
 }
+
+export { handler as POST };

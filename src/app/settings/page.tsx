@@ -32,7 +32,7 @@ export default function SettingsPage() {
     setSyncingGranola(true);
     setGranolaResult(null);
     try {
-      const res = await fetch(`/api/granola/sync?mode=${mode}`, { method: 'POST' });
+      const res = await fetch(`/api/cron/granola-user-sync?mode=${mode}`, { method: 'POST' });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
         throw new Error(errBody.error || `HTTP ${res.status}`);
