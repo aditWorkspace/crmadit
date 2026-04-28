@@ -1,6 +1,17 @@
-// Configurable via env var, fallback to original pattern
-const OUTREACH_SUBJECT = process.env.OUTREACH_SUBJECT_PATTERN || 'product prioritization at';
-const OUTREACH_PATTERN = new RegExp(`${OUTREACH_SUBJECT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(.+)`, 'i');
+// Outreach subjects we recognize. The legacy single-pattern env override
+// (OUTREACH_SUBJECT_PATTERN) still works — it just gets prepended to the
+// list. We greedy-match across all patterns; first hit wins.
+//
+// Two phrasings are in use as of 2026-04-27:
+//   "product prioritization at <Company>"
+//   "customer feedback workflows at <Company>"  (also: "workflow at")
+const OUTREACH_PATTERNS: RegExp[] = [
+  ...(process.env.OUTREACH_SUBJECT_PATTERN
+    ? [new RegExp(`${process.env.OUTREACH_SUBJECT_PATTERN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(.+)`, 'i')]
+    : []),
+  /product prioritization at\s+(.+)/i,
+  /customer feedback workflows? at\s+(.+)/i,
+];
 
 // NDR/bounce/auto-reply subject prefixes — delivery failure notifications and
 // mail-client autoresponders, not real human replies. Matching here prevents
@@ -31,12 +42,15 @@ export function isBounceEmail(subject: string): boolean {
 
 export function isOutreachThread(subject: string): boolean {
   if (isBounceEmail(subject)) return false;
-  return OUTREACH_PATTERN.test(subject);
+  return OUTREACH_PATTERNS.some(re => re.test(subject));
 }
 
 export function extractCompanyFromSubject(subject: string): string | null {
-  const match = subject.match(OUTREACH_PATTERN);
-  if (!match) return null;
-  const company = match[1].trim().replace(/[?.!,;:]+$/, '').trim();
-  return company || null;
+  for (const re of OUTREACH_PATTERNS) {
+    const match = subject.match(re);
+    if (!match) continue;
+    const company = match[1].trim().replace(/[?.!,;:]+$/, '').trim();
+    if (company) return company;
+  }
+  return null;
 }

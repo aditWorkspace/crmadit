@@ -5,16 +5,25 @@ import type { TranscriptRow } from './types';
 // extra AI calls. Missing sections are silently dropped to keep cards
 // dense.
 export function formatProfileCard(t: TranscriptRow): string {
-  const name = t.lead_contact_name || 'Unknown';
-  const company = t.lead_company_name || 'Unknown';
+  const isAdvisor = !t.lead_id;
   const date = (t.created_at || '').slice(0, 10);
-  const stage = t.lead_stage ? ` | stage: ${t.lead_stage}` : '';
   const sentiment = t.ai_sentiment ? `Sentiment: ${t.ai_sentiment}` : '';
   const interest = t.ai_interest_level ? `Interest: ${t.ai_interest_level}` : '';
   const meta = [sentiment, interest].filter(Boolean).join(' | ');
 
   const sections: string[] = [];
-  sections.push(`=== ${name} @ ${company} — ${date}${stage} [id:${t.id}] ===`);
+  if (isAdvisor) {
+    // Advisor / misc call — no lead, use participant fields.
+    const tag = t.kind === 'misc' ? 'MISC' : 'ADVISOR';
+    const who = t.participant_name || 'Unknown';
+    const ctx = t.participant_context ? ` — ${t.participant_context}` : '';
+    sections.push(`=== [${tag}] ${who}${ctx} — ${date} [id:${t.id}] ===`);
+  } else {
+    const name = t.lead_contact_name || 'Unknown';
+    const company = t.lead_company_name || 'Unknown';
+    const stage = t.lead_stage ? ` | stage: ${t.lead_stage}` : '';
+    sections.push(`=== ${name} @ ${company} — ${date}${stage} [id:${t.id}] ===`);
+  }
   if (meta) sections.push(meta);
   if (t.ai_summary) sections.push(`Summary: ${t.ai_summary}`);
 

@@ -2,9 +2,16 @@ import type { AiKeyQuote, AiPainPoint, AiProductFeedback, AiFollowUpSuggestion }
 
 // One row per completed transcript after join. The orchestrator passes
 // these around; retriever/profile-card/lead-index are the consumers.
+//
+// Two sources of "who was on the call":
+//   - lead_id present  → customer call. lead_* fields populated.
+//   - lead_id null     → advisor / misc call. participant_* fields populated.
 export interface TranscriptRow {
   id: string;
-  lead_id: string;
+  lead_id: string | null;
+  kind?: 'customer_call' | 'advisor_call' | 'misc' | null;
+  participant_name?: string | null;
+  participant_context?: string | null;
   created_at: string;
   raw_text?: string | null;
   ai_summary?: string | null;
@@ -15,7 +22,7 @@ export interface TranscriptRow {
   ai_product_feedback?: AiProductFeedback[] | null;
   ai_key_quotes?: AiKeyQuote[] | null;
   ai_follow_up_suggestions?: AiFollowUpSuggestion[] | null;
-  // Flattened lead fields from the join.
+  // Flattened lead fields from the join (null for advisor calls).
   lead_contact_name?: string | null;
   lead_company_name?: string | null;
   lead_stage?: string | null;

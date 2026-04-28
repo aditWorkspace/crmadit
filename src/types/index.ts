@@ -121,9 +121,14 @@ export interface Interaction {
   team_member?: TeamMember;
 }
 
+export type TranscriptKind = 'customer_call' | 'advisor_call' | 'misc';
+
 export interface Transcript {
   id: string;
-  lead_id: string;
+  lead_id: string | null;       // null for advisor / misc calls (no CRM lead)
+  kind?: TranscriptKind;        // 'customer_call' (default), 'advisor_call', or 'misc'
+  participant_name?: string;    // when lead_id is null — who the call was with
+  participant_context?: string; // when lead_id is null — short context line
   source_type: 'txt_upload' | 'granola_link' | 'paste';
   granola_url?: string;
   file_path?: string;
