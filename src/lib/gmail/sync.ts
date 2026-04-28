@@ -169,7 +169,10 @@ export async function runInitialSync(teamMemberId: string): Promise<SyncResult> 
   do {
     const listRes = await gmail.users.messages.list({
       userId: 'me',
-      q: 'subject:"product prioritization at" newer_than:30d -from:me',
+      // Match both strict ("...at <Company>") and loose ("Berkeley student
+      // interested in product prioritization") subject forms — processMessage
+      // re-validates with isOutreachThread before doing anything.
+      q: '(subject:"product prioritization" OR subject:"customer feedback workflow") newer_than:30d -from:me',
       maxResults: 100,
       pageToken,
     });
