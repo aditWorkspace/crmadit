@@ -33,6 +33,8 @@ export interface TeamMember {
   gmail_connected: boolean;
   gmail_token_expires_at?: string;
   created_at: string;
+  is_admin?: boolean;                   // gates email-tool blacklist upload + all-users history view
+  email_batch_next_at?: string | null;  // 12h cooldown after a successful batch
 }
 
 export interface Lead {

@@ -25,7 +25,7 @@ export async function getSessionFromRequest(req: NextRequest): Promise<TeamMembe
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from('team_members')
-    .select('id, name, email, major, gmail_connected, gmail_token_expires_at, created_at')
+    .select('id, name, email, major, gmail_connected, gmail_token_expires_at, created_at, is_admin, email_batch_next_at')
     .eq('id', memberId)
     .single();
 
