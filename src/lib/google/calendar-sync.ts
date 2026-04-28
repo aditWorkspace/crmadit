@@ -5,7 +5,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { isOutreachThread, extractCompanyFromSubject } from '@/lib/gmail/matcher';
 import { normalizeName } from '@/lib/name-utils';
 
-const TEAM_DOMAIN = process.env.TEAM_EMAIL_DOMAIN || 'proxi.ai';
+const TEAM_DOMAIN = process.env.TEAM_EMAIL_DOMAIN || 'berkeley.edu';
 const LOOKBACK_DAYS = 30;
 const FUTURE_DAYS = 30;
 

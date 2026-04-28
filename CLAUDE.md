@@ -16,9 +16,9 @@ Seeded directly in the DB migration — no signup flow:
 
 | Name   | Email              | Role/Notes              |
 |--------|--------------------|-------------------------|
-| Adit   | aditmittal@berkeley.edu | Business and CS (Berkeley) |
-| Srijay | srijay@proxi.ai    | TBD                     |
-| Asim   | asim@proxi.ai      | TBD                     |
+| Adit   | aditmittal@berkeley.edu      | Business and CS (Berkeley) |
+| Srijay | srijay_vejendla@berkeley.edu | TBD                        |
+| Asim   | asim_ali@berkeley.edu        | TBD                        |
 
 `TEAM_NAMES = ['Adit', 'Srijay', 'Asim']` is the canonical constant in `src/lib/constants.ts`.
 

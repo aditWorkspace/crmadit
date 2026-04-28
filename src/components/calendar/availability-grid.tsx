@@ -121,7 +121,7 @@ function EventPopover({ event, onClose }: { event: CalendarEvent; onClose: () =>
   }, [onClose]);
 
   const externalAttendees = (event.attendees ?? []).filter(
-    e => !['aditmittal@berkeley.edu', 'srijay@proxi.ai', 'asim@proxi.ai'].includes(e)
+    e => !['aditmittal@berkeley.edu', 'srijay_vejendla@berkeley.edu', 'asim_ali@berkeley.edu'].includes(e)
   );
 
   return (
