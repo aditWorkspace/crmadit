@@ -58,21 +58,27 @@ async function findOutreachThread(
   contactEmail: string,
 ): Promise<{ company: string; threadId: string } | null> {
   try {
+    // Match both strict ("...at <Company>") and loose ("Berkeley student
+    // interested in product prioritization") subject forms — isOutreachThread
+    // re-validates locally before we accept the thread.
     const res = await gmail.users.threads.list({
       userId: 'me',
-      q: `subject:"product prioritization at" (from:${contactEmail} OR to:${contactEmail})`,
-      maxResults: 1,
+      q: `(subject:"product prioritization" OR subject:"customer feedback workflow") (from:${contactEmail} OR to:${contactEmail})`,
+      maxResults: 5,
     });
-    const thread = res.data.threads?.[0];
-    if (!thread?.id) return null;
-
-    // Fetch the first message to get the subject
-    const t = await gmail.users.threads.get({ userId: 'me', id: thread.id, format: 'metadata', metadataHeaders: ['Subject'] });
-    const subject = t.data.messages?.[0]?.payload?.headers?.find(h => h.name === 'Subject')?.value || '';
-    if (!isOutreachThread(subject)) return null;
-    const company = extractCompanyFromSubject(subject);
-    if (!company) return null;
-    return { company, threadId: thread.id };
+    // Try each candidate thread; return the first whose subject actually
+    // passes isOutreachThread (Gmail's q-syntax is fuzzier than our regex).
+    for (const thread of res.data.threads ?? []) {
+      if (!thread.id) continue;
+      const t = await gmail.users.threads.get({ userId: 'me', id: thread.id, format: 'metadata', metadataHeaders: ['Subject'] });
+      const subject = t.data.messages?.[0]?.payload?.headers?.find(h => h.name === 'Subject')?.value || '';
+      if (!isOutreachThread(subject)) continue;
+      let company = extractCompanyFromSubject(subject);
+      if (!company) company = companyFromDomain(contactEmail);
+      if (!company) continue;
+      return { company, threadId: thread.id };
+    }
+    return null;
   } catch {
     return null;
   }

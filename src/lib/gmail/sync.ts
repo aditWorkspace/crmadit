@@ -12,6 +12,8 @@ import { normalizeName } from '@/lib/name-utils';
 import { cancelQueuedAutoSendForLead } from '@/lib/automation/cancel-queued-autosend';
 import { tagInboundForReview } from '@/lib/automation/inbox-mentions';
 import { triageInboundEmail } from '@/lib/ai/inbox-triage';
+import { companyFromDomain } from '@/lib/leads/contact-utils';
+import { upsertLeadContact, collectExternalParticipants } from '@/lib/leads/upsert-contact';
 
 /** Returns true if `proposed` stage is forward from `current` in the pipeline. */
 function isForwardStage(current: string, proposed: string): boolean {
@@ -24,6 +26,7 @@ function isForwardStage(current: string, proposed: string): boolean {
 interface EmailHeader {
   from: string;
   to: string;
+  cc: string;
   subject: string;
   date: string;
   /** Raw RFC 5322 Message-Id header. Globally unique and identical in every
@@ -45,6 +48,7 @@ function parseHeaders(headers: Array<{ name?: string | null; value?: string | nu
   return {
     from: get('From'),
     to: get('To'),
+    cc: get('Cc'),
     subject: get('Subject'),
     date: get('Date'),
     rfcMessageId,
@@ -477,7 +481,11 @@ async function processMessage(
 
   // ── Path 2: Outreach thread (subject pattern match) ───────────────────────
   if (isOutreachThread(headers.subject)) {
-    const company = extractCompanyFromSubject(headers.subject);
+    // Strict patterns capture company from "<topic> at <Company>". Loose
+    // patterns match the topic phrase alone — for those we derive the company
+    // from the prospect's email domain (e.g. rahiman@5centscdn.com → "5centscdn").
+    let company = extractCompanyFromSubject(headers.subject);
+    if (!company) company = companyFromDomain(contactEmail);
     if (!company) return;
 
     const contactName = isOutbound ? extractName(headers.to) : extractName(headers.from);
@@ -577,6 +585,7 @@ async function processMessage(
         ? new Date(parseInt(message.internalDate)).toISOString()
         : new Date().toISOString(),
     }, result);
+    await captureThreadParticipants(supabase, leadId, headers, teamEmails, isOutbound ? 'cc' : 'reply');
     return;
   }
 
@@ -652,6 +661,30 @@ async function processMessage(
     rfc_message_id: headers.rfcMessageId || undefined,
     occurred_at: occurredAt,
   }, result);
+  await captureThreadParticipants(supabase, leadId, headers, teamEmails, isOutbound ? 'cc' : 'reply');
+}
+
+// Walks the From/To/Cc on a synced email and ensures every external (non-
+// founder, non-role-based) participant has a row in `lead_contacts` for the
+// given lead. This is what powers "search by name finds the lead" when the
+// thread picks up new participants over time (forwards, CCs, etc).
+async function captureThreadParticipants(
+  supabase: ReturnType<typeof import('@/lib/supabase/admin').createAdminClient>,
+  leadId: string,
+  headers: EmailHeader,
+  teamEmails: Map<string, string>,
+  source: 'cc' | 'reply' | 'matcher'
+): Promise<void> {
+  const teamEmailSet = new Set(teamEmails.keys());
+  const externals = collectExternalParticipants(headers.from, headers.to, headers.cc, teamEmailSet);
+  for (const p of externals) {
+    await upsertLeadContact(supabase, {
+      leadId,
+      email: p.email,
+      name: p.name,
+      source,
+    });
+  }
 }
 
 async function summarizeEmail(subject: string, body: string): Promise<string | null> {

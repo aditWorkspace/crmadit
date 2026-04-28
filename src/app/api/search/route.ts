@@ -28,6 +28,7 @@ export async function GET(req: NextRequest) {
   const safeQ = sanitizeSearch(q);
   const supabase = createAdminClient();
 
+  // Primary search: leads' own columns.
   const { data: leadRows } = await supabase
     .from('leads')
     .select('id, contact_name, company_name, stage, contact_email')
@@ -39,6 +40,34 @@ export async function GET(req: NextRequest) {
     .limit(10);
 
   const leads = leadRows || [];
+
+  // Secondary search: lead_contacts table — picks up leads whose primary
+  // contact doesn't match but who have a CC'd / forwarded participant
+  // matching the query (e.g. searching "Amru" finds the 5centsCDN lead
+  // whose primary contact is rahiman@ but whose contacts table also has amru@).
+  if (leads.length < 10) {
+    const { data: contactHits } = await supabase
+      .from('lead_contacts')
+      .select('lead_id')
+      .or(`name.ilike.%${safeQ}%,email.ilike.%${safeQ}%`)
+      .limit(40);
+
+    const knownIds = new Set(leads.map(l => (l as { id: string }).id));
+    const extraIds = Array.from(
+      new Set(((contactHits ?? []) as Array<{ lead_id: string }>).map(c => c.lead_id))
+    ).filter(id => !knownIds.has(id));
+
+    if (extraIds.length > 0) {
+      const { data: extraLeads } = await supabase
+        .from('leads')
+        .select('id, contact_name, company_name, stage, contact_email')
+        .in('id', extraIds)
+        .eq('is_archived', false)
+        .order('last_contact_at', { ascending: false, nullsFirst: false })
+        .limit(10 - leads.length);
+      for (const l of extraLeads ?? []) leads.push(l);
+    }
+  }
 
   if (!includeThreads) {
     return NextResponse.json({ leads });
