@@ -376,6 +376,29 @@ async function processMessage(
     : member.id;
   const contactEmail = isOutbound ? toEmail : fromEmail;
 
+  // Fast-path: if this message has already been synced, skip the heavy work
+  // (lead lookups, AI classification, stage logic) but still backfill any
+  // missing lead_contacts entries — the participant capture was added later
+  // than the interaction insert, and full resyncs need to retroactively
+  // populate contacts on historical messages without re-running everything.
+  if (message.id) {
+    const { data: existing } = await supabase
+      .from('interactions')
+      .select('lead_id')
+      .eq('gmail_message_id', message.id)
+      .maybeSingle();
+    if (existing?.lead_id) {
+      await captureThreadParticipants(
+        supabase,
+        existing.lead_id as string,
+        headers,
+        teamEmails,
+        isOutbound ? 'cc' : 'reply'
+      );
+      return;
+    }
+  }
+
   // ── Bounce/NDR detection — skip entirely, and dead any matched lead ────────
   if (isBounceEmail(headers.subject)) {
     // Try to find and mark the lead dead so it's not worked further
