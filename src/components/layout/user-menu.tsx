@@ -5,7 +5,15 @@ import { useRouter } from 'next/navigation';
 import { useSession } from '@/hooks/use-session';
 import { Settings, LogOut, User } from '@/lib/icons';
 
-export function UserMenu() {
+interface UserMenuProps {
+  /**
+   * Compact mode: render avatar only, no name. Used by the collapsed
+   * sidebar.
+   */
+  compact?: boolean;
+}
+
+export function UserMenu({ compact = false }: UserMenuProps = {}) {
   const { user, setUser } = useSession();
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -55,21 +63,41 @@ export function UserMenu() {
 
   return (
     <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        aria-label="User menu"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--text-primary)] text-xs font-semibold text-[var(--text-inverse)] outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-[var(--border-strong)]"
-      >
-        {initials}
-      </button>
+      {compact ? (
+        <button
+          type="button"
+          aria-label="User menu"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpen(v => !v)}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--text-primary)] text-xs font-semibold text-[var(--text-inverse)] outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-[var(--border-strong)]"
+        >
+          {initials}
+        </button>
+      ) : (
+        <button
+          type="button"
+          aria-label="User menu"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpen(v => !v)}
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-gray-700 hover:bg-gray-50 outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
+        >
+          <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-[var(--text-primary)] text-[11px] font-semibold text-[var(--text-inverse)] flex-shrink-0">
+            {initials}
+          </span>
+          <span className="flex-1 min-w-0 text-left truncate font-medium">{user?.name ?? '…'}</span>
+        </button>
+      )}
 
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-[calc(100%+8px)] z-[60] min-w-[200px] rounded-[var(--radius-card)] border border-[var(--border)] bg-[var(--surface)] p-1 shadow-lg outline-none"
+          className={`absolute z-[60] min-w-[200px] rounded-[var(--radius-card)] border border-[var(--border)] bg-[var(--surface)] p-1 shadow-lg outline-none ${
+            compact
+              ? 'left-[calc(100%+8px)] bottom-0'
+              : 'left-0 bottom-[calc(100%+8px)]'
+          }`}
         >
           {user && (
             <>

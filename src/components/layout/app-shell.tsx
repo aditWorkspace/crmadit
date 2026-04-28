@@ -3,7 +3,7 @@
 import { usePathname } from 'next/navigation';
 import { SessionContext, useSessionState } from '@/hooks/use-session';
 import { ThemeContext, useThemeState } from '@/hooks/use-theme';
-import { TopNav } from './top-nav';
+import { SideNav } from './side-nav';
 import { DotGrid } from './dot-grid';
 import { PageTransition } from './page-transition';
 import { UserSelectorModal } from './user-selector-modal';
@@ -31,10 +31,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <SessionContext.Provider value={sessionState}>
         <UserSelectorModal />
         <CommandPaletteProvider />
-        <div className="relative min-h-screen">
+        <div className="relative min-h-screen flex">
           <DotGrid />
-          <TopNav />
-          <main className="relative z-10 pt-[var(--topnav-height)]">
+          <SideNav />
+          <main className="relative z-10 flex-1 min-w-0">
             <PageTransition>
               <ErrorBoundary>{children}</ErrorBoundary>
             </PageTransition>

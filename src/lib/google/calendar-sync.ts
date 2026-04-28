@@ -180,9 +180,18 @@ export async function syncCalendarLeads(teamMemberId: string): Promise<CalendarS
   // Build set of all team emails so we can exclude them from "external attendees"
   const otherTeamEmails = new Set<string>();
   const otherMemberIds: string[] = [];
+  // Track each founder's set of known emails (DB + Gmail profile) so we can
+  // detect "all three founders attending" reliably even if one of them uses
+  // an alias address on a calendar invite.
+  const founderEmailsByMemberId = new Map<string, Set<string>>();
   for (const m of allMembers || []) {
     // Add ALL members' DB emails (including current member) to exclusion set
-    if (m.email) otherTeamEmails.add(m.email.toLowerCase());
+    if (m.email) {
+      otherTeamEmails.add(m.email.toLowerCase());
+      const set = founderEmailsByMemberId.get(m.id) || new Set<string>();
+      set.add(m.email.toLowerCase());
+      founderEmailsByMemberId.set(m.id, set);
+    }
     if (m.id === teamMemberId) continue;
     otherMemberIds.push(m.id);
   }
@@ -198,6 +207,9 @@ export async function syncCalendarLeads(teamMemberId: string): Promise<CalendarS
     const profile = await gmail.users.getProfile({ userId: 'me' });
     const gmailEmail = profile.data.emailAddress?.toLowerCase() || member.email.toLowerCase();
     otherTeamEmails.add(gmailEmail); // Ensure Gmail profile email is also excluded
+    const selfSet = founderEmailsByMemberId.get(teamMemberId) || new Set<string>();
+    selfSet.add(gmailEmail);
+    founderEmailsByMemberId.set(teamMemberId, selfSet);
     allGmailClients.push({ memberId: teamMemberId, gmail, email: gmailEmail });
     // Try to add other connected founders for thread import
     for (const m of (allMembers || []).filter(m => m.id !== teamMemberId && m.gmail_connected)) {
@@ -206,6 +218,9 @@ export async function syncCalendarLeads(teamMemberId: string): Promise<CalendarS
         const p = await g.users.getProfile({ userId: 'me' });
         const profileEmail = p.data.emailAddress?.toLowerCase() || m.email.toLowerCase();
         otherTeamEmails.add(profileEmail); // Ensure other members' Gmail profile emails are excluded
+        const fset = founderEmailsByMemberId.get(m.id) || new Set<string>();
+        fset.add(profileEmail);
+        founderEmailsByMemberId.set(m.id, fset);
         allGmailClients.push({ memberId: m.id, gmail: g, email: profileEmail });
       } catch { /* non-fatal */ }
     }
@@ -237,6 +252,14 @@ export async function syncCalendarLeads(teamMemberId: string): Promise<CalendarS
     pageToken = res.data.nextPageToken || undefined;
   } while (pageToken);
 
+  // Pick the alphabetically-first founder as the default owner for newly-created
+  // leads from "all-three-founders" calendar events. The user can manually
+  // reassign in the UI; we just need a deterministic NOT NULL value.
+  const sortedMembers = [...(allMembers || [])].sort((a, b) =>
+    (a.name || '').localeCompare(b.name || ''),
+  );
+  const defaultOwner = sortedMembers[0] || null;
+
   // Track which contacts we've already processed this run to avoid duplicates
   const processedEmails = new Set<string>();
 
@@ -266,6 +289,26 @@ export async function syncCalendarLeads(teamMemberId: string): Promise<CalendarS
 
     if (externalAttendees.length === 0) continue;
 
+    // Detect "all three founders attending" — each founder's email set must
+    // intersect the event's attendee emails. If so, this is a customer call
+    // booked directly via Calendar (no email outreach), and we should auto-
+    // create a lead for each external attendee.
+    const attendeeEmails = new Set(
+      (event.attendees || [])
+        .map(a => a.email?.toLowerCase())
+        .filter((e): e is string => !!e),
+    );
+    const founderHits: string[] = [];
+    for (const [memberId, emailSet] of founderEmailsByMemberId.entries()) {
+      for (const e of emailSet) {
+        if (attendeeEmails.has(e)) {
+          founderHits.push(memberId);
+          break;
+        }
+      }
+    }
+    const allThreeFounders = founderEmailsByMemberId.size >= 3 && founderHits.length >= 3;
+
     for (const attendee of externalAttendees) {
       const contactEmail = attendee.email?.toLowerCase();
       if (!contactEmail || processedEmails.has(contactEmail)) continue;
@@ -287,6 +330,8 @@ export async function syncCalendarLeads(teamMemberId: string): Promise<CalendarS
             meetLink: event.conferenceData?.entryPoints?.find((ep: calendar_v3.Schema$EntryPoint) => ep.entryPointType === 'video')?.uri ?? null,
           },
           result,
+          createIfMissing: allThreeFounders,
+          defaultOwner,
         });
       } catch (err) {
         result.errors.push(`${contactEmail}: ${err instanceof Error ? err.message : String(err)}`);
@@ -306,6 +351,8 @@ async function processCalendarAttendee({
   attendeeDisplayName,
   event,
   result,
+  createIfMissing = false,
+  defaultOwner = null,
 }: {
   supabase: ReturnType<typeof createAdminClient>;
   gmail: Awaited<ReturnType<typeof getGmailClientForMember>>['gmail'];
@@ -315,6 +362,10 @@ async function processCalendarAttendee({
   attendeeDisplayName: string | null;
   event: { id: string; summary: string; startTime: Date; isPast: boolean; meetLink: string | null };
   result: CalendarSyncResult;
+  // When true (event has all three founders), create a new lead if no
+  // existing one matches. When false, only update existing leads.
+  createIfMissing?: boolean;
+  defaultOwner?: { id: string; name: string; email: string } | null;
 }) {
   const now = new Date();
 
@@ -394,7 +445,70 @@ async function processCalendarAttendee({
     return;
   }
 
-  // ── No existing lead — skip ────────────────────────────────────────────────
-  // Calendar sync only updates existing leads (created from email outreach).
-  // It never creates new leads — too many false positives from personal/academic events.
+  // ── No existing lead ───────────────────────────────────────────────────────
+  // By default, calendar sync only updates existing leads — too many false
+  // positives from personal/academic events. But when `createIfMissing` is
+  // true (event has all three founders attending), this is a customer call
+  // booked directly via Calendar with no prior email thread. Create a lead.
+  if (!createIfMissing || !defaultOwner) {
+    return;
+  }
+
+  // Derive contact name + company from what we have
+  const rawName = attendeeDisplayName?.trim() || nameFromEmail(contactEmail);
+  const contactName = normalizeName(rawName);
+  const inferredCompany = companyFromDomain(contactEmail);
+  const companyName = inferredCompany ? normalizeName(inferredCompany, true) : 'Unknown';
+
+  const newStage: 'scheduled' | 'call_completed' = event.isPast ? 'call_completed' : 'scheduled';
+  const insert: Record<string, unknown> = {
+    contact_name: contactName,
+    contact_email: contactEmail,
+    company_name: companyName,
+    sourced_by: defaultOwner.id,
+    owned_by: defaultOwner.id,
+    stage: newStage,
+    priority: event.isPast ? 'medium' : 'high',
+    call_scheduled_for: event.startTime.toISOString(),
+    call_completed_at: event.isPast ? event.startTime.toISOString() : null,
+    last_contact_at: event.isPast ? event.startTime.toISOString() : null,
+  };
+
+  const { data: created, error: insertErr } = await supabase
+    .from('leads')
+    .insert(insert)
+    .select('id')
+    .single();
+
+  if (insertErr || !created) {
+    // If a parallel run / race created the same email, fall back to the existing
+    // lead and just log the interaction. Postgres unique constraint on
+    // contact_email isn't declared, but we still defensively re-query.
+    if (insertErr) {
+      result.errors.push(`create lead ${contactEmail}: ${insertErr.message}`);
+    }
+    return;
+  }
+
+  result.leads_created++;
+
+  // Log the calendar event as the first interaction on this new lead
+  const interactionBody = [
+    event.isPast ? 'Call completed (auto-created from Calendar — all 3 founders).' : 'Call scheduled (auto-created from Calendar — all 3 founders).',
+    event.meetLink ? `Google Meet: ${event.meetLink}` : null,
+  ].filter(Boolean).join('\n');
+
+  await supabase.from('interactions').insert({
+    lead_id: created.id,
+    team_member_id: member.id,
+    type: 'other',
+    subject: event.summary || `Meeting on ${event.startTime.toLocaleDateString()}`,
+    body: interactionBody,
+    occurred_at: event.startTime.toISOString(),
+    metadata: {
+      calendar_event_id: event.id,
+      meet_link: event.meetLink,
+      source: 'calendar_sync_three_founders',
+    },
+  });
 }

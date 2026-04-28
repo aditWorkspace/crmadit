@@ -70,7 +70,7 @@ export default function FollowUpsPage() {
 
   return (
     <div className="flex flex-col h-screen">
-      <div className="border-b border-gray-100 px-4 md:px-8 py-5 flex-shrink-0 pt-16 md:pt-5">
+      <div className="border-b border-gray-100 px-4 md:px-8 py-5 flex-shrink-0">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-semibold text-gray-900">Follow-ups</h1>
           {overdueCount > 0 && (

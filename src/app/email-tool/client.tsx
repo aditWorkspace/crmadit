@@ -69,6 +69,20 @@ export default function EmailToolClient({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Upload + filter (admin) — separate from the bulk blacklist upload.
+  // Takes a CSV the user is about to send, removes rows whose email is
+  // already in the blacklist, blacklists the survivors, and returns the
+  // cleaned CSV for download.
+  const [filtering, setFiltering] = useState(false);
+  const [filterResult, setFilterResult] = useState<{
+    inputRows: number;
+    outputRows: number;
+    alreadyBlacklisted: number;
+    newlyBlacklisted: number;
+  } | null>(null);
+  const [filterError, setFilterError] = useState<string | null>(null);
+  const filterInputRef = useRef<HTMLInputElement>(null);
+
   // Tick the clock so the cooldown countdown updates live without a
   // page reload, and the button re-enables the moment cooldown expires.
   useEffect(() => {
@@ -111,6 +125,55 @@ export default function EmailToolClient({
       setError('Network error. Try again.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function filterCsv(file: File) {
+    setFiltering(true);
+    setFilterError(null);
+    setFilterResult(null);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch('/api/cron/email-tool/csv-filter', { method: 'POST', body: form });
+      if (!res.ok) {
+        // Error responses are JSON with { ok: false, reason }.
+        let reason = `http ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j && typeof j.reason === 'string') reason = j.reason;
+        } catch {}
+        setFilterError(reason);
+        return;
+      }
+
+      const inputRows = Number(res.headers.get('X-Input-Rows') ?? '0');
+      const outputRows = Number(res.headers.get('X-Output-Rows') ?? '0');
+      const alreadyBlacklisted = Number(res.headers.get('X-Already-Blacklisted') ?? '0');
+      const newlyBlacklisted = Number(res.headers.get('X-Newly-Blacklisted') ?? '0');
+
+      // Trigger the browser download.
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const cd = res.headers.get('Content-Disposition') ?? '';
+      const m = cd.match(/filename="([^"]+)"/);
+      const filename = m ? m[1] : 'filtered.csv';
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Defer revoke a tick so Safari/Firefox finish the download trigger.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+      setFilterResult({ inputRows, outputRows, alreadyBlacklisted, newlyBlacklisted });
+      setBlacklistSize(prev => prev + newlyBlacklisted);
+    } catch {
+      setFilterError('network error');
+    } finally {
+      setFiltering(false);
+      if (filterInputRef.current) filterInputRef.current.value = '';
     }
   }
 
@@ -241,6 +304,37 @@ export default function EmailToolClient({
               </p>
             )}
             {uploadError && <p className="text-xs text-red-600">Upload failed: {uploadError}</p>}
+          </div>
+        )}
+
+        {isAdmin && (
+          <div className="border-t border-gray-100 pt-4 flex flex-col gap-2">
+            <p className="text-[11px] uppercase tracking-wider text-gray-400 flex items-center gap-1">
+              <Upload className="h-3 w-3" /> Upload + filter (admin)
+            </p>
+            <p className="text-xs text-gray-500">
+              Upload a CSV you{"'"}re about to send. We{"'"}ll remove rows already in the
+              blacklist, add the rest to the blacklist (so they{"'"}re never sent again),
+              and return a clean CSV to download.
+            </p>
+            <input
+              ref={filterInputRef}
+              type="file"
+              accept=".csv,text/csv,text/plain"
+              disabled={filtering}
+              onChange={e => {
+                const f = e.target.files?.[0];
+                if (f) filterCsv(f);
+              }}
+              className="text-xs text-gray-500 file:mr-3 file:px-3 file:py-2 file:rounded-md file:border-0 file:bg-gray-100 file:text-gray-800 file:cursor-pointer hover:file:bg-gray-200 disabled:opacity-40"
+            />
+            {filtering && <p className="text-xs text-gray-400 inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Filtering…</p>}
+            {filterResult && (
+              <p className="text-xs text-emerald-700">
+                Uploaded {filterResult.inputRows.toLocaleString()} rows · {filterResult.alreadyBlacklisted.toLocaleString()} already blacklisted · {filterResult.newlyBlacklisted.toLocaleString()} newly added · downloaded clean.csv with {filterResult.outputRows.toLocaleString()} rows.
+              </p>
+            )}
+            {filterError && <p className="text-xs text-red-600">Filter failed: {filterError}</p>}
           </div>
         )}
 
