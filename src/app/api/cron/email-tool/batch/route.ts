@@ -19,7 +19,6 @@ export async function POST(req: NextRequest) {
     teamMemberId:    session.id,
     teamMemberName:  session.name,
     teamMemberEmail: session.email,
-    cooldownAt:      session.email_batch_next_at ?? null,
   });
 
   // Surface the same response shape the standalone tool used so the

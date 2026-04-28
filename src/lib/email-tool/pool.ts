@@ -28,15 +28,24 @@ export async function runBatch(args: {
   teamMemberId: string;
   teamMemberName: string;
   teamMemberEmail: string;
-  cooldownAt: string | null | undefined;
 }): Promise<RunBatchOutcome> {
   const now = new Date();
-
-  if (args.cooldownAt && new Date(args.cooldownAt) > now) {
-    return { ok: false, reason: 'cooldown', retryAt: args.cooldownAt };
-  }
-
   const supabase = createAdminClient();
+
+  // Read cooldown directly from the DB at request time. We can't use the
+  // session-cached email_batch_next_at because getSessionFromRequest's
+  // in-process cache is 5min — a second POST in the same window would
+  // see stale "no cooldown" data and run a second batch.
+  const { data: liveMember, error: liveErr } = await supabase
+    .from('team_members')
+    .select('email_batch_next_at')
+    .eq('id', args.teamMemberId)
+    .single();
+  if (liveErr || !liveMember) return { ok: false, reason: 'unknown', detail: liveErr?.message ?? 'team_member not found' };
+
+  if (liveMember.email_batch_next_at && new Date(liveMember.email_batch_next_at) > now) {
+    return { ok: false, reason: 'cooldown', retryAt: liveMember.email_batch_next_at };
+  }
 
   // 1) Pick.
   const { data: rows, error: pickErr } = await supabase
