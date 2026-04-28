@@ -13,6 +13,7 @@ import {
   Mail,
   Zap,
   Users,
+  Target,
 } from '@/lib/icons';
 import { WorkspaceSwitcher } from './workspace-switcher';
 import { UserMenu } from './user-menu';
@@ -28,6 +29,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/', label: 'Pipeline', icon: LayoutDashboard },
   { href: '/calendar', label: 'Calendar', icon: CalendarDays },
   { href: '/mass-email', label: 'Outreach', icon: Send },
+  { href: '/email-tool', label: 'Cold Outreach', icon: Target },
   { href: '/follow-ups', label: 'Follow-ups', icon: Clock },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/insights', label: 'Insights', icon: BookOpen },
