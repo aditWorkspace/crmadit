@@ -3,7 +3,7 @@
 **Status:** Approved — ready for implementation planning
 **Date:** 2026-04-28
 **Owner:** Adit
-**Estimated effort:** ~14 working days across 5 PRs, then 1-day soft warmup before steady state
+**Estimated effort:** ~15 working days across 5 PRs, then 1-day soft warmup before steady state
 
 ---
 
@@ -17,6 +17,7 @@ The 3 founders currently send ~400 cold-outreach emails per Gmail account per da
 - Mimics human-pattern sending (jittered timing, content variants, no template fingerprinting) to minimize the chance of accounts being throttled or banned
 - Is observable and pause-able the moment something goes wrong
 - Supports ad-hoc priority sends (e.g., a hand-curated list of YC partners) without disrupting the regular pool
+- **Treats every outbound send as a first-class CRM event** — auto-creates a lead, logs the interaction, attributes the variant + campaign, and produces per-variant / per-founder / per-campaign analytics that founders never had with external tools (see §12)
 
 **Non-goals (deliberately deferred):**
 - HTML emails / attachments / inline images
@@ -635,17 +636,172 @@ Resume is always an explicit human action — no auto-un-pause on serious flags.
 
 ---
 
-## 12. Phased rollout — 5 PRs
+## 12. CRM integration benefits — what we get for free
 
-| PR | Effort | Scope | Live behavior |
-|---|---|---|---|
-| **PR 1** | 1d | Schema + safety constants | Tables exist, no functionality |
-| **PR 2** | 3d | Templates UI + variant CRUD + lint + spintax parser | Founders can write/preview templates; nothing sends |
-| **PR 3** | 3d | Send pipeline + dry-run mode | Engine runs in dry-run; debug endpoint sends ONE test email |
-| **PR 4** | 4d | Cron routes + scheduling + Skip toggle + Priority CSV upload + admin schedule UI | Cron infrastructure live; `schedule.enabled = false` default |
-| **PR 5** | 3d | Health dashboard + alerts + warmup gate + pre-go-live checklist | System ready; admin flips `enabled = true` to start Day 1 |
+Sending from inside the CRM (vs. handing a CSV to YAMM externally) unlocks a set of integrations that are either impossible or much harder when sending lives outside our system. Listing these here both as a feature inventory and as the rationale for *why* this build is worth more than just "automate the manual send."
 
-Total: ~14 working days. Each PR is independently testable; pull the plug at any boundary if something looks off.
+### 12.1 Auto-create leads from outbound sends
+
+Today, a `leads` row is created only when a prospect *replies* to outreach. The Gmail-sync matcher handles inbound reply detection. This means we have no record of "everyone we've ever cold-emailed" — only "everyone who replied."
+
+With in-CRM sends, every outbound email becomes a lead at send time. The pre-built `createLeadFromOutreach()` helper at `src/lib/leads/auto-create.ts` (already shipped, currently unused) is the exact API:
+- `email`, `fullName`, `company` populated from the send queue row
+- `ownedBy` = the founder who actually sent (round-robin assignment)
+- `source` = `'mass_email'`
+- Idempotent: existing leads update `last_contact_at`; new leads insert with `stage='replied'` (placeholder until reply arrives) — actually we use a new stage value `outreach_sent` for sent-but-not-replied (see schema additions below)
+
+Result: founders can see in the lead pipeline *every* prospect they've ever reached out to, not just the ~3% who replied. Surfaces the long tail of "we contacted 200 people at YC-backed companies last month" as queryable data.
+
+### 12.2 Per-send interaction logging at send time
+
+Today, the existing Gmail sync picks up sent items hours later (5-min cron lag) and writes `interactions` rows with `type='email_outbound'`. Lag means dashboards are always stale.
+
+With in-CRM sends, the tick handler writes the interaction row at the same moment as the Gmail API call succeeds. Fields populated:
+- `lead_id` — the lead from §12.1
+- `team_member_id` — the sending founder
+- `type` = `'email_outbound'`
+- `subject` — rendered subject after merge tags
+- `body` — rendered body after merge tags
+- `gmail_message_id` — returned from Gmail API; needed for §12.3
+- `gmail_thread_id` — same
+- `metadata.rfc_message_id` — RFC 5322 Message-Id we set, for cross-account threading
+- `campaign_id` — NEW column linking interaction to campaign (§12.8)
+- `template_variant_id` — NEW column linking interaction to variant (§12.8)
+- `occurred_at` — Gmail's reported send time
+
+Result: instant timeline updates on the dashboard the moment a send completes. No 5-minute Gmail-sync round-trip.
+
+### 12.3 Reply attribution via Message-ID
+
+When the prospect replies, their reply has an `In-Reply-To: <our-message-id>` header (RFC 5322 standard). The existing Gmail sync already extracts this and matches replies to outbound interactions via `gmail_thread_id`.
+
+With in-CRM sends, we store our own `gmail_message_id` and `rfc_message_id` at send time, so the matcher's accuracy goes from "thread-based" (works ~95% of the time) to "exact message ID" (100%). We can also populate the lead's `first_reply_at` with the interaction's `occurred_at` precisely.
+
+Result: closed-loop attribution. We know exactly which campaign + variant drove which reply.
+
+### 12.4 Per-variant, per-founder, per-campaign performance analytics
+
+Once §12.2 + §12.3 are wired, the following metrics fall out of simple SQL queries:
+
+```sql
+-- Per-variant reply rate (last 30 days)
+SELECT
+  v.label,
+  v.founder_id,
+  COUNT(i.id) FILTER (WHERE i.type = 'email_outbound')                 AS sent,
+  COUNT(DISTINCT l.id) FILTER (WHERE l.first_reply_at IS NOT NULL)     AS replied,
+  ROUND(100.0 * replied / NULLIF(sent, 0), 1)                          AS reply_rate_pct
+FROM email_template_variants v
+LEFT JOIN interactions i ON i.template_variant_id = v.id
+LEFT JOIN leads l ON l.id = i.lead_id
+WHERE i.occurred_at > now() - interval '30 days'
+GROUP BY v.id, v.label, v.founder_id
+ORDER BY reply_rate_pct DESC;
+```
+
+Variations: per-founder, per-campaign, per-week trend, per-recipient-domain success rate.
+
+These plug into the new health dashboard (§11.1) as additional cards:
+- "Top-performing variants this week"
+- "Adit's reply rate trend (4-week sparkline)"
+- "Last campaign: 350 sent, 28 replied (8% — 2pp above 30-day average)"
+
+Founders get the iteration data they've never had before. Variants that consistently underperform get retired; high-performers get cloned and tweaked.
+
+### 12.5 Bounce / unsubscribe → automatic CRM state changes
+
+Already covered in §11.3 but worth restating as an integration benefit:
+- Hard 5xx bounce → email added to `email_blacklist` + matching lead (if any) marked `stage='dead'` with `tags += 'bounced'`
+- Inbound reply containing STOP/unsubscribe/remove → blacklist + lead `stage='dead'` with `tags += 'unsubscribed'`
+
+Today this requires manual cleanup — founders see bounce notifications in their inbox and have to act on them. With in-CRM sends, bounce handling and CRM lead state are atomic.
+
+### 12.6 Activity feed integration
+
+The dashboard's existing activity feed (`activity_log` table) already shows lead-level events: stage changes, new replies, etc. With in-CRM sends, we add new event types to the feed:
+- `cold_outreach_sent` — "Adit sent 350 cold emails this morning (campaign 4f8…)"
+- `cold_outreach_replied` — "Pat at Acme replied to Adit's outreach (variant 'Adit v2')"
+- `cold_outreach_bounced` — "3 hard bounces today (auto-blacklisted)"
+
+The aggregate "morning send" event collapses 350 individual sends into one feed row with a click-through to the campaign details. Replies stay individual (those are interesting).
+
+### 12.7 Daily founder digest enrichment
+
+The existing 8am PT daily digest (§11.2) gets a new "Yesterday's outreach" section per founder:
+
+```
+Yesterday's cold outreach — Adit
+  Sent:           347                       (3 deferred — same-domain dedup)
+  Bounced:        4 (1.2%)                  ✅
+  Replies so far: 14 (4.0% — 0.4pp above 7-day avg)
+  Top variant:    "Adit v2" (8% reply rate, 60% of sends)
+  Pool runway:    13 days remaining
+```
+
+### 12.8 Schema additions to support §12.1–§12.7
+
+Already covered in the data model, but to make the integration explicit:
+
+```sql
+-- On `interactions` (existing table) — link interactions to campaigns and variants
+ALTER TABLE interactions
+  ADD COLUMN campaign_id          UUID REFERENCES email_send_campaigns(id),
+  ADD COLUMN template_variant_id  UUID REFERENCES email_template_variants(id);
+
+CREATE INDEX ON interactions (campaign_id) WHERE campaign_id IS NOT NULL;
+CREATE INDEX ON interactions (template_variant_id) WHERE template_variant_id IS NOT NULL;
+
+-- On `leads` (existing table) — link leads to the campaign that first created them
+ALTER TABLE leads
+  ADD COLUMN source_campaign_id   UUID REFERENCES email_send_campaigns(id);
+
+CREATE INDEX ON leads (source_campaign_id) WHERE source_campaign_id IS NOT NULL;
+
+-- New stage value: 'outreach_sent' (sent-but-no-reply-yet)
+-- This is a stage BEFORE 'replied' in the pipeline; once they reply,
+-- the existing reply pipeline advances them to 'replied' as today.
+```
+
+The new `outreach_sent` stage requires updating `STAGE_ORDER` in `src/lib/constants.ts` and adding a UI label "Awaiting Outreach Reply". `replied` already displays as "Awaiting Reply" — `outreach_sent` displays as "Cold Email Sent".
+
+Stage order becomes:
+```
+outreach_sent → replied → scheduling → scheduled → call_completed → post_call → demo_sent → active_user
+                                                                                            ↓
+                                                                                paused / dead
+```
+
+### 12.9 Future enhancements this design enables (Phase 2+)
+
+The schema/integration above is the *minimum* that makes things observable. Once it ships, several follow-on features become trivial:
+
+- **Cohort funnel analysis** — "Of leads created from cold outreach in May 2026, X% reached `scheduled`, Y% reached `call_completed`, Z% became `active_user`" — single SQL query.
+- **Send-time-of-day correlation** — bucket sends by hour, compute reply rate per bucket. Empirically determine optimal send time per recipient timezone.
+- **Domain success modeling** — group sends by recipient domain (extracted at send time) — compute per-domain reply rate. Surface "industries that engage" data for founders.
+- **AI-personalized opener** — at send time, OpenRouter generates a 1–2 sentence company-specific opener prepended to the variant body. Cost ~$0.001/send. Designed-for in §3 of the spec; just toggled off for v1.
+- **Variant retirement / A/B framework** — if a variant has <2% reply rate over 200 sends, auto-disable it and alert the founder. (Statistical-significance gating not required for v1.)
+- **Per-recipient send-window override** — if we know a recipient is in EST, send to them at 6am EST instead of 6am PT. Recipient timezone derived from email domain TLD or LinkedIn data.
+- **Re-engagement campaigns** — leads in `cold_email_sent` stage for >30 days with no reply: optional second-touch campaign with a different variant.
+
+None of these are in scope for v1. Listing them here so the design is intentional about what it enables, not just what it does.
+
+---
+
+## 13. Phased rollout — 5 PRs
+
+The CRM integration work (§12) is woven into each PR rather than tacked on at the end — every PR's primary outcome is functional, but each one also extends the CRM in some way.
+
+| PR | Effort | Scope | Integration work | Live behavior |
+|---|---|---|---|---|
+| **PR 1** | 1d | Schema + safety constants | + `interactions.campaign_id`, `interactions.template_variant_id`, `leads.source_campaign_id` columns; add `outreach_sent` stage to `STAGE_ORDER` | Tables exist, no functionality |
+| **PR 2** | 3d | Templates UI + variant CRUD + lint + spintax parser | (none — pure UI) | Founders can write/preview templates; nothing sends |
+| **PR 3** | 3.5d | Send pipeline + dry-run mode | + Lead auto-create at send via existing `createLeadFromOutreach` helper; + Interaction insert with `campaign_id`/`template_variant_id`; + Bounce/unsubscribe→lead-state side effects | Engine runs in dry-run; debug endpoint sends ONE test email and creates the lead + interaction in CRM |
+| **PR 4** | 4d | Cron routes + scheduling + Skip toggle + Priority CSV upload + admin schedule UI | + Activity log entries for campaign events (`cold_outreach_sent`, `cold_outreach_bounced`); + Lead `tags += ['source:cold_outreach', 'campaign:<short_id>']` | Cron infrastructure live; `schedule.enabled = false` default |
+| **PR 5** | 3.5d | Health dashboard + alerts + warmup gate + pre-go-live checklist | + Per-variant / per-founder / per-campaign analytics views; + Daily digest "Yesterday's outreach" section; + Activity feed event types | System ready; admin flips `enabled = true` to start Day 1 |
+
+**Total: ~15 working days** (was 14; integration adds ~1 day across PRs 3 and 5).
+
+Each PR is independently testable; pull the plug at any boundary if something looks off.
 
 After PR 5 ships and admin enables:
 - Day 1: 250/account = 750 total (smoke test day)
@@ -654,7 +810,7 @@ After PR 5 ships and admin enables:
 
 ---
 
-## 13. Out-of-band tasks (for the founders, not implementable)
+## 14. Out-of-band tasks (for the founders, not implementable)
 
 1. **Plus-aliasing Gmail filters** — each founder creates a Gmail filter that catches `to:<their_address>+unsubscribe@berkeley.edu` and labels/archives it appropriately. ~5 minutes per account. Documented in the pre-go-live checklist.
 
@@ -668,7 +824,7 @@ After PR 5 ships and admin enables:
 
 ---
 
-## 14. Open issues / future work
+## 15. Open issues / future work
 
 - **Reply rate as deliverability proxy** — relies on prospects actually replying. We assume our pool quality is good; if a campaign has 0 replies in 200 sends, the alert fires but we have no mitigation beyond pause.
 - **Manual override of warmup** — admin can skip the warmup day-1 → day-2 ramp gate, but we surface a "warmup skipped" banner. Not enforced.
@@ -678,7 +834,7 @@ After PR 5 ships and admin enables:
 
 ---
 
-## 15. Definitions / glossary
+## 16. Definitions / glossary
 
 - **Pool**: existing `email_pool` table (~24k cold-outreach rows from CSV)
 - **Founder**: a `team_members` row representing one of the 3 co-founders (Adit/Srijay/Asim)
