@@ -21,6 +21,13 @@ type Supa = ReturnType<typeof createAdminClient>;
 export interface RunDailyStartOpts {
   /** Clock injection for testability (default: new Date()). */
   now?: Date;
+  /**
+   * Override the idempotency_key. Default: today's PT date in YYYY-MM-DD
+   * form. Used by the admin retry-today endpoint to generate a manual key
+   * (e.g., 'manual-2026-04-28-<ts>') that doesn't collide with the
+   * scheduled run's already-claimed key.
+   */
+  idempotencyKey?: string;
 }
 
 export type RunDailyStartResult =
@@ -74,7 +81,7 @@ export async function runDailyStart(
   opts: RunDailyStartOpts = {},
 ): Promise<RunDailyStartResult> {
   const now = opts.now ?? new Date();
-  const idempotencyKey = formatPtDate(now);
+  const idempotencyKey = opts.idempotencyKey ?? formatPtDate(now);
 
   // ── Steps ①+②+③: claim today via RPC ──────────────────────────────────
   // C11+C12 fix: compute nextRunAt once here; the RPC stores it in the
