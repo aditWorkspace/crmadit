@@ -21,14 +21,16 @@ export default function AdminClient({ memberName }: Props) {
   const params = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
-  const initialTab = (params.get('tab') as TabId) ?? 'templates';
+  const initialTab = (params.get('tab') as TabId) ?? 'overview';
   const [tab, setTab] = useState<TabId>(initialTab);
 
-  // Keep tab state in sync with URL when user uses back/forward
+  // Keep tab state in sync with URL when user uses back/forward.
+  // `params` (URLSearchParams) identity is stable per route in Next.js,
+  // so spreading the deps would needlessly re-fire on every render.
   useEffect(() => {
-    const t = (params.get('tab') as TabId) ?? 'templates';
+    const t = (params.get('tab') as TabId) ?? 'overview';
     if (t !== tab) setTab(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params]);
 
   function navigate(t: TabId) {
@@ -47,8 +49,12 @@ export default function AdminClient({ memberName }: Props) {
               <h1 className="text-2xl font-bold">Cold Outreach Automation</h1>
               <p className="text-sm text-gray-500 mt-1">Signed in as {memberName}</p>
             </div>
-            <div className="text-sm text-gray-500">
-              schedule: <span className="font-mono">enabled = false</span>
+            {/* Static placeholder for PR 2 — actual live status wires up in PR 5
+                by reading email_send_schedule.enabled. Format matches spec §11.6's
+                "schedule: ✅ ENABLED / 🛑 DISABLED" badge. */}
+            <div className="text-sm">
+              <span className="text-gray-500">schedule: </span>
+              <span className="font-medium text-gray-700">🛑 DISABLED</span>
             </div>
           </div>
 

@@ -2,6 +2,7 @@
 // the client with the founder's identity. The client handles tab routing
 // via ?tab= and fetches data per tab.
 
+import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { verifySession, SESSION_COOKIE_NAME } from '@/lib/auth/cookie-session';
@@ -25,5 +26,9 @@ export default async function EmailToolAdminPage() {
   if (!member) redirect('/');
   if (!member.is_admin) redirect('/email-tool');
 
-  return <AdminClient memberName={member.name} />;
+  return (
+    <Suspense fallback={null}>
+      <AdminClient memberName={member.name} />
+    </Suspense>
+  );
 }
