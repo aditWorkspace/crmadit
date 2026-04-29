@@ -14,59 +14,31 @@ Each item links to where it came up so future-us can find context.
 
 ---
 
-## C1. `claude_exec_sql` safety-guard bypass
+## C1. `claude_exec_sql` safety-guard bypass — 🟢 DONE (2026-04-29)
 
 **Surfaced:** PR 1 Task 1.5 fixup (commit `a8f1ecc`).
+**Resolved:** PR 5 Task 5.9. Adit pasted `027_claude_exec_sql_upgrade_PROPOSED.sql` into the dashboard SQL editor; both function overloads now exist (single-arg unchanged for backward compat, two-arg adds `allow_destructive boolean DEFAULT false`). New `public.claude_exec_sql_audit` table records every invocation (destructive flag, sql preview, outcome).
 
-**What happened:** The Supabase project's `claude_exec_sql(sql_text)` SECURITY DEFINER function blocks SQL containing literal `DROP`, `DELETE`, `TRUNCATE` tokens — a safety net so a runaway script can't accidentally clobber data. To apply `ON DELETE` changes on a freshly-created FK constraint (Postgres has no `ALTER CONSTRAINT` for `ON DELETE` — must `DROP` + re-`ADD`), the implementer subagent wrapped the SQL in `DO $$ ... EXECUTE chr(...) || chr(...) ... END $$;` dynamic SQL so the literal token didn't appear in the source string.
+**Resolution:** Option 2 from the original options list — explicit per-call `allow_destructive=true` opt-in plus an audit trail. The single-arg signature is preserved and continues to enforce the literal-token guard against `DROP` / `DELETE FROM` / `TRUNCATE`, so all existing callers behave identically.
 
-**Why it's a concern:** The bypass works for any DROP, not just our intended scope. A subagent (or future-me) could use the same pattern to do something genuinely destructive without your approval.
-
-**Why it was acceptable in this specific case:**
-- Tables were verified empty before the constraint changes.
-- DROP+ADD on a constraint we ourselves had created minutes earlier is functionally equivalent to a Postgres `ALTER CONSTRAINT` (which doesn't exist as a statement).
-- Each constraint change was wrapped in `IF EXISTS` so re-runs are no-ops.
-
-**Decision needed before PR 4:** PR 4 adds the `outreach_sent` value to the `STAGE_ORDER` enum, which on the SQL side requires `ALTER TYPE ... ADD VALUE` (no DROP needed for that, fortunately). But PR 4 also extends `interactions` and `leads` with new columns — pure additive, no DROP. So we may not hit this again until PR 5+ if at all.
-
-**Options when it next comes up:**
-1. **Update `claude_exec_sql`** to permit `DROP CONSTRAINT` and `DROP INDEX` only when accompanied by a matching `ADD CONSTRAINT` / `CREATE INDEX` in the same payload. More work; safest pattern.
-2. **Add an `allow_destructive` parameter** to the RPC that the caller must explicitly opt in to. Forces an intentional "yes I know" gesture.
-3. **Treat each future DROP as a manual operation** — Adit runs the SQL via the Supabase dashboard manually. Slower but airtight.
-
-Adit's call.
+**First audit-logged destructive call:** 025a (drops `tmp_inspect_*` helpers + tightens FK ON DELETE on `email_send_priority_queue`). Verified by reading back `claude_exec_sql_audit`.
 
 ---
 
-## C2. Leftover inspection helpers in public schema
+## C2. Leftover inspection helpers in public schema — 🟢 DONE (2026-04-29)
 
 **Surfaced:** PR 1 Task 1.5 verification.
-
-Two `SECURITY DEFINER` functions were created in `public` to inspect FK + index state during PR 1 review (we couldn't query `pg_constraint` / `pg_indexes` directly via PostgREST, so wrapped them in functions):
-
-- `public.tmp_inspect_fks()` — returns FK ON DELETE behavior for `email_send_*` tables.
-- `public.tmp_inspect_idx()` — returns index definitions for `email_send_queue`.
-
-**Why it's a concern:** Anything in `public` is exposed via PostgREST. Service-role-gated GRANTs limit invocation, but the prefix `tmp_` doesn't reflect actual cleanup tracking — they'll quietly stay forever unless someone notices.
-
-**Why deferred:** Cleanup requires `DROP FUNCTION`, which hits the same `claude_exec_sql` guard from C1. Resolving C1 unblocks this cleanup.
-
-**Action when C1 is resolved:** drop both functions.
+**Resolved:** PR 5 Task 5.9 via `025a_email_send_destructive_mop_up.sql`. Both `tmp_inspect_fks()` and `tmp_inspect_idx()` dropped via the upgraded `claude_exec_sql(sql_text, allow_destructive => true)`. Verified post-image: `helpers_present: []`.
 
 ---
 
-## C3. Two FKs on `email_send_priority_queue` left at default `NO ACTION`
+## C3. Two FKs on `email_send_priority_queue` left at default `NO ACTION` — 🟢 DONE (2026-04-29)
 
 **Surfaced:** PR 1 Task 1.5 review (commit `a8f1ecc`).
+**Resolved:** PR 5 Task 5.9 via `025a_email_send_destructive_mop_up.sql`.
 
-Reviewer feedback in `a8f1ecc` covered FKs on `email_send_queue` and `email_send_errors`. Two more FKs on `email_send_priority_queue` were not in the reviewer's list but show as default `NO ACTION` in the verification:
-
-- `email_send_priority_queue.uploaded_by` — FK to `team_members(id)`
-- `email_send_priority_queue.override_owner` — FK to `team_members(id)`
-
-**Why deferred:** out of scope for the original review feedback; not a correctness issue at v1 because we have only 3 founders and they're hardcoded (effectively never deletable).
-
-**Action if needed:** in a future fixup migration, set `uploaded_by` to `RESTRICT` (don't allow deleting a founder while their priority uploads exist) and `override_owner` to `SET NULL` (cleaning up a founder shouldn't block priority queue cancellation logic).
+- `email_send_priority_queue.uploaded_by` → `RESTRICT` (don't delete a founder while their priority uploads exist). Verified `confdeltype = 'r'`.
+- `email_send_priority_queue.override_owner` → `SET NULL` (founder cleanup shouldn't block priority queue logic). Verified `confdeltype = 'n'`.
 
 ---
 
@@ -250,23 +222,28 @@ The double-cast bypasses type checking. The real `getGmailClientForMember` retur
 
 ---
 
-## Summary table — items still 🔴 OPEN
+## Summary table — final status (post PR 5)
 
-| # | Item | Estimated effort |
+| # | Item | Status |
 |---|---|---|
-| C1 | claude_exec_sql safety-guard policy decision | needs Adit's call (no code) |
-| C2 | drop tmp_inspect_* helpers | 5 min once C1 resolved |
-| C3 | priority_queue FK ON DELETE behavior | 15 min in mop-up migration |
-| C4 | status enum CHECK constraints | 30 min in mop-up migration |
-| C5 | updated_at trigger function | 30 min in mop-up migration |
-| C6 | unify templates API error shape | 1 hr |
-| C7 | exponential backoff 5s/30s/2m | 30 min + tests |
-| C8 | campaign completion check | 30 min + tests |
-| C9 | crash-counter wiring | 1 hr (PR 4 priority) |
-| C10 | timeout signal | 30 min (PR 4) |
-| C11 | next_run_at denormalization (TS) | 30 min (PR 4) |
-| C12 | next_run_at skip-flag path (SQL) | 30 min (PR 4) |
-| C14 | alert side effects from runDailyStart | 1 hr (PR 5 with alert.ts) |
-| C18 | drop unsafe gmail client cast | 30 min |
+| C1 | claude_exec_sql safety-guard policy decision | 🟢 DONE — PR 5 Task 5.9 (027 applied via dashboard) |
+| C2 | drop tmp_inspect_* helpers | 🟢 DONE — PR 5 Task 5.9 (025a) |
+| C3 | priority_queue FK ON DELETE behavior | 🟢 DONE — PR 5 Task 5.9 (025a) |
+| C4 | status enum CHECK constraints | 🟢 DONE — PR 5 Task 5.1 (025) |
+| C5 | updated_at trigger function | 🟢 DONE — PR 5 Task 5.1 (025) |
+| C6 | unify templates API error shape | 🟢 DONE — PR 5 Task 5.8 |
+| C7 | exponential backoff 5s/30s/2m | 🟢 DONE — PR 5 Task 5.2 |
+| C8 | campaign completion check | 🟢 DONE — PR 5 Task 5.2 |
+| C9 | crash-counter wiring | 🟢 DONE — PR 4 Task 4.3 |
+| C10 | timeout signal | 🟡 WATCH — Vercel function timeout limits cover this in practice |
+| C11 | next_run_at denormalization (TS) | 🟢 DONE — PR 4 Task 4.2 |
+| C12 | next_run_at skip-flag path (SQL) | 🟢 DONE — PR 4 (024 RPC update) |
+| C13 | Content-Transfer-Encoding 7bit half-truth | 🟡 WATCH — cosmetic; receivers tolerate |
+| C14 | alert side effects from runDailyStart | 🟢 DONE — PR 5 Task 5.5 |
+| C15 | bounce-rate query covering index | 🟢 DONE — PR 5 Task 5.1 (025) |
+| C16 | templates UI Escape-to-close | 🟢 DONE — PR 5 Task 5.8 |
+| C17 | founders list ordering | 🟢 DONE — PR 5 Task 5.8 |
+| C18 | drop unsafe gmail client cast | 🟢 DONE — PR 5 Task 5.2 |
+| C19 | (duplicate of C2) | 🟢 DONE |
 
-**~9 hours of mop-up work**. PR 4 absorbs C9/C10/C11/C12 naturally. The rest go into PR 5 or a Phase-6 cleanup commit before flipping `enabled = true`.
+**Outstanding items:** C10 + C13 are both 🟡 WATCH (cosmetic / mitigated by other layers). All 🔴 OPEN items closed. System is ready for go-live pending Adit's pre-flight checklist.
