@@ -75,6 +75,8 @@ Berkeley owns `berkeley.edu`, not us. We cannot enroll the sending domain in Pos
 
 ## 3. Architecture overview
 
+> ⚠ **Hard prerequisite: Vercel Pro tier ($20/seat/mo) or higher.** This design uses `* * * * *` (every-minute) Vercel cron. Vercel's Hobby tier caps cron at one execution per day, which makes the self-triggering minute-tick architecture below unworkable. Confirm the project's Vercel plan before starting PR 1 — discovering this at PR 4 means re-architecting the cron path back to two external schedulers, which we deliberately removed (see "Why one cron" below). The `vercel.json` cron entry will silently *not* fire if the plan is Hobby, with no error surfaced.
+
 **Single cron, single entry point.** One Vercel cron entry runs every minute and serves both roles: it self-triggers the daily campaign when due, and drains the queue. No second external scheduler (cron-job.org dropped from this design).
 
 ```
@@ -139,7 +141,18 @@ All additions are pure-additive. Existing tables (`email_pool`, `email_blacklist
 
 ### 4.0 Migration split across PRs
 
-Schema lands with the feature that uses it, not all up front. This avoids the production CRM accumulating unused columns for weeks while later PRs are still being built. Three migrations, each scoped:
+Schema lands with the feature that uses it, not all up front. This avoids the production CRM accumulating unused columns for weeks while later PRs are still being built. Three migrations, each scoped.
+
+**Note on the existing `email_blacklist` table:** PR 1 also adds one nullable column to the existing table to support test-mode cleanup (§11.5). This is the only change to a pre-existing table outside `team_members`:
+
+```sql
+ALTER TABLE email_blacklist
+  ADD COLUMN source TEXT;       -- nullable; null = production / pre-existing
+                                -- 'dryrun:<campaign_id>' for dry-run-tagged rows
+                                -- 'allowlist:<campaign_id>' for allowlist-tagged rows
+```
+
+
 
 | Migration file | Lands in | Contents | Why this PR |
 |---|---|---|---|
@@ -250,16 +263,20 @@ CREATE INDEX ON email_send_queue (campaign_id, status);
 -- Mon–Fri only, with day-of-week → start-time-PT mapping baked into code.
 -- See §5.1 for the exact times. Saturday/Sunday: no campaign runs.
 CREATE TABLE email_send_schedule (
-  id                    INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-  enabled               BOOLEAN NOT NULL DEFAULT FALSE,
-  send_mode             TEXT NOT NULL DEFAULT 'production',
+  id                          INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  enabled                     BOOLEAN NOT NULL DEFAULT FALSE,
+  send_mode                   TEXT NOT NULL DEFAULT 'production',
   -- production | dry_run | allowlist  (see §11.5 for semantics)
-  warmup_started_on     DATE,                        -- null until enabled flipped on
-  warmup_day_completed  INT NOT NULL DEFAULT 0,      -- gate for Day 1 → Day 2 ramp
-  skip_next_run         BOOLEAN NOT NULL DEFAULT FALSE,
-  last_run_at           TIMESTAMPTZ,
-  next_run_at           TIMESTAMPTZ,                 -- displayed in admin UI
-  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+  warmup_started_on           DATE,                        -- null until enabled flipped on
+  warmup_day_completed        INT NOT NULL DEFAULT 0,      -- gate for Day 1 → Day 2 ramp
+  skip_next_run               BOOLEAN NOT NULL DEFAULT FALSE,
+  last_run_at                 TIMESTAMPTZ,
+  next_run_at                 TIMESTAMPTZ,                 -- displayed in admin UI
+  -- Crash-counter floor. Set when admin clicks "Resume All" so old
+  -- crashes from the auto-pause incident don't immediately re-trip
+  -- the threshold. See §11.4.
+  crashes_counter_reset_at    TIMESTAMPTZ,
+  updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 INSERT INTO email_send_schedule (id) VALUES (1) ON CONFLICT DO NOTHING;
 -- next_run_at is computed by the application from today's date and the
@@ -537,6 +554,43 @@ The "Skip One Day" toggle (§9) handles ad-hoc skips. If you hit it on Sunday ni
 The single entry point for the entire pipeline. Triggered every minute by Vercel's native cron. Both **self-triggers the daily start phase when due** and **drains `email_send_queue`** on every invocation.
 
 ```
+══════ PHASE -1: Orphan-campaign sweep (must run BEFORE self-trigger) ═
+⓪ Detect campaigns claimed but never queued
+   • Common cause: runDailyStart's Transaction 1 committed (campaign row
+     exists with status='running') but the function then crashed or
+     timed out before step ⑩ (queue insert) — Vercel timeout, OOM,
+     network partition mid-write, etc.
+   • Without this sweep, the day is silently forfeited because the
+     self-trigger check below sees already_started=true and skips,
+     while the drain phase finds no queue rows for today's campaign.
+   
+   • SELECT id, idempotency_key FROM email_send_campaigns
+       WHERE status = 'running'
+         AND started_at < now() - interval '5 minutes'
+         AND NOT EXISTS (
+           SELECT 1 FROM email_send_queue
+           WHERE campaign_id = email_send_campaigns.id
+         )
+   • For each orphan found:
+       UPDATE email_send_campaigns
+         SET status='aborted',
+             abort_reason='orphan_no_queue_rows',
+             completed_at = now()
+       WHERE id = orphan.id;
+       INSERT INTO email_send_errors
+         (campaign_id, error_class, error_message, context)
+         VALUES (orphan.id, 'crash',
+                 'orphan_campaign_aborted: ' || orphan.idempotency_key,
+                 jsonb_build_object('idempotency_key', orphan.idempotency_key,
+                                    'aborted_at', now()));
+       send_critical_alert("Today's campaign aborted mid-start — no queue rows");
+   
+   • Orphan recovery is intentionally NOT auto-retry. The original failure
+     could be deterministic (e.g., a query bug surfaced under prod data
+     volume), and auto-retry would loop. Admin must explicitly click
+     "Retry today's run" in the Schedule tab UI (§11.6) which generates
+     a new idempotency_key with a 'manual-' prefix and re-runs.
+
 ══════ PHASE 0: Self-trigger check ════════════════════════════════════
 ① Compute today's expected start time
    • due_at = computeNextRunAt(starting_from = today_at_midnight_pt)
@@ -854,14 +908,22 @@ The health dashboard surfaces *aggregate* state. The `email_send_errors` table c
 
 #### Crash signal — explicit, not inferred
 
-The "tick handler crashes 3× in 10min triggers global pause" rule from §11.3 reads from `email_send_errors`, NOT from queue-row state:
+The "tick handler crashes 3× in 10min triggers global pause" rule from §11.3 reads from `email_send_errors`, NOT from queue-row state. The query also respects an admin reset marker so post-incident resumes get a clean 10-minute window:
 
 ```sql
 SELECT COUNT(*) FROM email_send_errors
 WHERE error_class = 'crash'
-  AND occurred_at > now() - interval '10 minutes';
+  AND occurred_at > GREATEST(
+    now() - interval '10 minutes',
+    COALESCE(
+      (SELECT crashes_counter_reset_at FROM email_send_schedule WHERE id = 1),
+      '-infinity'::timestamptz
+    )
+  );
 -- if >= 3 → pause all accounts, alert founders
 ```
+
+When the admin clicks "Resume All Sending" (the global resume action — distinct from per-account resume), the same write that flips paused flags off also sets `email_send_schedule.crashes_counter_reset_at = now()`. The counter restarts cleanly. Per-account resumes (e.g., resuming Adit after a bounce-rate pause) do NOT touch the global counter — those don't relate to crash incidents.
 
 This intentionally distinguishes:
 - **Crash** = uncaught exception escaped the tick handler. Counted.
@@ -961,7 +1023,13 @@ Three modes, controlled via `email_send_schedule.send_mode` (DB column) so it ca
 - The minute-tick drains rows normally
 - For each row: rendering happens, safety checks run, **Gmail API call is skipped**, `gmail_message_id` is set to `'dryrun:' || queue_row_id` (never matches a real Gmail ID), `status='sent'`
 - The downstream CRM integrations from §12 fire as if real: lead is auto-created, interaction is inserted with the synthetic message id, daily digest reflects what *would* have happened
-- **One exception**: the email_blacklist insert still happens. Dry-run consumes pool rows for real, just doesn't send to them. This is intentional — you want dry-run to model the actual operational footprint, not just the send path. (Operators can manually un-blacklist after a dry-run if they want to re-pick those rows in production.)
+- **One exception**: the email_blacklist insert still happens. Dry-run consumes pool rows for real, just doesn't send to them. This is intentional — you want dry-run to model the actual operational footprint, not just the send path.
+- **Cleanup story for repeated test runs**: blacklist rows inserted in `dry_run` or `allowlist` mode are tagged via `email_blacklist.source` (e.g., `'dryrun:<campaign_id>'`). The Schedule tab includes a `🧹 Clean up test-mode blacklist entries` button (admin-only) that:
+  - Shows a preview: "X rows tagged `dryrun:*`, Y rows tagged `allowlist:*` — these will be deleted."
+  - On confirm, runs `DELETE FROM email_blacklist WHERE source LIKE 'dryrun:%' OR source LIKE 'allowlist:%'`
+  - Production blacklist rows (`source IS NULL`) are never touched — the LIKE pattern excludes them
+  - Logged to the activity feed as `email_blacklist_cleanup` so there's an audit trail
+  - Without this, running dry-run twice during PR 4 testing burns 800 pool rows requiring manual cleanup. With the source tag, recovery is one click.
 
 #### Allowlist mode
 
@@ -1123,7 +1191,9 @@ Live preview re-renders on every keystroke. The "Variables available" row shows 
 │                                                                    │
 │  Warmup status:  Day 2+ steady state (400/account)                 │
 │                                                                    │
-│  [ Skip next run ]      (same as the header button)                │
+│  [ Skip next run ]   [ Retry today's run* ]                        │
+│   *only enabled if today's campaign is status='aborted' (orphan    │
+│   recovery — generates new idempotency_key 'manual-<date>-<ts>')   │
 │                                                                    │
 │  Recent runs:                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐  │
@@ -1390,9 +1460,10 @@ Migrations land with the feature that uses them (§4.0). CRM integration work (�
 - `email_send_schedule.warmup_started_on` + warmup-curve enforcement (Day 1 = 250, Day 2+ = 400 if clean)
 - Crash counter wiring: `recentCrashCount()` reads from `email_send_errors`, threshold check after each crash log
 - **Pre-go-live checklist** (live in the Schedule tab UI, not just docs):
+  - [ ] **Vercel project is on Pro tier or higher** (confirms `* * * * *` cron actually fires — Hobby tier silently no-ops; this is a hard blocker per §3)
   - [ ] Each founder has ≥2 active variants
   - [ ] Each founder's plus-aliasing Gmail filter set up (link to setup instructions)
-  - [ ] `vercel.json` cron registered (visible via Vercel dashboard)
+  - [ ] `vercel.json` cron registered AND showing recent invocations in the Vercel dashboard
   - [ ] One `dry_run` campaign run succeeded in the last 7 days
   - [ ] One `allowlist` campaign run succeeded in the last 7 days (real send to founders' `+test`)
   - [ ] All 3 Gmail OAuth tokens valid (`gmail_connected = true`)
@@ -1428,7 +1499,7 @@ The Day-1 → Day-2 ramp gate (§5 step ⑤) only ramps if Day 1 had no auto-pau
 
 3. **Resend "from" address for critical alerts** — confirm an existing or new Resend sender; reuse the `RESEND_API_KEY`.
 
-4. **cron-job.org daily-trigger entry** — created/updated when admin first enables the schedule (URL provided in the schedule UI).
+4. **Confirm Vercel cron is registered post-deploy** — after PR 4 ships, verify in the Vercel dashboard (Project → Cron) that the `* * * * *` entry from `vercel.json` is active and showing recent invocations. (No external scheduler needed — see §3 — but the founder/operator should sanity-check the cron is actually firing before flipping the schedule's `enabled` toggle on.)
 
 ### Auth confirmation — Gmail OAuth tokens already in place
 
