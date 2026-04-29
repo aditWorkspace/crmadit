@@ -28,14 +28,25 @@ interface UploadBody {
   /** Per-category override flags. */
   override_blacklist?: boolean;
   override_dead_leads?: boolean;
-  use_lead_owner?: boolean;
+  /** Synergy s1: by default we BLOCK any row whose email is already an active
+   *  lead (don't double-email someone already in the pipeline). Set true to
+   *  bypass — useful for "I want to follow up on this lead via outreach". */
+  override_active_leads?: boolean;
 }
 
 interface ValidationReport {
   valid_count: number;
   blacklisted_emails: string[];
   dead_lead_emails: string[];
-  active_lead_owners: Record<string, string>; // email → owner_team_member_id
+  /** Synergy s1: rows that are EXACT-EMAIL matches with active leads. Blocked
+   *  by default unless `override_active_leads: true`. Map value is the owning
+   *  founder's id so the operator knows who's already on this prospect. */
+  active_lead_emails: Record<string, string>;
+  /** Synergy s2: rows whose domain matches an active lead's domain (but not
+   *  the same email). These rows get auto-routed to the existing owner so a
+   *  consistent founder owns the relationship at that company. Map value is
+   *  the founder id we'd route to. Always informational — no block. */
+  domain_routed_emails: Record<string, string>;
   malformed: string[];
   // What WOULD be inserted given current flags:
   would_insert: number;
@@ -113,20 +124,36 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
   const emails = normalized.map(r => r.email);
+  const domains = Array.from(new Set(
+    emails.map(e => e.split('@')[1]?.toLowerCase()).filter((d): d is string => !!d)
+  ));
 
-  // Categorize rows
-  const [blacklistedRes, leadRes] = await Promise.all([
+  // Categorize rows. Three queries in parallel:
+  //   1. blacklist matches
+  //   2. exact-email lead matches (synergy s1: block active duplicates)
+  //   3. domain-level lead matches (synergy s2: auto-route to existing owner)
+  // For (3) we ilike each domain pattern; for ≤500 batch sizes this is fine.
+  const domainOrFilter = domains.length > 0
+    ? domains.map(d => `contact_email.ilike.%@${d}`).join(',')
+    : null;
+  const [blacklistedRes, exactLeadRes, domainLeadRes] = await Promise.all([
     supabase
       .from('email_blacklist')
       .select('email')
       .in('email', emails),
-    // Lowercase-normalize on both sides. Postgres has no built-in lower()
-    // function in PostgREST filters, so we use ilike with each candidate.
-    // For 500 rows this is fine; for larger batches we'd want an RPC.
     supabase
       .from('leads')
       .select('contact_email, owned_by, stage')
       .in('contact_email', emails),
+    domainOrFilter
+      ? supabase
+          .from('leads')
+          .select('contact_email, owned_by, stage, updated_at')
+          .or(domainOrFilter)
+          .neq('stage', 'dead')
+          .not('owned_by', 'is', null)
+          .order('updated_at', { ascending: false })
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   const blacklistedSet = new Set(
@@ -135,7 +162,7 @@ export async function POST(req: NextRequest) {
 
   const deadLeadEmails = new Set<string>();
   const activeLeadOwners = new Map<string, string>();
-  for (const l of (leadRes.data ?? []) as Array<{ contact_email: string; owned_by: string | null; stage: string }>) {
+  for (const l of (exactLeadRes.data ?? []) as Array<{ contact_email: string; owned_by: string | null; stage: string }>) {
     const e = l.contact_email.toLowerCase();
     if (l.stage === 'dead') {
       deadLeadEmails.add(e);
@@ -144,13 +171,38 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Compute "would insert" given current flags
+  // Synergy s2 — domain → owner. First owner per domain (most-recently-updated
+  // active lead) wins. Skip exact-email matches (those are already in
+  // activeLeadOwners and don't need domain inference).
+  const domainOwners = new Map<string, string>();
+  for (const l of (domainLeadRes.data ?? []) as Array<{ contact_email: string; owned_by: string | null }>) {
+    if (!l.owned_by) continue;
+    const domain = l.contact_email.split('@')[1]?.toLowerCase();
+    if (domain && !domainOwners.has(domain)) {
+      domainOwners.set(domain, l.owned_by);
+    }
+  }
+
+  // Map each row to its s2-derived auto-route owner (only for rows that AREN'T
+  // exact-email matches — those get the exact-match owner anyway).
+  const domainRoutedEmails: Record<string, string> = {};
+  for (const r of normalized) {
+    if (activeLeadOwners.has(r.email)) continue; // exact match wins, skip
+    const domain = r.email.split('@')[1]?.toLowerCase();
+    const owner = domain ? domainOwners.get(domain) : undefined;
+    if (owner) domainRoutedEmails[r.email] = owner;
+  }
+
+  // Compute "would insert" given current flags. s1 blocks active-lead exact
+  // matches by default; the override flag bypasses.
   let wouldInsertCount = 0;
   for (const r of normalized) {
     const isBlacklisted = blacklistedSet.has(r.email);
     const isDead = deadLeadEmails.has(r.email);
+    const isActiveLead = activeLeadOwners.has(r.email);
     if (isBlacklisted && !body.override_blacklist) continue;
     if (isDead && !body.override_dead_leads) continue;
+    if (isActiveLead && !body.override_active_leads) continue;
     wouldInsertCount++;
   }
 
@@ -158,9 +210,8 @@ export async function POST(req: NextRequest) {
     valid_count: normalized.length,
     blacklisted_emails: Array.from(blacklistedSet),
     dead_lead_emails: Array.from(deadLeadEmails),
-    active_lead_owners: body.use_lead_owner
-      ? Object.fromEntries(activeLeadOwners.entries())
-      : {},
+    active_lead_emails: Object.fromEntries(activeLeadOwners.entries()),
+    domain_routed_emails: domainRoutedEmails,
     malformed,
     would_insert: wouldInsertCount,
   };
@@ -193,8 +244,15 @@ export async function POST(req: NextRequest) {
   for (const r of normalized) {
     const isBlacklisted = blacklistedSet.has(r.email);
     const isDead = deadLeadEmails.has(r.email);
+    const isActiveLead = activeLeadOwners.has(r.email);
     if (isBlacklisted && !body.override_blacklist) continue;
     if (isDead && !body.override_dead_leads) continue;
+    if (isActiveLead && !body.override_active_leads) continue;
+    // s2: route to the owning founder. Exact-email match wins over
+    // domain match (an exact match means we already know who owns this
+    // specific person).
+    const exactOwner = activeLeadOwners.get(r.email);
+    const domainOwner = domainRoutedEmails[r.email];
     inserts.push({
       email: r.email,
       first_name: r.first_name ?? null,
@@ -204,7 +262,7 @@ export async function POST(req: NextRequest) {
       notes: body.notes ?? null,
       // Per-row: only true when THIS row was actually blacklisted (and admin overrode).
       override_blacklist: isBlacklisted,
-      override_owner: body.use_lead_owner ? (activeLeadOwners.get(r.email) ?? null) : null,
+      override_owner: exactOwner ?? domainOwner ?? null,
       status: 'pending',
     });
   }

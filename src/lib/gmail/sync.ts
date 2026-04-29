@@ -1,6 +1,7 @@
 import type { gmail_v1 } from 'googleapis';
 import { getGmailClientForMember } from './client';
 import { isOutreachThread, extractCompanyFromSubject, isBounceEmail } from './matcher';
+import { detectAutoReply } from './auto-reply-detector';
 import { parseCalendarInvite } from './calendar-parser';
 import { isCalendarNoise, hasNonInviteIcsMethod } from './calendar-noise';
 import { createAdminClient } from '@/lib/supabase/admin';
@@ -507,6 +508,42 @@ async function processMessage(
 
   // ── Path 2: Outreach thread (subject pattern match) ───────────────────────
   if (isOutreachThread(headers.subject)) {
+    // Auto-reply gate: an inbound message that LOOKS like an outreach reply
+    // by subject but carries auto-reply / bounce / system-mail headers must
+    // NOT advance any lead state. Drop the message — we already log a queue
+    // audit trail in email_send_queue, and the user's policy is "lead only
+    // on a real reply".
+    if (!isOutbound) {
+      const autoReply = detectAutoReply(message.payload?.headers ?? []);
+      if (autoReply.isAutoReply) {
+        const threadIdForAudit = message.threadId || undefined;
+        // Best-effort audit so we can review what got filtered. This is a
+        // separate concern from email_send_errors (which tracks SEND-side
+        // problems) — log to the activity_log so it surfaces in the daily
+        // digest if useful.
+        if (threadIdForAudit) {
+          const { data: queueRow } = await supabase
+            .from('email_send_queue')
+            .select('id, campaign_id, account_id')
+            .eq('gmail_thread_id', threadIdForAudit)
+            .maybeSingle();
+          if (queueRow) {
+            await supabase.from('email_send_errors').insert({
+              campaign_id: queueRow.campaign_id,
+              account_id: queueRow.account_id,
+              queue_row_id: queueRow.id,
+              error_class: 'auto_reply_filtered',
+              error_message: `auto_reply:${autoReply.reason}`,
+              context: { reason: autoReply.reason, detail: autoReply.detail, from: headers.from },
+            }).then(({ error }) => {
+              if (error) console.error('[sync] failed to log auto_reply_filtered:', error.message);
+            });
+          }
+        }
+        return;
+      }
+    }
+
     // Strict patterns capture company from "<topic> at <Company>". Loose
     // patterns match the topic phrase alone — for those we derive the company
     // from the prospect's email domain (e.g. rahiman@5centscdn.com → "5centscdn").
@@ -572,14 +609,42 @@ async function processMessage(
         }).then(({ error: logErr }) => { if (logErr) console.error('[sync] Failed to log auto-stage change:', logErr.message); });
       }
     } else if (!isOutbound) {
+      // Look up the matching outreach send (if any) BEFORE creating the
+      // lead so we can attribute the lead to the campaign and backfill the
+      // outbound interaction with the actual rendered text we sent.
+      type QueueMatch = {
+        id: string;
+        campaign_id: string;
+        account_id: string;
+        rendered_subject: string | null;
+        rendered_body: string | null;
+        gmail_message_id: string | null;
+        sent_at: string | null;
+        template_variant_id: string | null;
+      };
+      let queueMatch: QueueMatch | null = null;
+      if (threadId) {
+        const { data: q } = await supabase
+          .from('email_send_queue')
+          .select('id, campaign_id, account_id, rendered_subject, rendered_body, gmail_message_id, sent_at, template_variant_id')
+          .eq('gmail_thread_id', threadId)
+          .eq('status', 'sent')
+          .maybeSingle();
+        queueMatch = q as QueueMatch | null;
+      }
+
+      // Owner: prefer the founder who actually sent the outreach (queue.account_id).
+      // Falls back to the syncing member if no queue match (manual / pre-tool reply).
+      const ownerId = queueMatch?.account_id ?? member.id;
+
       const { data: newLead, error: createErr } = await supabase
         .from('leads')
         .insert({
           contact_name: normalizeName(contactName || company),
           contact_email: contactEmail,
           company_name: normalizeName(company, true),
-          owned_by: member.id,
-          sourced_by: member.id,
+          owned_by: ownerId,
+          sourced_by: ownerId,
           stage: 'replied',
           first_reply_at: occurredAt,
           last_contact_at: occurredAt,
@@ -587,6 +652,7 @@ async function processMessage(
           poc_status: 'not_started',
           heat_score: 50,
           is_archived: false,
+          source_campaign_id: queueMatch?.campaign_id ?? null,
         })
         .select('id')
         .single();
@@ -594,6 +660,30 @@ async function processMessage(
       if (!createErr && newLead) {
         leadId = newLead.id;
         result.created_leads++;
+
+        // Backfill outbound interaction from the queue row so the lead's
+        // CRM timeline starts with what we actually sent (not just the
+        // reply). The current message (the reply) is logged below by
+        // upsertInteraction; this insert covers the outbound side.
+        if (queueMatch && queueMatch.rendered_subject && queueMatch.rendered_body) {
+          await supabase.from('interactions').insert({
+            lead_id: newLead.id,
+            team_member_id: queueMatch.account_id,
+            type: 'email_outbound',
+            subject: queueMatch.rendered_subject,
+            body: queueMatch.rendered_body,
+            gmail_message_id: queueMatch.gmail_message_id ?? undefined,
+            gmail_thread_id: threadId,
+            campaign_id: queueMatch.campaign_id,
+            template_variant_id: queueMatch.template_variant_id ?? undefined,
+            occurred_at: queueMatch.sent_at ?? occurredAt,
+          }).then(({ error: backfillErr }) => {
+            // 23505 = unique_violation on gmail_message_id (already inserted by an earlier sync run; rare race)
+            if (backfillErr && (backfillErr as { code?: string }).code !== '23505') {
+              console.error('[sync] backfill outbound interaction failed:', backfillErr.message);
+            }
+          });
+        }
       }
     }
 

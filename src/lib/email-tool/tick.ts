@@ -12,7 +12,6 @@ import {
 } from './safety-checks';
 import { log } from './log';
 import { sendCriticalAlert } from './alert';
-import { createLeadFromOutreach } from '@/lib/leads/auto-create';
 import { getCampaignGmailClient, type CampaignGmailClient } from '@/lib/gmail/client';
 import type { SendMode } from './types';
 import { detectAndAbortOrphans } from './orphan-recovery';
@@ -383,39 +382,19 @@ async function applySendOutcome(
 ): Promise<'sent' | 'skipped' | 'failed' | 'rate_limit_retry' | 'pause_account_return'> {
   switch (outcome.outcome) {
     case 'sent': {
+      // Persist rendered output + thread id directly to the queue row.
+      // Per the lead-on-reply policy: NO lead is created at send time. If
+      // the recipient replies, sync.ts looks this row up by gmail_thread_id
+      // and uses rendered_subject/rendered_body to backfill the outbound
+      // interaction at lead-creation time.
       await supabase.from('email_send_queue').update({
         status: 'sent',
         sent_at: now.toISOString(),
         gmail_message_id: outcome.gmail_message_id,
+        gmail_thread_id: outcome.gmail_thread_id,
+        rendered_subject: outcome.rendered_subject,
+        rendered_body: outcome.rendered_body,
       }).eq('id', row.id);
-
-      // CRM integration — failures here are logged but don't fail the send
-      try {
-        const { leadId } = await createLeadFromOutreach({
-          email: row.recipient_email,
-          fullName: row.recipient_name,
-          company: row.recipient_company,
-          ownedBy: row.account_id,
-          source: 'mass_email',
-        });
-        await supabase.from('interactions').insert({
-          lead_id: leadId,
-          team_member_id: row.account_id,
-          type: 'email_outbound',
-          subject: outcome.rendered_subject,
-          body: outcome.rendered_body,
-          gmail_message_id: outcome.gmail_message_id,
-          gmail_thread_id: outcome.gmail_thread_id,
-          campaign_id: row.campaign_id,
-          template_variant_id: row.template_variant_id,
-          occurred_at: now.toISOString(),
-        });
-      } catch (err) {
-        log('warn', 'tick_crm_integration_failed', {
-          queue_row_id: row.id,
-          err: (err as Error).message,
-        });
-      }
       return 'sent';
     }
     case 'skipped':

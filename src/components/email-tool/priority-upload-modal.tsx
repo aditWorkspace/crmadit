@@ -12,7 +12,13 @@ interface ValidationReport {
   valid_count: number;
   blacklisted_emails: string[];
   dead_lead_emails: string[];
-  active_lead_owners: Record<string, string>;
+  /** Synergy s1: emails that already exist as ACTIVE leads — blocked by
+   *  default. Map value is the founder id who owns that lead. */
+  active_lead_emails: Record<string, string>;
+  /** Synergy s2: emails on a domain where we have an existing active lead.
+   *  Auto-routed to that founder so a single founder owns relationships at
+   *  a given company. Always informational. */
+  domain_routed_emails: Record<string, string>;
   malformed: string[];
   would_insert: number;
 }
@@ -92,9 +98,9 @@ export function PriorityUploadModal({ onClose, onUploaded }: Props) {
   const [pasteText, setPasteText] = useState('');
   const [scheduledDate, setScheduledDate] = useState(weekdayOptions[0]?.date ?? '');
   const [notes, setNotes] = useState('');
-  const [useLeadOwner, setUseLeadOwner] = useState(true);
   const [overrideBlacklist, setOverrideBlacklist] = useState(false);
   const [overrideDeadLeads, setOverrideDeadLeads] = useState(false);
+  const [overrideActiveLeads, setOverrideActiveLeads] = useState(false);
 
   const [step, setStep] = useState<'edit' | 'review'>('edit');
   const [validating, setValidating] = useState(false);
@@ -121,7 +127,7 @@ export function PriorityUploadModal({ onClose, onUploaded }: Props) {
     if (step !== 'review' || parsed.length === 0) return;
     void validate();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
-  }, [overrideBlacklist, overrideDeadLeads, useLeadOwner]);
+  }, [overrideBlacklist, overrideDeadLeads, overrideActiveLeads]);
 
   async function validate() {
     setValidating(true);
@@ -136,7 +142,7 @@ export function PriorityUploadModal({ onClose, onUploaded }: Props) {
         confirmed: false,
         override_blacklist: overrideBlacklist,
         override_dead_leads: overrideDeadLeads,
-        use_lead_owner: useLeadOwner,
+        override_active_leads: overrideActiveLeads,
       }),
     });
     setValidating(false);
@@ -163,7 +169,7 @@ export function PriorityUploadModal({ onClose, onUploaded }: Props) {
         confirmed: true,
         override_blacklist: overrideBlacklist,
         override_dead_leads: overrideDeadLeads,
-        use_lead_owner: useLeadOwner,
+        override_active_leads: overrideActiveLeads,
       }),
     });
     setSubmitting(false);
@@ -231,10 +237,9 @@ export function PriorityUploadModal({ onClose, onUploaded }: Props) {
               </div>
             </label>
 
-            <label className="flex items-center gap-2 mb-4 text-sm">
-              <input type="checkbox" checked={useLeadOwner} onChange={e => setUseLeadOwner(e.target.checked)} />
-              Use lead owner for matched CRM contacts (round-robin for the rest)
-            </label>
+            <div className="text-xs text-gray-500 mb-4 italic">
+              Sends are auto-routed to existing lead owners by exact-email and by domain. Active-lead duplicates are blocked by default — override on the review step if you really want to re-email someone already in the pipeline.
+            </div>
 
             {error && (
               <div className="text-red-600 text-sm mb-3 bg-red-50 border border-red-200 rounded p-2">{error}</div>
@@ -316,16 +321,37 @@ export function PriorityUploadModal({ onClose, onUploaded }: Props) {
                   </label>
                 </div>
               )}
-              {Object.keys(report.active_lead_owners).length > 0 && (
+              {Object.keys(report.active_lead_emails).length > 0 && (
+                <div className="border-t border-gray-200 pt-2">
+                  <div className="flex justify-between text-orange-700 mb-1">
+                    <span>Already active CRM leads (blocked by default):</span>
+                    <span>{Object.keys(report.active_lead_emails).length}</span>
+                  </div>
+                  <details>
+                    <summary className="text-xs text-blue-600 cursor-pointer">Show emails</summary>
+                    <ul className="text-xs mt-1 ml-4 list-disc">
+                      {Object.keys(report.active_lead_emails).slice(0, 20).map(e => (
+                        <li key={e} className="font-mono">{e}</li>
+                      ))}
+                      {Object.keys(report.active_lead_emails).length > 20 && (
+                        <li className="text-gray-500">… and {Object.keys(report.active_lead_emails).length - 20} more</li>
+                      )}
+                    </ul>
+                  </details>
+                  <label className="flex items-center gap-2 text-xs mt-1">
+                    <input type="checkbox" checked={overrideActiveLeads} onChange={e => setOverrideActiveLeads(e.target.checked)} />
+                    Send anyway (override active-lead block)
+                  </label>
+                </div>
+              )}
+              {Object.keys(report.domain_routed_emails).length > 0 && (
                 <div className="border-t border-gray-200 pt-2">
                   <div className="flex justify-between text-blue-700">
-                    <span>Match active CRM leads:</span>
-                    <span>{Object.keys(report.active_lead_owners).length}</span>
+                    <span>Auto-routed by domain to existing owner:</span>
+                    <span>{Object.keys(report.domain_routed_emails).length}</span>
                   </div>
                   <div className="text-xs text-gray-500 mt-1">
-                    {useLeadOwner
-                      ? 'Will be assigned to existing lead owner.'
-                      : '(Lead-owner attribution disabled — round-robin instead.)'}
+                    These emails are on a domain where we already have an active lead. They&apos;ll be sent from that founder&apos;s account.
                   </div>
                 </div>
               )}
