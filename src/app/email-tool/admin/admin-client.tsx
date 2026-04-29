@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { TemplatesTab } from './templates-tab';
+import { ScheduleTab } from './schedule-tab';
 import { PriorityTab } from './priority-tab';
+import { PriorityUploadModal } from '@/components/email-tool/priority-upload-modal';
 
 type TabId = 'overview' | 'templates' | 'schedule' | 'priority';
 
@@ -18,21 +20,42 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'priority', label: 'Priority Queue' },
 ];
 
+interface ScheduleSummary {
+  enabled: boolean;
+  send_mode: 'production' | 'dry_run' | 'allowlist';
+  skip_next_run: boolean;
+}
+
 export default function AdminClient({ memberName }: Props) {
   const params = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
   const initialTab = (params.get('tab') as TabId) ?? 'overview';
   const [tab, setTab] = useState<TabId>(initialTab);
+  const [schedule, setSchedule] = useState<ScheduleSummary | null>(null);
+  const [showUpload, setShowUpload] = useState(false);
+  const [scheduleVersion, setScheduleVersion] = useState(0);
 
   // Keep tab state in sync with URL when user uses back/forward.
-  // `params` (URLSearchParams) identity is stable per route in Next.js,
-  // so spreading the deps would needlessly re-fire on every render.
   useEffect(() => {
     const t = (params.get('tab') as TabId) ?? 'overview';
     if (t !== tab) setTab(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params]);
+
+  const refreshSchedule = useCallback(async () => {
+    const res = await fetch('/api/cron/email-tool/schedule');
+    if (res.ok) {
+      const data = await res.json();
+      setSchedule({
+        enabled: data.schedule?.enabled ?? false,
+        send_mode: data.schedule?.send_mode ?? 'production',
+        skip_next_run: data.schedule?.skip_next_run ?? false,
+      });
+    }
+  }, []);
+
+  useEffect(() => { refreshSchedule(); }, [refreshSchedule, scheduleVersion]);
 
   function navigate(t: TabId) {
     setTab(t);
@@ -40,6 +63,46 @@ export default function AdminClient({ memberName }: Props) {
     sp.set('tab', t);
     router.push(`${pathname}?${sp.toString()}`);
   }
+
+  async function pauseAll() {
+    if (!window.confirm('Pause all founders\' email sends? Active campaigns will stop draining. This requires explicit Resume to restart.')) return;
+    const res = await fetch('/api/cron/email-tool/pause-all', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      window.alert(d.error ?? 'pause failed');
+      return;
+    }
+    window.alert('All founders paused. Click "Resume All" in Overview tab to resume.');
+    setScheduleVersion(v => v + 1);
+  }
+
+  async function skipNextRun() {
+    if (!window.confirm('Skip the next scheduled campaign?')) return;
+    const res = await fetch('/api/cron/email-tool/skip', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ skip: true }),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      window.alert(d.error ?? 'skip failed');
+      return;
+    }
+    setScheduleVersion(v => v + 1);
+  }
+
+  // Status badge
+  const badge = (() => {
+    if (!schedule) return { text: 'loading', color: 'text-gray-500' };
+    if (!schedule.enabled) return { text: 'DISABLED', color: 'text-gray-700' };
+    if (schedule.skip_next_run) return { text: 'SKIP NEXT', color: 'text-orange-700' };
+    if (schedule.send_mode !== 'production') return { text: `${schedule.send_mode.toUpperCase()}`, color: 'text-yellow-700' };
+    return { text: 'ENABLED', color: 'text-green-700' };
+  })();
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -50,37 +113,30 @@ export default function AdminClient({ memberName }: Props) {
               <h1 className="text-2xl font-bold">Cold Outreach Automation</h1>
               <p className="text-sm text-gray-500 mt-1">Signed in as {memberName}</p>
             </div>
-            {/* Static placeholder for PR 2 — actual live status wires up in PR 5
-                by reading email_send_schedule.enabled. Format matches spec §11.6's
-                "schedule: ✅ ENABLED / 🛑 DISABLED" badge. */}
             <div className="text-sm">
               <span className="text-gray-500">schedule: </span>
-              <span className="font-medium text-gray-700">🛑 DISABLED</span>
+              <span className={`font-medium ${badge.color}`}>{badge.text}</span>
             </div>
           </div>
 
-          {/* Header action buttons. Wired up in PR 4 & 5; placeholders for PR 2. */}
           <div className="mt-4 flex gap-2">
             <button
-              disabled
-              className="px-3 py-2 bg-red-100 text-red-400 rounded-md text-sm font-medium cursor-not-allowed"
-              title="Wired in PR 5"
+              onClick={pauseAll}
+              className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-800 rounded-md text-sm font-medium"
             >
-              🛑 Pause All Sending
+              Pause All Sending
             </button>
             <button
-              disabled
-              className="px-3 py-2 bg-gray-100 text-gray-400 rounded-md text-sm font-medium cursor-not-allowed"
-              title="Wired in PR 4"
+              onClick={skipNextRun}
+              className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium"
             >
-              ⏭ Skip Next Run
+              Skip Next Run
             </button>
             <button
-              disabled
-              className="px-3 py-2 bg-blue-100 text-blue-400 rounded-md text-sm font-medium cursor-not-allowed"
-              title="Wired in PR 4"
+              onClick={() => setShowUpload(true)}
+              className="px-3 py-2 bg-blue-100 hover:bg-blue-200 text-blue-800 rounded-md text-sm font-medium"
             >
-              ➕ Upload Priority Batch
+              Upload Priority Batch
             </button>
           </div>
         </header>
@@ -92,9 +148,7 @@ export default function AdminClient({ memberName }: Props) {
                 key={t.id}
                 onClick={() => navigate(t.id)}
                 className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                  tab === t.id
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                  tab === t.id ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
               >
                 {t.label}
@@ -110,14 +164,17 @@ export default function AdminClient({ memberName }: Props) {
               Overview tab is built in PR 5 (health dashboard, per-founder cards, pool runway).
             </div>
           )}
-          {tab === 'schedule' && (
-            <div className="text-sm text-gray-500 italic p-8 text-center bg-white rounded-md border border-gray-200">
-              Schedule tab is built in PR 4 (master toggle, weekday grid, recent runs).
-            </div>
-          )}
+          {tab === 'schedule' && <ScheduleTab />}
           {tab === 'priority' && <PriorityTab />}
         </main>
       </div>
+
+      {showUpload && (
+        <PriorityUploadModal
+          onClose={() => setShowUpload(false)}
+          onUploaded={() => { setShowUpload(false); setScheduleVersion(v => v + 1); }}
+        />
+      )}
     </div>
   );
 }
