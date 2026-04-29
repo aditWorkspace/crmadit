@@ -140,3 +140,68 @@ $$;
 REVOKE ALL ON FUNCTION public.email_send_claim_today(TEXT, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.email_send_claim_today(TEXT, TIMESTAMPTZ) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.email_send_claim_today(TEXT, TIMESTAMPTZ) TO service_role;
+
+-- ── 4) email_send_pool_claim_batch — atomic blacklist + pointer-advance ───
+-- Called by runDailyStart after email_tool_pick_batch returns the rows.
+-- Inserts the picked emails into email_blacklist with source tag so the
+-- domain-dedup rollback can identify and undo only its own inserts.
+-- Advances email_pool_state.next_sequence past the picked rows so the
+-- next campaign won't re-pick them.
+--
+-- Shape:
+--   p_picked_emails : TEXT[]  (lowercased, from email_tool_pick_batch)
+--   p_max_sequence  : INT     (max sequence from the picked rows)
+--   p_campaign_id   : UUID    (for the source tag — 'pool:<campaign_id>')
+-- Returns:
+--   { blacklisted: INT, fresh_remaining: INT, new_next_sequence: INT }
+CREATE OR REPLACE FUNCTION public.email_send_pool_claim_batch(
+  p_picked_emails TEXT[],
+  p_max_sequence  INT,
+  p_campaign_id   UUID
+)
+RETURNS JSONB
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_inserted_count   INT;
+  v_new_next_seq     INT;
+  v_fresh_count      INT;
+  v_source_tag       TEXT;
+BEGIN
+  v_source_tag := 'pool:' || p_campaign_id::text;
+  v_new_next_seq := p_max_sequence + 1;
+
+  -- Atomic blacklist insert with source tag
+  WITH inserted AS (
+    INSERT INTO email_blacklist (email, source)
+    SELECT lower(e), v_source_tag FROM unnest(p_picked_emails) e
+    ON CONFLICT (email) DO NOTHING
+    RETURNING email
+  )
+  SELECT COUNT(*) INTO v_inserted_count FROM inserted;
+
+  -- Recompute fresh-remaining count past the new pointer
+  SELECT COUNT(*) INTO v_fresh_count
+  FROM email_pool p
+  WHERE p.sequence >= v_new_next_seq
+    AND NOT EXISTS (SELECT 1 FROM email_blacklist b WHERE b.email = p.email);
+
+  -- Advance pointer + cache fields
+  UPDATE email_pool_state
+  SET next_sequence       = v_new_next_seq,
+      eff_remaining_seq   = v_new_next_seq,
+      eff_remaining_fresh = v_fresh_count,
+      eff_updated_at      = now()
+  WHERE id = 1;
+
+  RETURN jsonb_build_object(
+    'blacklisted',       v_inserted_count,
+    'fresh_remaining',   v_fresh_count,
+    'new_next_sequence', v_new_next_seq
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.email_send_pool_claim_batch(TEXT[], INT, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.email_send_pool_claim_batch(TEXT[], INT, UUID) FROM anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.email_send_pool_claim_batch(TEXT[], INT, UUID) TO service_role;

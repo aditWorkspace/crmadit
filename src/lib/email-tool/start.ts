@@ -148,12 +148,36 @@ export async function runDailyStart(
       });
     }
 
-    // ── Step ⑤: pool pick for the remainder ───────────────────────────────
+    // ── Step ⑤: pool pick + atomic blacklist claim ────────────────────────
+    // The pick RPC is read-only; the claim RPC blacklists picked emails
+    // (tagged with source='pool:<campaign_id>' so domain-dedup rollback
+    // can undo only its own inserts) and advances email_pool_state's
+    // pointer so subsequent campaigns won't re-pick these rows.
     const regularTarget = dailyTarget - cappedPriorityRows.length;
     let poolRows: PoolRow[] = [];
     if (regularTarget > 0) {
       const { data: pool } = await supabase.rpc('email_tool_pick_batch', { p_limit: regularTarget });
       poolRows = (pool ?? []) as PoolRow[];
+      if (poolRows.length > 0) {
+        const maxSeq = poolRows.reduce((m, r) => Math.max(m, r.sequence), -1);
+        const pickedEmails = poolRows.map(r => r.email.toLowerCase());
+        const { error: claimErr } = await supabase.rpc('email_send_pool_claim_batch', {
+          p_picked_emails: pickedEmails,
+          p_max_sequence:  maxSeq,
+          p_campaign_id:   campaignId,
+        });
+        if (claimErr) {
+          // Pool was selected but never claimed; abort and let admin
+          // investigate. The selected rows remain pickable (no DB state
+          // changed), and the campaign is marked aborted so the next
+          // tick won't try to drain a half-built queue.
+          log('error', 'start_pool_claim_failed', { campaign_id: campaignId, err: claimErr.message });
+          await supabase.from('email_send_campaigns')
+            .update({ status: 'aborted', abort_reason: 'pool_claim_failed', completed_at: now.toISOString() })
+            .eq('id', campaignId);
+          return { kind: 'aborted', campaign_id: campaignId, reason: 'pool_claim_failed' };
+        }
+      }
     }
     if (cappedPriorityRows.length === 0 && poolRows.length === 0) {
       await supabase.from('email_send_campaigns')
@@ -196,9 +220,14 @@ export async function runDailyStart(
       let founderIdx: number;
       if (item.source === 'priority' && item.override_owner) {
         const idx = activeFounders.findIndex(f => f.id === item.override_owner);
-        founderIdx = idx === -1 ? rrIdx++ % activeFounders.length : idx;
+        // Use the override-owner directly. We still advance rrIdx so the
+        // next non-override row doesn't bunch up against this founder
+        // — keeps the rotation fair across the whole input list.
+        founderIdx = idx === -1 ? rrIdx % activeFounders.length : idx;
+        rrIdx++;
       } else {
-        founderIdx = rrIdx++ % activeFounders.length;
+        founderIdx = rrIdx % activeFounders.length;
+        rrIdx++;
       }
       assigned.push({
         founderIdx,
@@ -223,10 +252,17 @@ export async function runDailyStart(
         founderChunk.push(a);
       }
     }
-    // Roll back blacklist insert for deferred POOL rows so they're pickable next campaign
-    const deferredPoolEmails = deferred.filter(d => d.source === 'pool').map(d => d.email);
+    // Roll back blacklist insert for deferred POOL rows so they're pickable
+    // next campaign. Filter by `source = 'pool:<campaign_id>'` so we can
+    // never accidentally delete production unsubscribes (source IS NULL)
+    // or other campaigns' tagged rows. See spec §11.5 ("Production
+    // blacklist rows (source IS NULL) are never touched").
+    const deferredPoolEmails = deferred.filter(d => d.source === 'pool').map(d => d.email.toLowerCase());
     if (deferredPoolEmails.length > 0) {
-      await supabase.from('email_blacklist').delete().in('email', deferredPoolEmails);
+      await supabase.from('email_blacklist')
+        .delete()
+        .in('email', deferredPoolEmails)
+        .eq('source', `pool:${campaignId}`);
     }
     // Re-mark deferred PRIORITY rows as 'pending' with a note
     const deferredPriorityIds = deferred
@@ -295,9 +331,27 @@ export async function runDailyStart(
       }
     }
 
-    // ── Step ⑩: bulk insert into email_send_queue ─────────────────────────
-    if (queueRows.length > 0) {
-      const { error: insertErr } = await supabase.from('email_send_queue').insert(queueRows);
+    // ── Step ⑩: bulk insert (dedupe first to respect UNIQUE(campaign_id, recipient_email))
+    // If a priority row and a pool row end up with the same email under
+    // the same campaign, keep the FIRST occurrence (priority rows are
+    // earlier in `combined` so priority wins). Without this dedupe, the
+    // bulk insert would fail with 23505 on the unique constraint.
+    const seenEmails = new Set<string>();
+    const dedupedQueueRows = queueRows.filter(r => {
+      if (seenEmails.has(r.recipient_email)) return false;
+      seenEmails.add(r.recipient_email);
+      return true;
+    });
+    if (dedupedQueueRows.length < queueRows.length) {
+      log('warn', 'start_queue_dedupe', {
+        campaign_id: campaignId,
+        original: queueRows.length,
+        deduped: dedupedQueueRows.length,
+        dropped: queueRows.length - dedupedQueueRows.length,
+      });
+    }
+    if (dedupedQueueRows.length > 0) {
+      const { error: insertErr } = await supabase.from('email_send_queue').insert(dedupedQueueRows);
       if (insertErr) {
         log('error', 'start_queue_insert_failed', { campaign_id: campaignId, err: insertErr.message });
         await supabase.from('email_send_campaigns')
@@ -308,7 +362,7 @@ export async function runDailyStart(
     }
 
     // ── Step ⑪: priority status update + schedule advance + campaign running ──
-    const usedPriorityIds = queueRows.filter(q => q.source === 'priority' && q.priority_id).map(q => q.priority_id!);
+    const usedPriorityIds = dedupedQueueRows.filter(q => q.source === 'priority' && q.priority_id).map(q => q.priority_id!);
     if (usedPriorityIds.length > 0) {
       await supabase.from('email_send_priority_queue')
         .update({ status: 'scheduled', campaign_id: campaignId })
@@ -319,7 +373,7 @@ export async function runDailyStart(
       .update({
         status: 'running',
         started_at: now.toISOString(),
-        total_picked: queueRows.length,
+        total_picked: dedupedQueueRows.length,
         warmup_day: warmupDay,
       })
       .eq('id', campaignId);
@@ -328,8 +382,8 @@ export async function runDailyStart(
       .update({ last_run_at: now.toISOString() })
       .eq('id', 1);
 
-    log('info', 'start_campaign_running', { campaign_id: campaignId, queue_count: queueRows.length });
-    return { kind: 'started', campaign_id: campaignId, queue_count: queueRows.length };
+    log('info', 'start_campaign_running', { campaign_id: campaignId, queue_count: dedupedQueueRows.length });
+    return { kind: 'started', campaign_id: campaignId, queue_count: dedupedQueueRows.length };
   } catch (err) {
     const e = err as Error;
     log('error', 'start_phase_threw', { campaign_id: campaignId, err: e.message });
