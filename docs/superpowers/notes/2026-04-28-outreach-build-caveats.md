@@ -72,6 +72,21 @@ Status fields on `email_send_campaigns.status`, `.send_mode`, `email_send_queue.
 
 ---
 
+## C6. Templates API error shape diverges from sibling email-tool routes
+
+**Surfaced:** PR 2 Task 2.3 code-quality review (commit `db343a8`).
+
+The new templates routes use `{ error: '...' }` for failures and `{ variant: data }` for success. Existing sibling routes (`csv-filter`, `blacklist-upload`) use `{ ok: true/false, reason: 'short_code', detail?: '...' }`. Two inconsistencies in this:
+
+1. Frontend has to branch on response shape across the email-tool surface.
+2. The 500 path on the new routes echoes `error.message` directly, leaking raw Postgres/Supabase text.
+
+**Why deferred:** non-blocking per code review; admin-only routes so blast radius is small; the frontend in PR 2 Task 2.5 only needs the success/blocker/warning branches which work fine with the current shape.
+
+**Action if appetite:** unify on the `{ ok, reason, detail }` shape and replace generic 500s with short reason codes. Drop `detail` in production responses to avoid leaking schema info.
+
+---
+
 ## C5. No `updated_at` trigger on `email_template_variants`
 
 **Surfaced:** PR 1 Task 1.5 code-quality review.
