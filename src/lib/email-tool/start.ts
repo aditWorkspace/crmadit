@@ -12,6 +12,7 @@
 
 import type { createAdminClient } from '@/lib/supabase/admin';
 import { SAFETY_LIMITS } from './safety-limits';
+import { computeNextRunAt } from './schedule';
 import type { SendMode } from './types';
 import { log } from './log';
 
@@ -76,9 +77,13 @@ export async function runDailyStart(
   const idempotencyKey = formatPtDate(now);
 
   // ── Steps ①+②+③: claim today via RPC ──────────────────────────────────
+  // C11+C12 fix: compute nextRunAt once here; the RPC stores it in the
+  // skip-flag path (C12), and step ⑪ reuses the same value (C11).
+  const nextRunAt = computeNextRunAt(now);
   const { data: claim, error: claimErr } = await supabase.rpc('email_send_claim_today', {
     p_idempotency_key: idempotencyKey,
     p_now: now.toISOString(),
+    p_next_run_at: nextRunAt?.toISOString() ?? null,
   });
   if (claimErr) {
     log('error', 'start_claim_rpc_error', { err: claimErr.message, idempotency_key: idempotencyKey });
@@ -378,8 +383,14 @@ export async function runDailyStart(
       })
       .eq('id', campaignId);
 
+    // C11 fix: also denormalize next_run_at so the admin UI's "next run"
+    // display is fresh. nextRunAt is computed once at the top of this
+    // function and reused here.
     await supabase.from('email_send_schedule')
-      .update({ last_run_at: now.toISOString() })
+      .update({
+        last_run_at: now.toISOString(),
+        next_run_at: nextRunAt?.toISOString() ?? null,
+      })
       .eq('id', 1);
 
     log('info', 'start_campaign_running', { campaign_id: campaignId, queue_count: dedupedQueueRows.length });

@@ -14,6 +14,9 @@ import { log } from './log';
 import { createLeadFromOutreach } from '@/lib/leads/auto-create';
 import { getGmailClientForMember, type CampaignGmailClient } from '@/lib/gmail/client';
 import type { SendMode } from './types';
+import { detectAndAbortOrphans } from './orphan-recovery';
+import { runDailyStart } from './start';
+import { WEEKDAY_START_TIMES_PT } from './schedule';
 
 type Supa = ReturnType<typeof createAdminClient>;
 
@@ -59,6 +62,17 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
   const now = opts.now ?? new Date();
   const startMs = Date.now();
   const stats: RunTickStats = { processed: 0, sent: 0, failed: 0, skipped: 0 };
+
+  // ── Phase -1: orphan recovery ────────────────────────────────────────
+  // Catches campaigns that were claimed but whose queue insert never
+  // landed. Without this, today's campaign silently forfeits because the
+  // self-trigger below would see already_started=true.
+  await detectAndAbortOrphans(supabase, now);
+
+  // ── Phase 0: self-trigger ────────────────────────────────────────────
+  // If now ≥ today's scheduled start AND no campaign exists for today
+  // AND the schedule is enabled, fire runDailyStart inline.
+  await maybeSelfTrigger(supabase, now);
 
   // ── 1) Crash recovery sweep ───────────────────────────────────────────
   // Per spec §6 step ②, APPEND a marker to last_error rather than clobber
@@ -414,6 +428,85 @@ async function applySendOutcome(
         .eq('id', row.id);
       return 'failed';
   }
+}
+
+// ── PT helpers for tick's self-trigger (mirror schedule.ts internals) ───────
+// These are kept private to tick.ts rather than exported from schedule.ts
+// so the public API of schedule.ts stays minimal.
+
+const PT_TZ = 'America/Los_Angeles';
+const PT_DOW_FMT = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ, weekday: 'short' });
+const PT_YMD_FMT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: PT_TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const PT_TZNAME_FMT = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ, timeZoneName: 'short' });
+
+const PT_DOW_MAP: Record<string, number> = {
+  Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+};
+
+function formatPtDate(d: Date): string {
+  return PT_YMD_FMT.format(d);
+}
+
+function ptDayOfWeekFromDate(d: Date): number {
+  return PT_DOW_MAP[PT_DOW_FMT.format(d)] ?? 0;
+}
+
+function ptDatePartsFromDate(d: Date): { year: number; month: number; day: number } {
+  const [y, m, dd] = PT_YMD_FMT.format(d).split('-').map(Number);
+  return { year: y, month: m, day: dd };
+}
+
+function ptSlotInstant(y: number, mo: number, d: number, h: number, mi: number): Date {
+  // Build tentative assuming PST (-08:00) then adjust if PDT.
+  const tentative = new Date(Date.UTC(y, mo - 1, d, h + 8, mi));
+  const parts = PT_TZNAME_FMT.formatToParts(tentative);
+  const tz = parts.find(p => p.type === 'timeZoneName')?.value;
+  const offsetMin = tz === 'PDT' ? -420 : -480;
+  const diff = offsetMin - -480; // 0 for PST, +60 for PDT
+  return new Date(tentative.getTime() - diff * 60_000);
+}
+
+/** Returns today's PT slot instant if today is a weekday, else null. */
+function todaysSlotInstant(d: Date): Date | null {
+  const dow = ptDayOfWeekFromDate(d);
+  const slot = WEEKDAY_START_TIMES_PT[dow];
+  if (!slot) return null;
+  const { year, month, day } = ptDatePartsFromDate(d);
+  return ptSlotInstant(year, month, day, slot.hour, slot.minute);
+}
+
+/**
+ * Phase 0 self-trigger: invokes runDailyStart inline when today's schedule
+ * time has arrived and no campaign yet exists for today's PT date.
+ */
+async function maybeSelfTrigger(supabase: Supa, now: Date): Promise<void> {
+  const { data: scheduleRow } = await supabase
+    .from('email_send_schedule')
+    .select('enabled')
+    .eq('id', 1)
+    .single();
+  const enabled = (scheduleRow as { enabled: boolean } | null)?.enabled ?? false;
+  if (!enabled) return;
+
+  const todayKey = formatPtDate(now);
+  const { data: existing } = await supabase
+    .from('email_send_campaigns')
+    .select('id')
+    .eq('idempotency_key', todayKey)
+    .maybeSingle();
+  if (existing) return; // already claimed (success, skipped, or aborted)
+
+  const todaySlot = todaysSlotInstant(now);
+  if (!todaySlot) return; // Sat/Sun
+  if (now < todaySlot) return; // not yet due
+
+  log('info', 'tick_self_trigger', { idempotency_key: todayKey });
+  await runDailyStart(supabase, { now });
 }
 
 // Returns the start of "today" in PT as an ISO string.
