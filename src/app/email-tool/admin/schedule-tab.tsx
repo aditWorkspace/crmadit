@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { PreGoLiveChecklist } from './pre-go-live-checklist';
 
 interface ScheduleRow {
   id: 1;
@@ -293,14 +294,7 @@ export function ScheduleTab() {
         </button>
       </section>
 
-      {/* Pre-go-live checklist (placeholder for PR 5) */}
-      <section className="border border-yellow-200 bg-yellow-50 rounded-lg p-4">
-        <h2 className="text-lg font-semibold mb-2">Pre-Go-Live Checklist</h2>
-        <p className="text-sm text-yellow-900">
-          Wired in PR 5 — will show the live status of each go-live blocker (Vercel Pro tier,
-          variants per founder, plus-aliasing filters, OAuth tokens, dry-run + allowlist runs).
-        </p>
-      </section>
+      <PreGoLiveChecklist />
     </div>
   );
 }
