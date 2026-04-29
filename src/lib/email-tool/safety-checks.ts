@@ -51,7 +51,7 @@ export async function checkBounceRate(supabase: Supa, accountId: string): Promis
 // ---------------------------------------------------------------------------
 
 export async function checkPerSecondPace(supabase: Supa, accountId: string): Promise<SafetyVerdict> {
-  const result = await supabase
+  const { data: last } = await supabase
     .from('email_send_queue')
     .select('sent_at')
     .eq('account_id', accountId)
@@ -59,8 +59,6 @@ export async function checkPerSecondPace(supabase: Supa, accountId: string): Pro
     .order('sent_at', { ascending: false })
     .limit(1)
     .maybeSingle();
-  // result is { data, error } from real Supabase; the data row has sent_at
-  const last = (result as { data?: { sent_at: string } | null })?.data ?? (result as { sent_at?: string } | null);
   if (!last?.sent_at) return { ok: true };
   const elapsedMs = Date.now() - new Date(last.sent_at as string).getTime();
   const minMs = SAFETY_LIMITS.MIN_INTER_SEND_GAP_SECONDS_HARD_FLOOR * 1000;

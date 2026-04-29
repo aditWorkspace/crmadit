@@ -108,7 +108,7 @@ describe('checkPerSecondPace', () => {
   it('returns ok when last send was >5s ago', async () => {
     const tenSecondsAgo = new Date(Date.now() - 10_000).toISOString();
     const supa = makeSupa({
-      fromResults: { email_send_queue: { sent_at: tenSecondsAgo } },
+      fromResults: { email_send_queue: { data: { sent_at: tenSecondsAgo }, error: null } },
     });
     const v = await checkPerSecondPace(supa, 'tm-1');
     expect(v.ok).toBe(true);
@@ -117,7 +117,7 @@ describe('checkPerSecondPace', () => {
   it('returns defer when last send was <5s ago', async () => {
     const twoSecondsAgo = new Date(Date.now() - 2_000).toISOString();
     const supa = makeSupa({
-      fromResults: { email_send_queue: { sent_at: twoSecondsAgo } },
+      fromResults: { email_send_queue: { data: { sent_at: twoSecondsAgo }, error: null } },
     });
     const v = await checkPerSecondPace(supa, 'tm-1');
     expect(v.ok).toBe(false);
