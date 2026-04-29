@@ -1,6 +1,16 @@
 # Cold Outreach Build — Caveats & Follow-ups
 
-Tracking concerns surfaced during the implementation that we deliberately deferred. Each item links to where it came up so future-us can find context.
+Tracking concerns surfaced during the implementation that were deliberately deferred. **Per Adit's directive (PR 3 wrap-up): all of these must be done in a final mop-up pass before steady-state operation begins. PR 5 is the natural home for most. If PR 5 grows past ~5 days of work, spin up a Phase 6 mop-up PR rather than shipping with anything outstanding.**
+
+Each item links to where it came up so future-us can find context.
+
+---
+
+## Status legend
+
+- 🔴 **OPEN** — must do before go-live
+- 🟢 **DONE** — addressed (with commit reference)
+- 🟡 **WATCH** — intentional deviation, no fix planned, just tracked
 
 ---
 
@@ -87,7 +97,7 @@ The new templates routes use `{ error: '...' }` for failures and `{ variant: dat
 
 ---
 
-## C5. No `updated_at` trigger on `email_template_variants`
+## C5. No `updated_at` trigger on `email_template_variants` — 🔴 OPEN
 
 **Surfaced:** PR 1 Task 1.5 code-quality review.
 
@@ -95,4 +105,168 @@ The table has `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`, but no `BEFORE UP
 
 **Why deferred:** consistent with project style — no other tables in the codebase have this trigger. Application-managed for now.
 
-**Action if appetite:** add a generic `set_updated_at()` trigger function and apply it to `email_template_variants` (and optionally other tables that have `updated_at` columns).
+**Action:** add a generic `set_updated_at()` trigger function and apply it to `email_template_variants` (and optionally `email_send_schedule`, `email_send_campaigns`).
+
+---
+
+## C7. Exponential-backoff schedule for 429 retries — 🔴 OPEN
+
+**Surfaced:** PR 3 Task 3.6 code review (commit `5ffbf14`).
+
+Spec §6 step ⑤d: "429 userRateLimitExceeded → exponential backoff (5s/30s/2m), max 3 retries, then status='failed'". `tick.ts` enforces the 3-retry cap (and transitions to `failed` on attempts > 3) but uses a flat 30s defer per attempt. The intent of exponential backoff is to give the rate-limiter time to clear; flat 30s × 3 sometimes won't be enough.
+
+**Why deferred:** the cap is the load-bearing safety property; the schedule is a tuning knob. Cap shipped, schedule deferred to mop-up.
+
+**Action:** in the rate_limit_retry handler, compute `defer_ms = [5000, 30000, 120000][attempts - 1]` (matching spec's 5s/30s/2m). Add a unit test asserting the schedule.
+
+---
+
+## C8. Campaign completion check — 🔴 OPEN
+
+**Surfaced:** PR 3 Task 3.6 spec review (spec §6 step ⑦).
+
+Spec says: "If 0 pending rows for this campaign → mark 'done', completed_at=now()". Currently `tick.ts` never marks campaigns as `done`. Campaigns will sit in `status='running'` forever even after all rows are terminal.
+
+**Why deferred:** PR 3 was "drain phase only"; completion check was scoped to a later PR.
+
+**Action:** at the end of `runTick`, for each distinct `campaign_id` we touched in this tick, query `SELECT count(*) WHERE campaign_id = X AND status = 'pending'`. If 0, update campaign to `status='done', completed_at=now()`. Could also be a separate sweep at the start of each tick if the per-tick query gets expensive.
+
+---
+
+## C9. Crash-counter wiring (3 crashes / 10 min → global pause) — 🔴 OPEN
+
+**Surfaced:** spec §11.4. Deferred to PR 4.
+
+Spec mandates: "Outer try/catch wrapping `runTick` ... Re-check threshold; pause all if exceeded ... `recentCrashCount() >= 3` triggers global pause". Currently `runTick` has no outer try/catch; uncaught exceptions escape the cron handler with no `email_send_errors` row written, no crash count tracked, no pause triggered.
+
+**Why deferred:** PR 3 didn't ship the cron entry point, only `runTick` itself. The wiring belongs in PR 4's tick endpoint (`/api/cron/email-tool/tick/route.ts`).
+
+**Action in PR 4:** wrap the route handler body in try/catch; on catch, INSERT into `email_send_errors` with `error_class='crash'`, query the count over the last `CRASH_COUNTER_WINDOW_MINUTES` filtered by `crashes_counter_reset_at`, and pause-all + alert if >= 3.
+
+---
+
+## C10. Per-tick timeout detection — 🔴 OPEN
+
+**Surfaced:** spec §11.4. Deferred to PR 4.
+
+Spec: "Timeout check: if we ran past budget, log but don't error". Currently `runTick` returns early via the budget guard, but doesn't write an `email_send_errors` row with `error_class='timeout'` for observability.
+
+**Action in PR 4:** at end of route handler, if `Date.now() - startedAt > (TICK_BUDGET_DURATION_SECONDS - 5) * 1000`, INSERT `email_send_errors` with `error_class='timeout'` and the elapsed ms.
+
+---
+
+## C11. Schedule advance — `next_run_at` denormalization — 🔴 OPEN
+
+**Surfaced:** spec §5 step ⑪. Deferred to PR 4.
+
+Spec: "email_send_schedule.next_run_at = computeNextRunAt(now())". Currently `start.ts` sets `last_run_at` but does NOT set `next_run_at`. The admin UI's "next run" display will be stale.
+
+**Action in PR 4:** once `computeNextRunAt` from the weekday-map ships, wire it into the step ⑪ update in `start.ts`. Also wire it into the skip-flag path in `email_send_claim_today` RPC.
+
+---
+
+## C12. Skip-flag path missing `next_run_at` advance — 🔴 OPEN
+
+**Surfaced:** spec §5 step ②. Deferred to PR 4 alongside C11.
+
+`email_send_claim_today` RPC's skip path sets `last_run_at` but not `next_run_at`. Same fix as C11; track separately because it lives in SQL not TS.
+
+---
+
+## C13. Render template's `Content-Transfer-Encoding: 7bit` is a half-truth — 🟡 WATCH
+
+**Surfaced:** PR 3 Task 3.3 code review.
+
+Email body uses `Content-Transfer-Encoding: 7bit` but bodies could contain non-ASCII (curly quotes from AI personalization, em-dashes, etc.). 7bit technically requires only ASCII; modern Gmail tolerates this but a strict MTA might reject.
+
+**Why WATCH:** in v1 bodies are plain ASCII templates written by founders. AI personalization is deferred. If/when AI personalization ships, switch to `Content-Transfer-Encoding: quoted-printable` and add an encoder.
+
+---
+
+## C14. Activity-log + alert side effects from `runDailyStart` — 🔴 OPEN
+
+**Surfaced:** spec §5 mentions "alert admin", "alert founders", "alerted to admin" at multiple steps. Deferred to PR 5 with the rest of the alert plumbing.
+
+`runDailyStart` currently emits `log()` calls but no Resend alerts when:
+- Priority overflow (rows skipped due to daily_cap_exceeded)
+- Pool exhausted
+- Founder has no active variants
+- All founders paused
+- Queue insert error / start phase exception
+
+**Action in PR 5:** when `src/lib/email-tool/alert.ts` ships with the Resend critical-alert path, wire calls from `runDailyStart` and `runTick`'s pause/exhaust/crash branches.
+
+---
+
+## C15. Bounce-rate query has no covering index — 🟡 WATCH
+
+**Surfaced:** PR 3 Task 3.2 code-quality review.
+
+`email_send_bounce_rate_7d` filters `email_send_queue` by `account_id` + `created_at > now() - 7d`. The closest existing index is `email_send_queue_account_sent_idx ON (account_id, sent_at)` — wrong column. Postgres will do a sequential scan.
+
+**Why WATCH:** at <500 rows/account/day × 7 days = ~3500 rows per account, even seq scan is microseconds. Only matters if the volume scales 10×.
+
+**Action if appetite:** add `CREATE INDEX email_send_queue_account_created_idx ON email_send_queue (account_id, created_at)`. Cheap to add.
+
+---
+
+## C16. Templates UI has no Escape-key dismissal / focus management — 🟡 WATCH
+
+**Surfaced:** PR 2 Task 2.5 code review.
+
+Modal can be backdrop-clicked to close but pressing Escape doesn't dismiss, and the Label input doesn't auto-focus on open.
+
+**Why WATCH:** internal tool used by 3 admins.
+
+**Action if appetite:** `useEffect` that attaches a `keydown` listener for `Escape → onClose()`, plus `autoFocus` on the Label input.
+
+---
+
+## C17. Founders list ordering is API-dependent — 🟡 WATCH
+
+**Surfaced:** PR 2 Task 2.5 code review.
+
+Templates UI renders founder sections in whatever order `/api/team/members` returns. CLAUDE.md defines `TEAM_NAMES = ['Adit', 'Srijay', 'Asim']` as canonical order.
+
+**Why WATCH:** functionally identical regardless of order; UI consistency only.
+
+**Action if appetite:** sort founders array by `TEAM_NAMES.indexOf(f.name)` before rendering.
+
+---
+
+## C18. Tick handler's gmail client cast `as unknown as CampaignGmailClient` — 🔴 OPEN
+
+**Surfaced:** PR 3 Task 3.6 code review (line 192 in tick.ts).
+
+The double-cast bypasses type checking. The real `getGmailClientForMember` returns `googleapis`'s `Gmail` type which DOES structurally satisfy `CampaignGmailClient`, but the explicit cast leaks `unknown` through.
+
+**Action in mop-up:** either (a) update `getGmailClientForMember`'s return type to expose `CampaignGmailClient`, or (b) write a tiny adapter `toCampaignGmailClient(gmail)` that returns a typed object. Drop the double-cast in `tick.ts` and the debug-send route.
+
+---
+
+## C19. Existing tmp_inspect_* SECURITY DEFINER functions not cleaned up
+
+(Same as C2 — duplicate kept for index visibility.)
+
+---
+
+## Summary table — items still 🔴 OPEN
+
+| # | Item | Estimated effort |
+|---|---|---|
+| C1 | claude_exec_sql safety-guard policy decision | needs Adit's call (no code) |
+| C2 | drop tmp_inspect_* helpers | 5 min once C1 resolved |
+| C3 | priority_queue FK ON DELETE behavior | 15 min in mop-up migration |
+| C4 | status enum CHECK constraints | 30 min in mop-up migration |
+| C5 | updated_at trigger function | 30 min in mop-up migration |
+| C6 | unify templates API error shape | 1 hr |
+| C7 | exponential backoff 5s/30s/2m | 30 min + tests |
+| C8 | campaign completion check | 30 min + tests |
+| C9 | crash-counter wiring | 1 hr (PR 4 priority) |
+| C10 | timeout signal | 30 min (PR 4) |
+| C11 | next_run_at denormalization (TS) | 30 min (PR 4) |
+| C12 | next_run_at skip-flag path (SQL) | 30 min (PR 4) |
+| C14 | alert side effects from runDailyStart | 1 hr (PR 5 with alert.ts) |
+| C18 | drop unsafe gmail client cast | 30 min |
+
+**~9 hours of mop-up work**. PR 4 absorbs C9/C10/C11/C12 naturally. The rest go into PR 5 or a Phase-6 cleanup commit before flipping `enabled = true`.
