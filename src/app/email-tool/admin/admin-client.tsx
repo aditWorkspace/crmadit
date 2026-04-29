@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { TemplatesTab } from './templates-tab';
+import { PriorityTab } from './priority-tab';
 
 type TabId = 'overview' | 'templates' | 'schedule' | 'priority';
 
@@ -114,11 +115,7 @@ export default function AdminClient({ memberName }: Props) {
               Schedule tab is built in PR 4 (master toggle, weekday grid, recent runs).
             </div>
           )}
-          {tab === 'priority' && (
-            <div className="text-sm text-gray-500 italic p-8 text-center bg-white rounded-md border border-gray-200">
-              Priority Queue tab is built in PR 4 (CSV upload, batch list, cancellation).
-            </div>
-          )}
+          {tab === 'priority' && <PriorityTab />}
         </main>
       </div>
     </div>
