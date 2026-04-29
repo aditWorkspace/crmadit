@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   checkBounceRate,
   checkPerSecondPace,
@@ -125,5 +125,90 @@ describe('checkPerSecondPace', () => {
       expect(v.outcome).toBe('defer');
       expect(v.defer_seconds).toBe(15);
     }
+  });
+});
+
+describe('checkRecipientDomainOnce', () => {
+  const TODAY = '2026-04-28T00:00:00Z';
+
+  it('returns ok when zero same-domain sends today (count=0)', async () => {
+    const supa = makeSupa({
+      fromResults: { email_send_queue: { count: 0, error: null } },
+    });
+    const v = await checkRecipientDomainOnce(supa, 'tm-1', 'pat@acme.com', TODAY);
+    expect(v.ok).toBe(true);
+  });
+
+  it('returns skip when same-domain already sent once today (count=1, equals cap)', async () => {
+    // MAX_SENDS_PER_DOMAIN_PER_ACCOUNT_PER_DAY = 1, comparison is `>= cap`,
+    // so count=1 means we've already used our one slot for this domain.
+    const supa = makeSupa({
+      fromResults: { email_send_queue: { count: 1, error: null } },
+    });
+    const v = await checkRecipientDomainOnce(supa, 'tm-1', 'pat@acme.com', TODAY);
+    expect(v.ok).toBe(false);
+    if (!v.ok) {
+      expect(v.outcome).toBe('skip');
+      expect(v.reason).toBe('domain_acme.com_already_sent_today');
+    }
+  });
+
+  it('returns skip when same-domain already sent twice today (count=2, over cap)', async () => {
+    const supa = makeSupa({
+      fromResults: { email_send_queue: { count: 2, error: null } },
+    });
+    const v = await checkRecipientDomainOnce(supa, 'tm-1', 'pat@acme.com', TODAY);
+    expect(v.ok).toBe(false);
+  });
+
+  it('lowercases the domain in the reason string', async () => {
+    const supa = makeSupa({
+      fromResults: { email_send_queue: { count: 1, error: null } },
+    });
+    const v = await checkRecipientDomainOnce(supa, 'tm-1', 'pat@ACME.com', TODAY);
+    expect(v.ok).toBe(false);
+    if (!v.ok) {
+      expect(v.reason).toBe('domain_acme.com_already_sent_today');
+    }
+  });
+
+  it('returns ok for a malformed email with no @ sign (no domain extractable)', async () => {
+    // Defensive: don't block sends on malformed input — render error
+    // surfaces the real problem elsewhere.
+    const supa = makeSupa({
+      fromResults: { email_send_queue: { count: 1, error: null } },
+    });
+    const v = await checkRecipientDomainOnce(supa, 'tm-1', 'no-at-sign-here', TODAY);
+    expect(v.ok).toBe(true);
+  });
+});
+
+describe('checkReplySinceQueue', () => {
+  it('returns ok when no inbound interactions match', async () => {
+    const supa = makeSupa({
+      fromResults: { interactions: { data: [], error: null } },
+    });
+    const v = await checkReplySinceQueue(supa, 'pat@acme.com');
+    expect(v.ok).toBe(true);
+  });
+
+  it('returns skip when an inbound interaction exists for this recipient in last 4h', async () => {
+    const supa = makeSupa({
+      fromResults: { interactions: { data: [{ id: 'i-1' }], error: null } },
+    });
+    const v = await checkReplySinceQueue(supa, 'pat@acme.com');
+    expect(v.ok).toBe(false);
+    if (!v.ok) {
+      expect(v.outcome).toBe('skip');
+      expect(v.reason).toBe('replied_during_campaign');
+    }
+  });
+
+  it('returns ok when query returns null data (fail-open)', async () => {
+    const supa = makeSupa({
+      fromResults: { interactions: { data: null, error: null } },
+    });
+    const v = await checkReplySinceQueue(supa, 'pat@acme.com');
+    expect(v.ok).toBe(true);
   });
 });
