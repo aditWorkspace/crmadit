@@ -81,6 +81,21 @@ describe('sendCampaignEmail', () => {
       await sendCampaignEmail(baseInput, mock);
       expect(mock.sends[0].decoded.body).not.toMatch(/unsubscribe|reply STOP|opt[-_ ]?out/i);
     });
+
+    it('emits Reply-To, MIME-Version, X-Priority, Content-Transfer-Encoding in raw MIME', async () => {
+      // The mock's structured decoder only surfaces a subset of headers;
+      // for the rest we decode the raw payload directly so we get
+      // regression protection if any header gets accidentally dropped.
+      await sendCampaignEmail(baseInput, mock);
+      const decoded = Buffer.from(
+        mock.sends[0].raw.replace(/-/g, '+').replace(/_/g, '/'),
+        'base64'
+      ).toString('utf-8');
+      expect(decoded).toMatch(/^Reply-To: aditmittal@berkeley\.edu$/m);
+      expect(decoded).toMatch(/^MIME-Version: 1\.0$/m);
+      expect(decoded).toMatch(/^X-Priority: 3$/m);
+      expect(decoded).toMatch(/^Content-Transfer-Encoding: 7bit$/m);
+    });
   });
 
   describe('founder name extraction', () => {
@@ -174,6 +189,27 @@ describe('sendCampaignEmail', () => {
       mock.nextResponse = { error: 400, reason: 'invalidArgument' };
       const r = await sendCampaignEmail(baseInput, mock);
       expect(r.outcome).toBe('soft_bounce');
+    });
+
+    it('403 with reason OTHER than dailyLimit/quotaExceeded → soft_bounce, NOT account_pause', async () => {
+      // Regression guard: only the two specific reasons trigger pause-the-account.
+      // A generic 403 (e.g. permission issue) should be a soft_bounce so the
+      // single message fails but the account keeps running.
+      mock.nextResponse = { error: 403, reason: 'forbidden' };
+      const r = await sendCampaignEmail(baseInput, mock);
+      expect(r.outcome).toBe('soft_bounce');
+    });
+
+    it('error with no .code falls through to failed (with traceability)', async () => {
+      // Belt-and-suspenders: if Gmail throws something that doesn't fit any
+      // bucket, we don't silently misclassify it.
+      mock.nextResponse = { error: 0, reason: '' };
+      const r = await sendCampaignEmail(baseInput, mock);
+      expect(r.outcome).toBe('failed');
+      if (r.outcome === 'failed') {
+        // last_error should include the queue row id for log traceability
+        expect(r.last_error).toContain('q-1');
+      }
     });
   });
 
