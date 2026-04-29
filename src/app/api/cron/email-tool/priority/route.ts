@@ -1,5 +1,12 @@
 // Admin endpoint: priority CSV upload + listing.
-// See spec §10.
+// Two-step flow per spec §10.2:
+//   1. POST without `confirmed: true` → returns a validation report
+//      (valid rows, blacklisted, dead-lead matches, active-lead matches)
+//      so the admin sees what will happen before any DB writes.
+//   2. POST with `confirmed: true` → actually inserts the rows that
+//      survived the admin's per-category override flags.
+//
+// See spec §10 for the full data model.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/session';
@@ -16,9 +23,26 @@ interface UploadBody {
   rows: UploadRow[];
   scheduled_for_date: string;
   notes?: string;
+  /** When true, perform the actual insert. When false/missing, return validation report only. */
+  confirmed?: boolean;
+  /** Per-category override flags. */
   override_blacklist?: boolean;
+  override_dead_leads?: boolean;
   use_lead_owner?: boolean;
 }
+
+interface ValidationReport {
+  valid_count: number;
+  blacklisted_emails: string[];
+  dead_lead_emails: string[];
+  active_lead_owners: Record<string, string>; // email → owner_team_member_id
+  malformed: string[];
+  // What WOULD be inserted given current flags:
+  would_insert: number;
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PT_TZ = 'America/Los_Angeles';
 
 export async function GET(req: NextRequest) {
   const session = await getSessionFromRequest(req);
@@ -42,6 +66,7 @@ export async function POST(req: NextRequest) {
   if (!session?.is_admin) {
     return NextResponse.json({ error: 'admin only' }, { status: 403 });
   }
+
   const body = (await req.json().catch(() => null)) as UploadBody | null;
   if (!body) {
     return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
@@ -60,8 +85,17 @@ export async function POST(req: NextRequest) {
     }, { status: 400 });
   }
 
+  // Reject weekend dates server-side (defense in depth — UI also restricts).
+  // Parse the date as-PT and check day-of-week.
+  const dateInPT = new Date(`${body.scheduled_for_date}T12:00:00-08:00`);
+  const dowName = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ, weekday: 'short' }).format(dateInPT);
+  if (dowName === 'Sat' || dowName === 'Sun') {
+    return NextResponse.json({
+      error: `scheduled_for_date ${body.scheduled_for_date} is a weekend (${dowName}) — campaigns only run Mon–Fri`,
+    }, { status: 400 });
+  }
+
   // Normalize + validate each row's email
-  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const normalized: UploadRow[] = [];
   const malformed: string[] = [];
   for (const r of body.rows) {
@@ -76,38 +110,74 @@ export async function POST(req: NextRequest) {
       company: r.company?.trim() || undefined,
     });
   }
-  if (malformed.length > 0) {
-    return NextResponse.json({
-      error: `${malformed.length} malformed email(s)`,
-      malformed,
-    }, { status: 400 });
-  }
 
   const supabase = createAdminClient();
   const emails = normalized.map(r => r.email);
 
-  // Blacklist check
-  const { data: blacklisted } = await supabase
-    .from('email_blacklist')
-    .select('email')
-    .in('email', emails);
-  const blacklistedSet = new Set(((blacklisted ?? []) as Array<{ email: string }>).map(b => b.email));
-
-  // Lead-owner attribution (optional)
-  let leadOwners = new Map<string, string>();
-  if (body.use_lead_owner) {
-    const { data: leadRows } = await supabase
+  // Categorize rows
+  const [blacklistedRes, leadRes] = await Promise.all([
+    supabase
+      .from('email_blacklist')
+      .select('email')
+      .in('email', emails),
+    // Lowercase-normalize on both sides. Postgres has no built-in lower()
+    // function in PostgREST filters, so we use ilike with each candidate.
+    // For 500 rows this is fine; for larger batches we'd want an RPC.
+    supabase
       .from('leads')
-      .select('contact_email, owned_by')
-      .in('contact_email', emails);
-    leadOwners = new Map(
-      ((leadRows ?? []) as Array<{ contact_email: string; owned_by: string }>)
-        .filter(l => l.owned_by)
-        .map(l => [l.contact_email.toLowerCase(), l.owned_by]),
-    );
+      .select('contact_email, owned_by, stage')
+      .in('contact_email', emails),
+  ]);
+
+  const blacklistedSet = new Set(
+    ((blacklistedRes.data ?? []) as Array<{ email: string }>).map(b => b.email.toLowerCase())
+  );
+
+  const deadLeadEmails = new Set<string>();
+  const activeLeadOwners = new Map<string, string>();
+  for (const l of (leadRes.data ?? []) as Array<{ contact_email: string; owned_by: string | null; stage: string }>) {
+    const e = l.contact_email.toLowerCase();
+    if (l.stage === 'dead') {
+      deadLeadEmails.add(e);
+    } else if (l.owned_by) {
+      activeLeadOwners.set(e, l.owned_by);
+    }
   }
 
-  // Filter rows + build inserts
+  // Compute "would insert" given current flags
+  let wouldInsertCount = 0;
+  for (const r of normalized) {
+    const isBlacklisted = blacklistedSet.has(r.email);
+    const isDead = deadLeadEmails.has(r.email);
+    if (isBlacklisted && !body.override_blacklist) continue;
+    if (isDead && !body.override_dead_leads) continue;
+    wouldInsertCount++;
+  }
+
+  const report: ValidationReport = {
+    valid_count: normalized.length,
+    blacklisted_emails: Array.from(blacklistedSet),
+    dead_lead_emails: Array.from(deadLeadEmails),
+    active_lead_owners: body.use_lead_owner
+      ? Object.fromEntries(activeLeadOwners.entries())
+      : {},
+    malformed,
+    would_insert: wouldInsertCount,
+  };
+
+  // Step 1: validate-only → return report without inserting
+  if (!body.confirmed) {
+    return NextResponse.json({ validation: report });
+  }
+
+  // Step 2: confirmed → insert the rows that survive overrides
+  if (malformed.length > 0) {
+    return NextResponse.json({
+      error: `cannot insert with ${malformed.length} malformed email(s); fix and re-validate`,
+      validation: report,
+    }, { status: 400 });
+  }
+
   const inserts: Array<{
     email: string;
     first_name: string | null;
@@ -119,13 +189,12 @@ export async function POST(req: NextRequest) {
     override_owner: string | null;
     status: 'pending';
   }> = [];
-  let skippedBlacklisted = 0;
+
   for (const r of normalized) {
     const isBlacklisted = blacklistedSet.has(r.email);
-    if (isBlacklisted && !body.override_blacklist) {
-      skippedBlacklisted++;
-      continue;
-    }
+    const isDead = deadLeadEmails.has(r.email);
+    if (isBlacklisted && !body.override_blacklist) continue;
+    if (isDead && !body.override_dead_leads) continue;
     inserts.push({
       email: r.email,
       first_name: r.first_name ?? null,
@@ -133,8 +202,9 @@ export async function POST(req: NextRequest) {
       uploaded_by: session.id,
       scheduled_for_date: body.scheduled_for_date,
       notes: body.notes ?? null,
-      override_blacklist: isBlacklisted ? true : (body.override_blacklist ?? false),
-      override_owner: leadOwners.get(r.email) ?? null,
+      // Per-row: only true when THIS row was actually blacklisted (and admin overrode).
+      override_blacklist: isBlacklisted,
+      override_owner: body.use_lead_owner ? (activeLeadOwners.get(r.email) ?? null) : null,
       status: 'pending',
     });
   }
@@ -142,8 +212,8 @@ export async function POST(req: NextRequest) {
   if (inserts.length === 0) {
     return NextResponse.json({
       inserted: 0,
-      skipped_blacklisted: skippedBlacklisted,
-      note: 'all rows were blacklisted; pass override_blacklist=true to include them',
+      validation: report,
+      note: 'all rows excluded by validation; pass override flags to include',
     });
   }
 
@@ -152,8 +222,6 @@ export async function POST(req: NextRequest) {
     .insert(inserts)
     .select('id');
   if (error) {
-    // Most likely cause: partial unique index collision — same email
-    // already pending or scheduled for same date.
     if ((error as { code?: string }).code === '23505') {
       return NextResponse.json({
         error: 'one or more rows already exist as pending/scheduled for that date',
@@ -165,6 +233,6 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     inserted: insertedRows?.length ?? 0,
-    skipped_blacklisted: skippedBlacklisted,
+    validation: report,
   });
 }
