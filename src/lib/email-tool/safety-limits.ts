@@ -50,6 +50,11 @@ export const SAFETY_LIMITS = {
   CRASH_COUNTER_THRESHOLD: 3,
   CRASH_COUNTER_WINDOW_MINUTES: 10,
 
+  // Exponential backoff schedule for 429 (rate_limit_retry).
+  // attempts=1 → 5s, attempts=2 → 30s, attempts=3 → 2m, then 'failed'.
+  // See spec §6 ⑤d ("5s/30s/2m, max 3 retries"). Caveat C7.
+  RATE_LIMIT_RETRY_DELAYS_MS: [5_000, 30_000, 120_000] as const,
+
   // Priority CSV upload limit per single batch.
   PRIORITY_BATCH_MAX_ROWS_PER_UPLOAD: 500,
 

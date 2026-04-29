@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/session';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { sendCampaignEmail } from '@/lib/email-tool/send';
-import { getGmailClientForMember, type CampaignGmailClient } from '@/lib/gmail/client';
+import { getCampaignGmailClient, type CampaignGmailClient } from '@/lib/gmail/client';
 
 export const maxDuration = 60;
 
@@ -72,8 +72,7 @@ export async function POST(req: NextRequest) {
   // Get gmail client for this founder
   let gmail: CampaignGmailClient;
   try {
-    const client = await getGmailClientForMember(founder.id);
-    gmail = client.gmail as unknown as CampaignGmailClient;
+    gmail = await getCampaignGmailClient(founder.id);
   } catch (err) {
     const e = err as Error;
     return NextResponse.json(

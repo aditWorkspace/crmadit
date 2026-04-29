@@ -82,3 +82,23 @@ describe('SAFETY_LIMITS — relational invariants', () => {
     expect(SAFETY_LIMITS.CRASH_RECOVERY_STALE_MINUTES).toBeGreaterThan(0);
   });
 });
+
+describe('SAFETY_LIMITS.RATE_LIMIT_RETRY_DELAYS_MS', () => {
+  it('matches spec §6 ⑤d schedule (5s, 30s, 2m)', () => {
+    expect(SAFETY_LIMITS.RATE_LIMIT_RETRY_DELAYS_MS).toEqual([5_000, 30_000, 120_000]);
+  });
+
+  it('schedule length equals the max-retries cap', () => {
+    // Functional invariant: the tick handler transitions to 'failed' when
+    // nextAttempt > delays.length. If the cap diverges from schedule
+    // length, retries will either exceed bounds or run short.
+    expect(SAFETY_LIMITS.RATE_LIMIT_RETRY_DELAYS_MS.length).toBe(3);
+  });
+
+  it('delays are strictly increasing (no flat-out)', () => {
+    const d = SAFETY_LIMITS.RATE_LIMIT_RETRY_DELAYS_MS;
+    for (let i = 1; i < d.length; i++) {
+      expect(d[i]).toBeGreaterThan(d[i - 1]);
+    }
+  });
+});

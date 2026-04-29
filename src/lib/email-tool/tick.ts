@@ -12,7 +12,7 @@ import {
 } from './safety-checks';
 import { log } from './log';
 import { createLeadFromOutreach } from '@/lib/leads/auto-create';
-import { getGmailClientForMember, type CampaignGmailClient } from '@/lib/gmail/client';
+import { getCampaignGmailClient, type CampaignGmailClient } from '@/lib/gmail/client';
 import type { SendMode } from './types';
 import { detectAndAbortOrphans } from './orphan-recovery';
 import { runDailyStart } from './start';
@@ -215,12 +215,9 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
     // Get gmail client for this founder
     let gmail: CampaignGmailClient;
     try {
-      if (opts.gmailClientForMember) {
-        gmail = await opts.gmailClientForMember(row.account_id);
-      } else {
-        const client = await getGmailClientForMember(row.account_id);
-        gmail = client.gmail as unknown as CampaignGmailClient;
-      }
+      gmail = opts.gmailClientForMember
+        ? await opts.gmailClientForMember(row.account_id)
+        : await getCampaignGmailClient(row.account_id);
     } catch (err) {
       const e = err as Error;
       log('error', 'tick_gmail_client_error', { account_id: row.account_id, err: e.message });
@@ -275,6 +272,51 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
       return stats;
     }
     // 'rate_limit_retry' → counted neither sent/failed/skipped (row went back to pending)
+  }
+
+  // ── Campaign completion sweep (C8 closure) ────────────────────────────
+  // For each distinct campaign whose rows we just terminated, check if
+  // any pending rows remain. If zero, mark the campaign 'done'. Without
+  // this, campaigns sit in 'running' forever and analytics treat them
+  // as in-flight even after every queue row has reached a terminal state.
+  const touchedCampaignIds = new Set(dueRows.map(r => r.campaign_id));
+  for (const campaignId of touchedCampaignIds) {
+    const { count: pendingCount } = await supabase
+      .from('email_send_queue')
+      .select('id', { count: 'exact', head: true })
+      .eq('campaign_id', campaignId)
+      .eq('status', 'pending');
+    if ((pendingCount ?? 0) === 0) {
+      // Also check sending — if anything is mid-send we're not done yet
+      const { count: sendingCount } = await supabase
+        .from('email_send_queue')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId)
+        .eq('status', 'sending');
+      if ((sendingCount ?? 0) === 0) {
+        // Aggregate final counts for the campaign
+        const { data: agg } = await supabase
+          .from('email_send_queue')
+          .select('status', { count: 'exact' })
+          .eq('campaign_id', campaignId);
+        const totals = { sent: 0, failed: 0, skipped: 0 };
+        for (const r of (agg ?? []) as Array<{ status: string }>) {
+          if (r.status === 'sent') totals.sent++;
+          else if (r.status === 'failed') totals.failed++;
+          else if (r.status === 'skipped') totals.skipped++;
+        }
+        // Only flip campaigns that are still 'running' (don't override
+        // 'aborted' / 'paused' / 'exhausted' set elsewhere)
+        await supabase.from('email_send_campaigns').update({
+          status: 'done',
+          completed_at: now.toISOString(),
+          total_sent: totals.sent,
+          total_failed: totals.failed,
+          total_skipped: totals.skipped,
+        }).eq('id', campaignId).eq('status', 'running');
+        log('info', 'tick_campaign_completed', { campaign_id: campaignId, totals });
+      }
+    }
   }
 
   return stats;
@@ -372,10 +414,10 @@ async function applySendOutcome(
       return 'skipped';
     case 'rate_limit_retry': {
       const nextAttempt = row.attempts + 1;
-      // Spec §6 ⑤d: max 3 retries on 429, then status='failed'. The
-      // exponential-backoff schedule (5s/30s/2m) is deferred to PR 4 —
-      // for v1 we use a single 30s defer per attempt.
-      if (nextAttempt > 3) {
+      // Spec §6 ⑤d: max 3 retries on 429 with exponential backoff
+      // (5s / 30s / 2m), then status='failed'. C7 closure.
+      const delays = SAFETY_LIMITS.RATE_LIMIT_RETRY_DELAYS_MS;
+      if (nextAttempt > delays.length) {
         await supabase.from('email_send_queue').update({
           status: 'failed',
           last_error: 'rate_limit_retry_exhausted',
@@ -383,13 +425,14 @@ async function applySendOutcome(
         }).eq('id', row.id);
         return 'failed';
       }
-      const newSendAt = new Date(now.getTime() + 30_000).toISOString();
+      const deferMs = delays[nextAttempt - 1];
+      const newSendAt = new Date(now.getTime() + deferMs).toISOString();
       await supabase.from('email_send_queue').update({
         status: 'pending',
         send_at: newSendAt,
         sending_started_at: null,
         attempts: nextAttempt,
-        last_error: 'rate_limit_retry',
+        last_error: `rate_limit_retry_${deferMs}ms`,
       }).eq('id', row.id);
       return 'rate_limit_retry';
     }

@@ -96,3 +96,22 @@ export async function getGmailClientForMember(teamMemberId: string): Promise<Gma
   const gmail = google.gmail({ version: 'v1', auth });
   return { gmail, accessToken };
 }
+
+/**
+ * Returns a narrowed CampaignGmailClient view of the per-member Gmail
+ * client. The real client structurally satisfies the interface; this
+ * adapter just makes the assignment explicit so consumers don't need
+ * `as unknown as CampaignGmailClient`. Used by the cold-outreach send
+ * pipeline (PR 3).
+ */
+export async function getCampaignGmailClient(
+  teamMemberId: string,
+): Promise<CampaignGmailClient> {
+  const { gmail } = await getGmailClientForMember(teamMemberId);
+  // The real google.gmail() client has all the methods CampaignGmailClient
+  // declares (users.messages.send with the same param/return shape) — TS
+  // just can't prove that structurally without help from the consumer.
+  // The cast here is the ONE place we acknowledge the structural match;
+  // every other caller now imports this typed wrapper.
+  return gmail as unknown as CampaignGmailClient;
+}
