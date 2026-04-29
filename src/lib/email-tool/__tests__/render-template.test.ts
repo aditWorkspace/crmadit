@@ -63,18 +63,14 @@ describe('renderTemplate', () => {
     expect(r.body).not.toMatch(/unsubscribe|reply STOP|opt[-_ ]?out/i);
   });
 
-  it('html-escapes merge values to prevent injection', () => {
-    const r = renderTemplate({
-      ...baseInput,
-      first_name: 'Pat<script>',
-    });
-    expect(r.body).not.toContain('<script>');
-    expect(r.body).toContain('Pat&lt;script&gt;');
+  it('passes special characters through verbatim (no HTML escaping)', () => {
+    const r = renderTemplate({ ...baseInput, company: 'P&G' });
+    expect(r.subject).toBe('product prioritization at P&G');
   });
 
-  it('html-escapes ampersands and quotes too', () => {
-    const r = renderTemplate({ ...baseInput, company: 'A & B "Co"' });
-    expect(r.subject).toContain('A &amp; B &quot;Co&quot;');
+  it('does not escape angle brackets in merge values', () => {
+    const r = renderTemplate({ ...baseInput, first_name: 'Pat <test>' });
+    expect(r.body).toContain('Hi Pat <test>,');
   });
 
   it('multiple spintax in one template each resolve independently', () => {

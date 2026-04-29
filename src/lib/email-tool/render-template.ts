@@ -32,15 +32,6 @@ const TAG_FIRST_NAME_RE = /\{\{\s*first_name\s*\}\}/g;
 const TAG_COMPANY_RE = /\{\{\s*company\s*\}\}/g;
 const TAG_FOUNDER_NAME_RE = /\{\{\s*founder_name\s*\}\}/g;
 
-function htmlEscape(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 function resolveSpintax(input: string): string {
   return input.replace(SPINTAX_RE, (_, optionsStr: string) => {
     const choices = optionsStr.split('|').map((s: string) => s.trim()).filter(Boolean);
@@ -62,9 +53,9 @@ function substituteMergeTags(input: string, ctx: {
 
 export function renderTemplate(input: RenderTemplateInput): RenderTemplateResult {
   const ctx = {
-    first_name: htmlEscape(input.first_name?.trim() || 'there'),
-    company:    htmlEscape(input.company?.trim()    || 'your company'),
-    founder_name: htmlEscape(input.founder_name),
+    first_name:   input.first_name?.trim()    || 'there',
+    company:      input.company?.trim()       || 'your company',
+    founder_name: input.founder_name,
   };
 
   const subject = substituteMergeTags(resolveSpintax(input.subject_template), ctx);

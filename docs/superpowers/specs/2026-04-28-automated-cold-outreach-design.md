@@ -636,7 +636,10 @@ The single entry point for the entire pipeline. Triggered every minute by Vercel
        • Look up email_template_variants by ID
        • Substitute {{first_name}}, {{company}}, {{founder_name}}
        • Apply spintax (greeting/sign-off only): {{ RANDOM | a | b | c }}
-       • HTML-escape merge values (defense in depth, plain text anyway)
+       • DO NOT HTML-escape merge values — output is text/plain MIME, so
+         escape codes (&amp;, &lt;) would surface literally in recipient
+         inboxes. Companies with "&" in the name (e.g. "P&G", "Smith & Co")
+         would receive emails with the literal entity.
    
    ⑤c Build and send via Gmail API:
        From:           "{{founder_full_name}}" <{{founder_email}}>
