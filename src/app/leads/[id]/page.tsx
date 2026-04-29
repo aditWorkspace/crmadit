@@ -19,7 +19,7 @@ import { NextStepCard } from '@/components/leads/next-step-card';
 import { MeetingPrep } from '@/components/leads/meeting-prep';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { ArrowLeft, Flame, Upload, Mail, CalendarPlus, Sparkles, X, ExternalLink } from '@/lib/icons';
+import { ArrowLeft, Flame, Upload, Mail, CalendarPlus, Sparkles, X, ExternalLink, FileText } from '@/lib/icons';
 import { buildGmailThreadUrl } from '@/lib/gmail/url';
 import Link from 'next/link';
 import {
@@ -41,6 +41,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [composeThread, setComposeThread] = useState<{ threadId: string; subject: string } | null>(null);
   const [showBookMeeting, setShowBookMeeting] = useState(false);
+  const [showFullTranscript, setShowFullTranscript] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [addingNote, setAddingNote] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -487,6 +488,15 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                 {transcript.ai_summary && (
                   <p className="text-sm text-gray-600">{transcript.ai_summary}</p>
                 )}
+                {transcript.raw_text && (
+                  <button
+                    onClick={() => setShowFullTranscript(true)}
+                    className="flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-700"
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                    Open full transcript
+                  </button>
+                )}
                 {transcript.processing_status === 'completed' && (
                   <AiInsights transcript={transcript} />
                 )}
@@ -523,6 +533,51 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
             .then(data => { if (data.transcripts?.[0]) setTranscript(data.transcripts[0] as Transcript); });
         }}
       />
+
+      {showFullTranscript && transcript && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+          onClick={() => setShowFullTranscript(false)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">Full transcript</h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {lead?.contact_name} · {lead?.company_name} · uploaded {new Date(transcript.created_at).toLocaleString()}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    if (transcript.raw_text) {
+                      navigator.clipboard.writeText(transcript.raw_text);
+                      toast.success('Transcript copied');
+                    }
+                  }}
+                  className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-100"
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={() => setShowFullTranscript(false)}
+                  className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <pre className="text-xs text-gray-800 whitespace-pre-wrap font-mono leading-relaxed">
+                {transcript.raw_text ?? '(no raw text saved for this transcript)'}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showBookMeeting && user && lead && (
         <BookMeetingModal

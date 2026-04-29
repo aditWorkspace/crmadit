@@ -150,16 +150,32 @@ async function processOneNote(
     return { note_id: note.id, note_title: note.title, note_created_at: note.created_at, decision: 'dup', reason: 'granola_note_id already present' };
   }
 
-  // Step 2: title + time match.
-  const match = await matchNoteToLead(note.title, note.created_at);
+  // Step 2: pull full note (calendar_event + attendees + transcript). We
+  // fetch up front rather than after a title-pre-match so the matcher has
+  // access to the rich signals (attendee emails, scheduled meeting time)
+  // that are far more reliable than parsing the title.
+  const full = await getNoteWithTranscript(note.id, key.apiKey);
+  if (!full?.transcript?.length) {
+    return { note_id: note.id, note_title: note.title, note_created_at: note.created_at, decision: 'no_match', reason: 'note has no transcript yet (Granola may still be processing)' };
+  }
+  const rawText = transcriptItemsToText(full.transcript);
+  if (!rawText.trim()) {
+    return { note_id: note.id, note_title: note.title, note_created_at: note.created_at, decision: 'no_match', reason: 'transcript empty after flatten' };
+  }
+
+  // Step 3: rich match using attendees + calendar event + title.
+  const match = await matchNoteToLead(note.title, note.created_at, {
+    calendarEvent: full.calendar_event ?? null,
+    attendees: full.attendees ?? [],
+  });
   if (!match) {
-    return { note_id: note.id, note_title: note.title, note_created_at: note.created_at, decision: 'no_match', reason: 'no lead matched title' };
+    return { note_id: note.id, note_title: note.title, note_created_at: note.created_at, decision: 'no_match', reason: 'no lead matched (title + email + scheduled-time signals)' };
   }
   if (match.confidence === 'weak' && !acceptWeakMatches) {
     return { note_id: note.id, note_title: note.title, note_created_at: note.created_at, decision: 'no_match', confidence: 'weak', lead: `${match.contact_name} @ ${match.company_name}`, reason: match.reason };
   }
 
-  // Step 3: cross-key dedup. If we already imported a transcript for this
+  // Step 4: cross-key dedup. If we already imported a transcript for this
   // lead within ±48h, the other founder's note already covered this call.
   const noteTime = new Date(note.created_at);
   const lo = new Date(noteTime.getTime() - 48 * 3600 * 1000).toISOString();
@@ -173,16 +189,6 @@ async function processOneNote(
     .limit(1);
   if (nearby?.length) {
     return { note_id: note.id, note_title: note.title, note_created_at: note.created_at, decision: 'dup', confidence: match.confidence, lead: `${match.contact_name} @ ${match.company_name}`, reason: 'lead has a transcript within ±48h already' };
-  }
-
-  // Step 4: pull full note + transcript.
-  const full = await getNoteWithTranscript(note.id, key.apiKey);
-  if (!full?.transcript?.length) {
-    return { note_id: note.id, note_title: note.title, note_created_at: note.created_at, decision: 'no_match', reason: 'note has no transcript yet (Granola may still be processing)' };
-  }
-  const rawText = transcriptItemsToText(full.transcript);
-  if (!rawText.trim()) {
-    return { note_id: note.id, note_title: note.title, note_created_at: note.created_at, decision: 'no_match', reason: 'transcript empty after flatten' };
   }
 
   // Step 5: insert transcript row + kick off AI processing in background.

@@ -19,9 +19,32 @@ export interface GranolaTranscriptItem {
   diarization_label?: string;
 }
 
+export interface GranolaCalendarEvent {
+  event_title?: string | null;
+  invitees?: Array<{ email: string }>;
+  organiser?: string | null;
+  calendar_event_id?: string | null;
+  scheduled_start_time?: string | null;   // ISO 8601 — the booked meeting start, NOT when the call actually started
+  scheduled_end_time?: string | null;
+}
+
+export interface GranolaAttendee {
+  email: string;
+  name?: string | null;
+}
+
 export interface GranolaNoteFull extends GranolaNoteSummary {
   summary?: string | null;
+  summary_text?: string | null;
+  summary_markdown?: string | null;
   transcript?: GranolaTranscriptItem[];
+  // Present when the note is linked to a calendar event. Used by the matcher
+  // to anchor on scheduled_start_time and the invitee list — both far more
+  // reliable than parsing the note title.
+  calendar_event?: GranolaCalendarEvent | null;
+  // Top-level attendees list (overlaps with calendar_event.invitees but
+  // includes names). Used by the matcher for email-based lead matching.
+  attendees?: GranolaAttendee[];
 }
 
 export interface ListNotesParams {
