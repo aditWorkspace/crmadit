@@ -74,6 +74,44 @@ describe('lintTemplate', () => {
         expect.arrayContaining(['subject_noreply', 'url_shortener', 'forbidden_word_unsubscribe'])
       );
     });
+
+    it('blocks capitalized "Unsubscribe" (regression)', () => {
+      const r = lintTemplate({ ...valid, body_template: valid.body_template + '\nUnsubscribe link below.' });
+      expect(r.blockers.some(b => b.code === 'forbidden_word_unsubscribe')).toBe(true);
+    });
+
+    it('blocks ALL-CAPS "UNSUBSCRIBE"', () => {
+      const r = lintTemplate({ ...valid, body_template: valid.body_template + '\nUNSUBSCRIBE NOW' });
+      expect(r.blockers.some(b => b.code === 'forbidden_word_unsubscribe')).toBe(true);
+    });
+
+    it('blocks "Opt-Out" with mixed case', () => {
+      const r = lintTemplate({ ...valid, body_template: valid.body_template + '\nclick here to Opt-Out' });
+      expect(r.blockers.some(b => b.code === 'forbidden_word_unsubscribe')).toBe(true);
+    });
+
+    it('does NOT block lowercase "stop" inside another word (e.g. "stopwatch")', () => {
+      const r = lintTemplate({ ...valid, body_template: valid.body_template + ' use a stopwatch to time' });
+      expect(r.blockers.some(b => b.code === 'forbidden_word_unsubscribe')).toBe(false);
+    });
+
+    it('does NOT block lowercase "stop" as a standalone English word', () => {
+      // "STOP" capitalized is the spam pattern; lowercase "stop" in normal prose is fine.
+      const r = lintTemplate({ ...valid, body_template: valid.body_template + ' please stop reading' });
+      expect(r.blockers.some(b => b.code === 'forbidden_word_unsubscribe')).toBe(false);
+    });
+
+    it('does NOT block exactly-30-char body (boundary)', () => {
+      const body = 'a'.repeat(30); // exactly 30 chars after trim
+      const r = lintTemplate({ ...valid, body_template: body });
+      expect(r.blockers.some(b => b.code === 'body_too_short')).toBe(false);
+    });
+
+    it('does NOT block exactly-800-char body (boundary)', () => {
+      const body = 'a'.repeat(800);
+      const r = lintTemplate({ ...valid, body_template: body });
+      expect(r.blockers.some(b => b.code === 'body_too_long')).toBe(false);
+    });
   });
 
   describe('warnings', () => {
@@ -149,6 +187,12 @@ describe('lintTemplate', () => {
       });
       expect(r.blockers.find(b => b.code === 'no_personalization')).toBeUndefined();
       expect(r.warnings.find(w => w.code === 'no_personalization')).toBeDefined();
+    });
+
+    it('does NOT warn on exactly-80-char subject (boundary)', () => {
+      const subject = 'a'.repeat(80);
+      const r = lintTemplate({ ...valid, subject_template: subject });
+      expect(r.warnings.some(w => w.code === 'subject_too_long')).toBe(false);
     });
   });
 

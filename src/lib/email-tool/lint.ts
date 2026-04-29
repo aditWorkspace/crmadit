@@ -22,9 +22,13 @@ export interface LintResult {
 }
 
 const URL_SHORTENERS = /\b(bit\.ly|tinyurl|t\.co|goo\.gl|tiny\.cc|ow\.ly|is\.gd|buff\.ly)\b/i;
-// "STOP" must be a standalone word (uppercase or as a separate token).
-// Lowercase "stop" inside another word should NOT trigger.
-const FORBIDDEN_BODY_WORDS = /\b(unsubscribe|opt[-_ ]?out|STOP)\b/;
+// Case-insensitive: catches "unsubscribe", "Unsubscribe", "UNSUBSCRIBE",
+// "opt-out", "Opt-Out", "OPT-OUT", "Opt Out", etc.
+const FORBIDDEN_UNSUBSCRIBE = /\b(unsubscribe|opt[-_ ]?out)\b/i;
+// Case-sensitive on purpose: "STOP" is the SMS-style spam token. Lowercase
+// "stop" mid-word ("stopwatch", "we should stop here") is fine and shouldn't
+// false-positive.
+const FORBIDDEN_STOP = /\bSTOP\b/;
 const SPAMMY_WORDS = /\b(free|winner|act now|limited time|guarantee|100%|\$\$\$)\b/i;
 const NO_REPLY_RE = /\bno[-_ ]?reply\b|\bdo[-_ ]?not[-_ ]?reply\b/i;
 const ALL_CAPS_RUN_6_PLUS = /[A-Z]{6,}/;
@@ -52,7 +56,7 @@ export function lintTemplate(input: LintInput): LintResult {
       message: 'URL shorteners (bit.ly, tinyurl, t.co, etc.) trigger spam filters.',
     });
   }
-  if (FORBIDDEN_BODY_WORDS.test(body)) {
+  if (FORBIDDEN_UNSUBSCRIBE.test(body) || FORBIDDEN_STOP.test(body)) {
     blockers.push({
       code: 'forbidden_word_unsubscribe',
       severity: 'blocker',
