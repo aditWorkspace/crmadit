@@ -139,7 +139,10 @@ export async function runDailyStart(
     const dailyTarget = cappedPerAcct * activeFounders.length;
 
     // ── Step ④a: priority list pull ───────────────────────────────────────
-    const today = idempotencyKey; // YYYY-MM-DD PT
+    // Always compute today's PT date locally — DON'T reuse idempotencyKey,
+    // because retry-today passes a 'manual-<date>-<ms>' key that would
+    // miss every scheduled_for_date row.
+    const today = formatPtDate(now);
     const { data: priorityRowsData } = await supabase
       .from('email_send_priority_queue')
       .select('id, email, first_name, company, override_owner')
