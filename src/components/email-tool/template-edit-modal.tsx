@@ -38,6 +38,17 @@ export function TemplateEditModal({ variant, onClose, onSaved }: Props) {
   const [activeField, setActiveField] = useState<'subject' | 'body'>('body');
   const [pendingCursor, setPendingCursor] = useState<{ field: 'subject' | 'body'; pos: number } | null>(null);
 
+  // C16: Escape-to-close + autofocus the Label input on mount
+  const labelInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    labelInputRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   useEffect(() => {
     if (!pendingCursor) return;
     const el = pendingCursor.field === 'subject' ? subjectRef.current : bodyRef.current;
@@ -144,6 +155,7 @@ export function TemplateEditModal({ variant, onClose, onSaved }: Props) {
         <label className="block mb-3">
           <span className="text-sm font-medium">Label</span>
           <input
+            ref={labelInputRef}
             value={label}
             onChange={e => setLabel(e.target.value)}
             placeholder="e.g. Adit v2"

@@ -55,7 +55,8 @@ export async function PATCH(req: NextRequest, ctx: RouteParams) {
     if ((error as { code?: string }).code === '23505') {
       return NextResponse.json({ error: 'label collision with an existing variant for this founder' }, { status: 409 });
     }
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('[email-tool/templates PATCH]', error);
+    return NextResponse.json({ error: 'database_error', reason: 'database_error' }, { status: 500 });
   }
   if (!data) return NextResponse.json({ error: 'variant not found' }, { status: 404 });
   return NextResponse.json({ variant: data });
@@ -74,7 +75,10 @@ export async function DELETE(req: NextRequest, ctx: RouteParams) {
     .eq('id', id)
     .select('id')
     .maybeSingle();
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error('[email-tool/templates DELETE]', error);
+    return NextResponse.json({ error: 'database_error', reason: 'database_error' }, { status: 500 });
+  }
   if (!data) return NextResponse.json({ error: 'variant not found' }, { status: 404 });
   return NextResponse.json({ ok: true });
 }

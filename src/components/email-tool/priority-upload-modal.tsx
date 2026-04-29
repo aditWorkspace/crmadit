@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 
 interface ParsedRow {
   email: string;
@@ -105,6 +105,17 @@ export function PriorityUploadModal({ onClose, onUploaded }: Props) {
 
   const parsed = useMemo(() => parseInput(pasteText), [pasteText]);
 
+  // C16: Escape-to-close + autofocus the date select on mount
+  const dateSelectRef = useRef<HTMLSelectElement | null>(null);
+  useEffect(() => {
+    dateSelectRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   // Re-run validation when overrides change in the review step.
   useEffect(() => {
     if (step !== 'review' || parsed.length === 0) return;
@@ -181,6 +192,7 @@ export function PriorityUploadModal({ onClose, onUploaded }: Props) {
             <label className="block mb-3">
               <span className="text-sm font-medium">Schedule for</span>
               <select
+                ref={dateSelectRef}
                 value={scheduledDate}
                 onChange={e => setScheduledDate(e.target.value)}
                 className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-sm"

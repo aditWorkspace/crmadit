@@ -32,7 +32,16 @@ export function TemplatesTab() {
         fetch('/api/team/members').then(r => r.json() as Promise<{ members?: Founder[] }>),
       ]);
       setVariants(vRes.variants ?? []);
-      setFounders(fRes.members ?? []);
+      const membersArr = (fRes.members ?? []) as Founder[];
+      // C17: sort by canonical TEAM_NAMES order so Adit/Srijay/Asim
+      // always render in the same sequence regardless of API order.
+      const teamOrder = ['Adit', 'Srijay', 'Asim'];
+      membersArr.sort((a, b) => {
+        const ai = teamOrder.findIndex(n => a.name.startsWith(n));
+        const bi = teamOrder.findIndex(n => b.name.startsWith(n));
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+      });
+      setFounders(membersArr);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'load failed');

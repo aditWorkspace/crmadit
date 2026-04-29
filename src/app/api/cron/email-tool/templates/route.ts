@@ -18,7 +18,10 @@ export async function GET(req: NextRequest) {
     .select('*')
     .order('founder_id', { ascending: true })
     .order('label', { ascending: true });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error('[email-tool/templates GET]', error);
+    return NextResponse.json({ error: 'database_error', reason: 'database_error' }, { status: 500 });
+  }
   return NextResponse.json({ variants: data ?? [] });
 }
 
@@ -54,7 +57,8 @@ export async function POST(req: NextRequest) {
     if ((error as { code?: string }).code === '23505') {
       return NextResponse.json({ error: 'a variant with that label already exists for this founder' }, { status: 409 });
     }
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('[email-tool/templates POST]', error);
+    return NextResponse.json({ error: 'database_error', reason: 'database_error' }, { status: 500 });
   }
   return NextResponse.json({ variant: data });
 }
