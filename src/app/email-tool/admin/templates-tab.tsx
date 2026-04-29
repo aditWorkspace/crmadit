@@ -28,8 +28,8 @@ export function TemplatesTab() {
     setLoading(true);
     try {
       const [vRes, fRes] = await Promise.all([
-        fetch('/api/cron/email-tool/templates').then(r => r.json()),
-        fetch('/api/team/members').then(r => r.json()),
+        fetch('/api/cron/email-tool/templates').then(r => r.json() as Promise<{ variants?: Variant[] }>),
+        fetch('/api/team/members').then(r => r.json() as Promise<{ members?: Founder[] }>),
       ]);
       setVariants(vRes.variants ?? []);
       setFounders(fRes.members ?? []);

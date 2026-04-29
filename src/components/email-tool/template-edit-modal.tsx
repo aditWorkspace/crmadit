@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { renderTemplate } from '@/lib/email-tool/render-template';
 import { lintTemplate, type LintIssue } from '@/lib/email-tool/lint';
 
@@ -33,6 +33,21 @@ export function TemplateEditModal({ variant, onClose, onSaved }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [previewKey, setPreviewKey] = useState(0);
 
+  const subjectRef = useRef<HTMLInputElement | null>(null);
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+  const [activeField, setActiveField] = useState<'subject' | 'body'>('body');
+  const [pendingCursor, setPendingCursor] = useState<{ field: 'subject' | 'body'; pos: number } | null>(null);
+
+  useEffect(() => {
+    if (!pendingCursor) return;
+    const el = pendingCursor.field === 'subject' ? subjectRef.current : bodyRef.current;
+    if (el) {
+      el.focus();
+      el.setSelectionRange(pendingCursor.pos, pendingCursor.pos);
+    }
+    setPendingCursor(null);
+  }, [pendingCursor]);
+
   const lint = useMemo(
     () => lintTemplate({ subject_template: subject, body_template: body }),
     [subject, body]
@@ -56,41 +71,61 @@ export function TemplateEditModal({ variant, onClose, onSaved }: Props) {
   async function save(overrideWarnings: boolean = false): Promise<void> {
     setSubmitting(true);
     setError(null);
-    const url = isCreate
-      ? '/api/cron/email-tool/templates'
-      : `/api/cron/email-tool/templates/${variant.id}`;
-    const method = isCreate ? 'POST' : 'PATCH';
-    const payload: Record<string, unknown> = {
-      label,
-      subject_template: subject,
-      body_template: body,
-      override_warnings: overrideWarnings,
-    };
-    if (isCreate) {
-      payload.founder_id = variant.founder_id;
-    } else {
-      payload.is_active = isActive;
-    }
-    const res = await fetch(url, {
-      method,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    setSubmitting(false);
-    if (res.ok) { onSaved(); return; }
-    const data = await res.json().catch(() => ({}));
-    if (res.status === 409 && data.issues?.warnings?.length > 0) {
-      const warningMessages = (data.issues.warnings as LintIssue[]).map(w => `• ${w.message}`).join('\n');
-      if (typeof window !== 'undefined' && window.confirm(`Save with warnings?\n\n${warningMessages}`)) {
-        return save(true);
+    try {
+      const url = isCreate
+        ? '/api/cron/email-tool/templates'
+        : `/api/cron/email-tool/templates/${variant.id}`;
+      const method = isCreate ? 'POST' : 'PATCH';
+      const payload: Record<string, unknown> = {
+        label,
+        subject_template: subject,
+        body_template: body,
+        override_warnings: overrideWarnings,
+      };
+      if (isCreate) {
+        payload.founder_id = variant.founder_id;
+      } else {
+        payload.is_active = isActive;
       }
-      return;
+      const res = await fetch(url, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) { onSaved(); return; }
+      const data: { error?: string; issues?: { warnings?: LintIssue[] } } =
+        await res.json().catch(() => ({}));
+      if (res.status === 409 && (data.issues?.warnings?.length ?? 0) > 0) {
+        const warningMessages = (data.issues!.warnings as LintIssue[])
+          .map(w => `• ${w.message}`).join('\n');
+        if (typeof window !== 'undefined' && window.confirm(`Save with warnings?\n\n${warningMessages}`)) {
+          return save(true);
+        }
+        return;
+      }
+      setError(data.error ?? 'save failed');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'network error');
+    } finally {
+      setSubmitting(false);
     }
-    setError(data.error ?? 'save failed');
   }
 
   function insertVariable(tag: string): void {
-    setBody(b => b + tag);
+    const isSubject = activeField === 'subject';
+    const el = isSubject ? subjectRef.current : bodyRef.current;
+    if (!el) {
+      if (isSubject) setSubject(s => s + tag);
+      else setBody(b => b + tag);
+      return;
+    }
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    const current = isSubject ? subject : body;
+    const next = current.slice(0, start) + tag + current.slice(end);
+    if (isSubject) setSubject(next);
+    else setBody(next);
+    setPendingCursor({ field: activeField, pos: start + tag.length });
   }
 
   return (
@@ -119,8 +154,10 @@ export function TemplateEditModal({ variant, onClose, onSaved }: Props) {
         <label className="block mb-3">
           <span className="text-sm font-medium">Subject</span>
           <input
+            ref={subjectRef}
             value={subject}
             onChange={e => setSubject(e.target.value)}
+            onFocus={() => setActiveField('subject')}
             placeholder="product prioritization at {{company}}"
             className="mt-1 w-full border border-gray-300 rounded px-2 py-1 font-mono text-sm"
           />
@@ -129,8 +166,10 @@ export function TemplateEditModal({ variant, onClose, onSaved }: Props) {
         <label className="block mb-2">
           <span className="text-sm font-medium">Body</span>
           <textarea
+            ref={bodyRef}
             value={body}
             onChange={e => setBody(e.target.value)}
+            onFocus={() => setActiveField('body')}
             rows={12}
             placeholder="Hi {{first_name}}, ..."
             className="mt-1 w-full border border-gray-300 rounded px-2 py-1 font-mono text-sm"
@@ -181,16 +220,20 @@ export function TemplateEditModal({ variant, onClose, onSaved }: Props) {
           </pre>
         </div>
 
-        <div className="bg-gray-50 border border-gray-200 rounded p-3 mb-3 text-sm">
+        <div className="bg-gray-50 border border-gray-200 rounded p-3 mb-3 text-sm space-y-1">
           {lint.blockers.length === 0 && lint.warnings.length === 0 ? (
-            <span className="text-green-600">&#10003; No issues</span>
+            <div className="text-green-600">&#10003; No issues</div>
           ) : (
             <>
-              {lint.blockers.map(b => (
-                <div key={b.code} className="text-red-600">&#128721; {b.message}</div>
-              ))}
-              {lint.warnings.map(w => (
-                <div key={w.code} className="text-yellow-700">&#9888; {w.message}</div>
+              {lint.blockers.length === 0 ? (
+                <div className="text-green-600">&#10003; No blockers</div>
+              ) : (
+                lint.blockers.map((b, i) => (
+                  <div key={`b-${i}-${b.code}`} className="text-red-600">&#128721; {b.message}</div>
+                ))
+              )}
+              {lint.warnings.map((w, i) => (
+                <div key={`w-${i}-${w.code}`} className="text-yellow-700">&#9888; {w.message}</div>
               ))}
             </>
           )}
