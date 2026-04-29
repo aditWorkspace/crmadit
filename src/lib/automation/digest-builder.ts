@@ -62,6 +62,23 @@ interface NeedsFounderRow {
   reason: string;
 }
 
+interface OutreachFounderRow {
+  founder_name: string;
+  sent: number;
+  bounced: number;
+  failed: number;
+  replies: number;
+  top_variant_label: string | null;
+  top_variant_reply_rate: number | null;
+}
+
+interface OutreachDigestData {
+  founders: OutreachFounderRow[];
+  pool_runway_days: number;
+  warmup_day: number;
+  send_mode: string;
+}
+
 export async function buildDailyDigest(): Promise<{
   subject: string;
   html: string;
@@ -351,6 +368,22 @@ export async function buildDailyDigest(): Promise<{
     lines.push('No significant pipeline activity yesterday.');
   }
 
+  // ── PR 5: Yesterday's cold outreach ──────────────────────────────────────
+  const outreachData = await getYesterdayOutreachData(supabase);
+
+  // Outreach text section
+  const outreachText = outreachData
+    ? `\nYESTERDAY'S COLD OUTREACH (${outreachData.send_mode}, warmup day ${outreachData.warmup_day}):\n` +
+      outreachData.founders.map(f =>
+        `  - ${f.founder_name}: sent ${f.sent}, ${f.bounced} bounced, ${f.replies} replies${f.top_variant_label ? ` (top variant: ${f.top_variant_label})` : ''}`
+      ).join('\n') +
+      `\n  Pool runway: ${outreachData.pool_runway_days} days remaining\n`
+    : '';
+
+  if (outreachText) {
+    lines.push(outreachText);
+  }
+
   const text = lines.join('\n');
 
   // ── HTML version ───────────────────────────────────────────────────────────
@@ -390,6 +423,36 @@ export async function buildDailyDigest(): Promise<{
           </ul>
         </div>`
       : '';
+
+  const outreachSection = outreachData
+    ? section(
+        `Yesterday's Cold Outreach (${outreachData.send_mode}, warmup day ${outreachData.warmup_day})`,
+        `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead>
+            <tr style="text-align:left;color:#6b7280;font-size:12px;">
+              <th style="padding:4px 8px;">Founder</th>
+              <th style="padding:4px 8px;">Sent</th>
+              <th style="padding:4px 8px;">Bounced</th>
+              <th style="padding:4px 8px;">Replies</th>
+              <th style="padding:4px 8px;">Top variant</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${outreachData.founders.map(f => `
+              <tr style="border-top:1px solid #f3f4f6;">
+                <td style="padding:4px 8px;font-weight:500;">${escHtml(f.founder_name)}</td>
+                <td style="padding:4px 8px;">${f.sent}</td>
+                <td style="padding:4px 8px;color:${f.bounced > 0 ? '#dc2626' : '#6b7280'};">${f.bounced}</td>
+                <td style="padding:4px 8px;color:#16a34a;">${f.replies}</td>
+                <td style="padding:4px 8px;color:#6b7280;">${escHtml(f.top_variant_label ?? '—')}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        <p style="margin:8px 0 0;font-size:12px;color:#9ca3af;">
+          Pool runway: ${outreachData.pool_runway_days} days remaining
+        </p>`
+      )
+    : '';
 
   const movedSection =
     leadsMovedForward.length > 0
@@ -508,6 +571,7 @@ export async function buildDailyDigest(): Promise<{
     <!-- Body -->
     <div style="padding:24px 32px;">
       ${needsFounderSection}
+      ${outreachSection}
       ${movedSection}
       ${newSection}
       ${overdueSection}
@@ -539,6 +603,126 @@ function escHtml(str: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+async function getYesterdayOutreachData(
+  supabase: ReturnType<typeof createAdminClient>
+): Promise<OutreachDigestData | null> {
+  // Yesterday's PT date as YYYY-MM-DD
+  const now = new Date();
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const yesterdayKey = fmt.format(yesterday);
+
+  // Did a campaign run yesterday?
+  const { data: campaignRow } = await supabase
+    .from('email_send_campaigns')
+    .select('id, status, send_mode, warmup_day')
+    .eq('idempotency_key', yesterdayKey)
+    .maybeSingle();
+  if (!campaignRow) return null; // No campaign yesterday — section is omitted
+
+  const campaign = campaignRow as { id: string; status: string; send_mode: string; warmup_day: number | null };
+
+  // Per-founder counts via direct queue inspection
+  const { data: queueRows } = await supabase
+    .from('email_send_queue')
+    .select('account_id, status, last_error, template_variant_id, recipient_email')
+    .eq('campaign_id', campaign.id);
+  const queue = (queueRows ?? []) as Array<{
+    account_id: string;
+    status: string;
+    last_error: string | null;
+    template_variant_id: string | null;
+    recipient_email: string;
+  }>;
+
+  // Replies — leads with first_reply_at AFTER campaign queue rows landed
+  const recipientEmails = queue.map(r => r.recipient_email);
+  const repliedEmails = new Set<string>();
+  if (recipientEmails.length > 0) {
+    const yesterdayStart = new Date(yesterday);
+    yesterdayStart.setHours(0, 0, 0, 0);
+    const yesterdayStartIso = yesterdayStart.toISOString();
+    const { data: repliedLeads } = await supabase
+      .from('leads')
+      .select('contact_email')
+      .in('contact_email', recipientEmails)
+      .gte('first_reply_at', yesterdayStartIso);
+    for (const l of (repliedLeads ?? []) as Array<{ contact_email: string }>) {
+      repliedEmails.add(l.contact_email.toLowerCase());
+    }
+  }
+
+  // Founder names
+  const accountIds = Array.from(new Set(queue.map(r => r.account_id)));
+  const { data: foundersData } = await supabase
+    .from('team_members')
+    .select('id, name')
+    .in('id', accountIds);
+  const founderNames = new Map(
+    ((foundersData ?? []) as Array<{ id: string; name: string }>).map(f => [f.id, f.name])
+  );
+
+  // Variant labels
+  const variantIds = Array.from(new Set(queue.map(r => r.template_variant_id).filter((v): v is string => v != null)));
+  const { data: variantsData } = await supabase
+    .from('email_template_variants')
+    .select('id, label, founder_id')
+    .in('id', variantIds);
+  const variantInfo = new Map(
+    ((variantsData ?? []) as Array<{ id: string; label: string; founder_id: string }>)
+      .map(v => [v.id, v])
+  );
+
+  // Aggregate per-founder
+  const founders: OutreachFounderRow[] = [];
+  for (const accountId of accountIds) {
+    const rows = queue.filter(r => r.account_id === accountId);
+    const sent = rows.filter(r => r.status === 'sent').length;
+    const bounced = rows.filter(r => r.last_error?.startsWith('hard_bounce')).length;
+    const failed = rows.filter(r => r.status === 'failed' && !r.last_error?.startsWith('hard_bounce')).length;
+    const replies = rows.filter(r => repliedEmails.has(r.recipient_email)).length;
+
+    // Top variant for this founder yesterday: count sends per variant
+    const variantCounts = new Map<string, number>();
+    for (const r of rows.filter(r => r.status === 'sent' && r.template_variant_id)) {
+      const k = r.template_variant_id!;
+      variantCounts.set(k, (variantCounts.get(k) ?? 0) + 1);
+    }
+    let topVariantId: string | null = null;
+    let topCount = 0;
+    for (const [vid, c] of variantCounts) {
+      if (c > topCount) { topVariantId = vid; topCount = c; }
+    }
+    const topVariantLabel = topVariantId ? variantInfo.get(topVariantId)?.label ?? null : null;
+
+    founders.push({
+      founder_name: founderNames.get(accountId) ?? 'Unknown',
+      sent,
+      bounced,
+      failed,
+      replies,
+      top_variant_label: topVariantLabel,
+      top_variant_reply_rate: null, // TODO: per-variant reply rate over 30d (could use email_send_variant_stats_30d RPC)
+    });
+  }
+
+  // Pool runway
+  const { data: freshRemaining } = await supabase.rpc('email_tool_fresh_remaining');
+  const pool_runway_days = Math.floor(Number(freshRemaining ?? 0) / 1200);
+
+  return {
+    founders,
+    pool_runway_days,
+    warmup_day: campaign.warmup_day ?? 0,
+    send_mode: campaign.send_mode,
+  };
 }
 
 // ── Phase 2c: @mention digest section (per recipient) ─────────────────────────

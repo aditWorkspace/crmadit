@@ -409,12 +409,32 @@ export async function runDailyStart(
     // C11 fix: also denormalize next_run_at so the admin UI's "next run"
     // display is fresh. nextRunAt is computed once at the top of this
     // function and reused here.
+
+    // ── Warmup ramp gate ──────────────────────────────────────────────────
+    // Spec §5 step ⑪ + §13: increment warmup_day_completed if YESTERDAY's
+    // run was clean (status='done', bounce_rate < 3%, no auto-pauses).
+    // Today's cap is already locked in (step ④); the increment affects
+    // TOMORROW's run.
+    let nextWarmupDayCompleted = warmupDay;
+    if (warmupDay < 2) {
+      const ramped = await shouldRampWarmup(supabase, now);
+      if (ramped) nextWarmupDayCompleted = warmupDay + 1;
+    }
+
     await supabase.from('email_send_schedule')
       .update({
         last_run_at: now.toISOString(),
         next_run_at: nextRunAt?.toISOString() ?? null,
+        warmup_day_completed: nextWarmupDayCompleted,
       })
       .eq('id', 1);
+    if (nextWarmupDayCompleted !== warmupDay) {
+      log('info', 'warmup_ramped', {
+        from: warmupDay,
+        to: nextWarmupDayCompleted,
+        campaign_id: campaignId,
+      });
+    }
 
     log('info', 'start_campaign_running', { campaign_id: campaignId, queue_count: dedupedQueueRows.length });
     return { kind: 'started', campaign_id: campaignId, queue_count: dedupedQueueRows.length };
@@ -444,4 +464,55 @@ function formatPtDate(d: Date): string {
     day: '2-digit',
   });
   return fmt.format(d);
+}
+
+/**
+ * Returns true if yesterday's campaign was clean enough to ramp the
+ * warmup-day counter. "Clean" means:
+ *   - There was a 'done' campaign yesterday (PT date)
+ *   - bounce_rate over the last 7 days is < 3%
+ *   - No 'account_paused_*' events in email_send_errors for any founder
+ *     in the last 24h
+ *
+ * If we can't find yesterday's campaign (e.g., first day of operation),
+ * return false — don't ramp until we have at least one clean day on the
+ * books.
+ */
+async function shouldRampWarmup(supabase: Supa, now: Date): Promise<boolean> {
+  // Yesterday's PT date
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const yesterdayKey = formatPtDate(yesterday);
+
+  // Did yesterday's campaign succeed?
+  const { data: yesterdayRow } = await supabase
+    .from('email_send_campaigns')
+    .select('status, total_failed')
+    .eq('idempotency_key', yesterdayKey)
+    .maybeSingle();
+  if (!yesterdayRow) return false;
+  const y = yesterdayRow as { status: string; total_failed: number };
+  if (y.status !== 'done') return false;
+  if (y.total_failed >= 5) return false;
+
+  // Recent auto-pause events?
+  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const { count: pauseCount } = await supabase
+    .from('email_send_errors')
+    .select('id', { count: 'exact', head: true })
+    .gte('occurred_at', oneDayAgo)
+    .or('error_class.eq.crash,error_message.ilike.%paused%');
+  if ((pauseCount ?? 0) > 0) return false;
+
+  // Bounce rate < 3% across all founders. Run the RPC for each and take max.
+  const { data: foundersData } = await supabase
+    .from('team_members')
+    .select('id');
+  const founderIds = ((foundersData ?? []) as Array<{ id: string }>).map(f => f.id);
+  for (const fid of founderIds) {
+    const { data: rate } = await supabase.rpc('email_send_bounce_rate_7d', { p_account_id: fid });
+    const r = (rate as { rate?: number } | null)?.rate ?? 0;
+    if (r >= 0.03) return false;
+  }
+
+  return true;
 }
