@@ -11,6 +11,7 @@ import {
   type SafetyVerdict,
 } from './safety-checks';
 import { log } from './log';
+import { sendCriticalAlert } from './alert';
 import { createLeadFromOutreach } from '@/lib/leads/auto-create';
 import { getCampaignGmailClient, type CampaignGmailClient } from '@/lib/gmail/client';
 import type { SendMode } from './types';
@@ -340,6 +341,16 @@ async function applySafetyFailure(
       .update({ status: 'pending', sending_started_at: null, last_error: v.reason })
       .eq('id', row.id);
     log('warn', 'tick_account_paused_safety', { account_id: row.account_id, reason: v.reason });
+    await sendCriticalAlert(supabase, {
+      event: 'account_paused_safety_check',
+      subject: `Founder account auto-paused — ${v.reason}`,
+      body: `Account ${row.account_id} was auto-paused by the safety-check sweep. Reason: ${v.reason}.\n\nMost commonly this is a 7-day bounce rate above 5% — verify the founder's email list quality before resuming.`,
+      context: {
+        account_id: row.account_id,
+        reason: v.reason,
+        queue_row_id: row.id,
+      },
+    });
     return 'pause_account_continue';
   }
   if (v.outcome === 'defer') {
@@ -446,6 +457,17 @@ async function applySendOutcome(
         .update({ status: 'pending', sending_started_at: null, last_error: outcome.reason })
         .eq('id', row.id);
       log('warn', 'tick_account_paused_send', { account_id: row.account_id, reason: outcome.reason });
+      await sendCriticalAlert(supabase, {
+        event: 'account_paused_gmail_403',
+        subject: `Founder account paused — Gmail returned ${outcome.reason}`,
+        body: `Account ${founder.name} (${founder.email}) was auto-paused because Gmail returned 403 with reason="${outcome.reason}". This usually means daily quota or temporary account flagging.\n\nManual action: check Gmail account status; if recoverable, click "Resume" on the founder's card in the admin Overview tab. If account is flagged, contact Google Workspace support before resuming.`,
+        context: {
+          account_id: row.account_id,
+          founder_name: founder.name,
+          founder_email: founder.email,
+          gmail_reason: outcome.reason,
+        },
+      });
       return 'pause_account_return';
     }
     case 'hard_bounce': {

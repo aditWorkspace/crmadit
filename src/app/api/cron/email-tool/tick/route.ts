@@ -8,6 +8,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { runTick } from '@/lib/email-tool/tick';
 import { SAFETY_LIMITS } from '@/lib/email-tool/safety-limits';
 import { log } from '@/lib/email-tool/log';
+import { sendCriticalAlert } from '@/lib/email-tool/alert';
 
 export const maxDuration = 300; // Vercel's per-function cap; tick budget is 240s
 
@@ -80,8 +81,16 @@ export async function GET(req: NextRequest) {
         crashes: crashCount,
         window_minutes: SAFETY_LIMITS.CRASH_COUNTER_WINDOW_MINUTES,
       });
-      // PR 5 will wire Resend critical alerts here. For now, the log
-      // line + paused flag are the only signals.
+      await sendCriticalAlert(supabase, {
+        event: 'tick_crash_threshold_exceeded',
+        subject: 'Cold-outreach paused — repeated tick crashes',
+        body: `The minute-tick handler has crashed ${crashCount} times in the last ${SAFETY_LIMITS.CRASH_COUNTER_WINDOW_MINUTES} minutes. All founders have been auto-paused. Latest error: ${e.message}\n\nManual action required: investigate the cause in Vercel logs, then click "Resume All" in the admin Schedule tab to clear the crash counter.`,
+        context: {
+          crashes: crashCount,
+          window_minutes: SAFETY_LIMITS.CRASH_COUNTER_WINDOW_MINUTES,
+          last_error: e.message,
+        },
+      });
     }
 
     return NextResponse.json(

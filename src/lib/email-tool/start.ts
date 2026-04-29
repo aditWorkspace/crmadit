@@ -15,6 +15,7 @@ import { SAFETY_LIMITS } from './safety-limits';
 import { computeNextRunAt } from './schedule';
 import type { SendMode } from './types';
 import { log } from './log';
+import { sendCriticalAlert } from './alert';
 
 type Supa = ReturnType<typeof createAdminClient>;
 
@@ -133,6 +134,12 @@ export async function runDailyStart(
         .update({ status: 'paused', abort_reason: 'no_active_founders', completed_at: now.toISOString() })
         .eq('id', campaignId);
       log('warn', 'start_no_active_founders', { campaign_id: campaignId });
+      await sendCriticalAlert(supabase, {
+        event: 'all_founders_paused',
+        subject: 'All founders paused — campaign cannot run',
+        body: `Today's scheduled campaign ${idempotencyKey} could not start because all 3 founders have email_send_paused=true.\n\nManual action: review per-founder pause reasons in the admin Overview tab and click "Resume All" once issues are resolved.`,
+        context: { campaign_id: campaignId, idempotency_key: idempotencyKey },
+      });
       return { kind: 'no_active_founders', campaign_id: campaignId };
     }
 
@@ -199,6 +206,12 @@ export async function runDailyStart(
         .update({ status: 'exhausted', completed_at: now.toISOString() })
         .eq('id', campaignId);
       log('warn', 'start_pool_exhausted', { campaign_id: campaignId });
+      await sendCriticalAlert(supabase, {
+        event: 'pool_exhausted',
+        subject: 'Email pool exhausted — no recipients available',
+        body: `Today's campaign found zero recipients in email_pool (after blacklist filtering) and no pending priority rows. The campaign is marked exhausted.\n\nManual action: refresh the pool via /email-tool admin (or the existing CSV upload tool) and retry today's run.`,
+        context: { campaign_id: campaignId, idempotency_key: idempotencyKey },
+      });
       return { kind: 'aborted', campaign_id: campaignId, reason: 'pool_exhausted' };
     }
 

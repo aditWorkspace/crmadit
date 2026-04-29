@@ -14,6 +14,7 @@
 import type { createAdminClient } from '@/lib/supabase/admin';
 import { SAFETY_LIMITS } from './safety-limits';
 import { log } from './log';
+import { sendCriticalAlert } from './alert';
 
 type Supa = ReturnType<typeof createAdminClient>;
 
@@ -64,6 +65,16 @@ export async function detectAndAbortOrphans(
     log('error', 'orphan_aborted', {
       campaign_id: o.id,
       idempotency_key: o.idempotency_key,
+    });
+    await sendCriticalAlert(supabase, {
+      event: 'orphan_campaign_aborted',
+      subject: 'Orphan campaign aborted — manual retry required',
+      body: `Campaign ${o.idempotency_key} was claimed but never inserted any queue rows (likely a partial-start failure). It has been marked aborted.\n\nManual action: click "Retry today's run" in the admin Schedule tab to attempt the campaign again with a fresh idempotency_key.`,
+      context: {
+        campaign_id: o.id,
+        idempotency_key: o.idempotency_key,
+        started_at: o.started_at,
+      },
     });
   }
 
