@@ -50,3 +50,93 @@ $$;
 REVOKE ALL ON FUNCTION public.email_send_bounce_rate_7d(UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.email_send_bounce_rate_7d(UUID) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.email_send_bounce_rate_7d(UUID) TO service_role;
+
+-- ── 3) email_send_claim_today — atomic campaign claim + skip-flag handling ─
+-- Wraps the §5 Transaction 1 into a SECURITY DEFINER PL/pgSQL function so
+-- the JS caller can perform the SELECT FOR UPDATE + skip-flag read/clear +
+-- INSERT-with-ON-CONFLICT atomically. Without this, racing /start
+-- invocations could double-create a campaign for the same date.
+--
+-- Returns a JSONB describing the outcome:
+--   { outcome: 'started',          campaign_id: <uuid>, send_mode: <text> }
+--   { outcome: 'skipped',          campaign_id: null,    send_mode: <text> }
+--   { outcome: 'idempotent_no_op', campaign_id: null,    send_mode: <text> }
+--   { outcome: 'paused',           campaign_id: null,    send_mode: <text> }
+--   { outcome: 'disabled',         campaign_id: null,    send_mode: <text> }
+CREATE OR REPLACE FUNCTION public.email_send_claim_today(
+  p_idempotency_key TEXT,
+  p_now             TIMESTAMPTZ
+)
+RETURNS JSONB
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_schedule       email_send_schedule;
+  v_campaign_id    UUID;
+  v_active_count   INT;
+BEGIN
+  SELECT * INTO v_schedule FROM email_send_schedule WHERE id = 1 FOR UPDATE;
+
+  -- Schedule disabled — exit early
+  IF NOT v_schedule.enabled THEN
+    RETURN jsonb_build_object(
+      'outcome', 'disabled',
+      'campaign_id', NULL,
+      'send_mode', v_schedule.send_mode
+    );
+  END IF;
+
+  -- Skip-flag handling: record an audit-trail 'skipped' campaign and clear flag
+  IF v_schedule.skip_next_run THEN
+    INSERT INTO email_send_campaigns (idempotency_key, scheduled_for, status, send_mode)
+      VALUES (p_idempotency_key, p_now, 'skipped', v_schedule.send_mode)
+      ON CONFLICT (idempotency_key) DO NOTHING;
+    UPDATE email_send_schedule
+      SET skip_next_run = false, last_run_at = p_now
+      WHERE id = 1;
+    RETURN jsonb_build_object(
+      'outcome', 'skipped',
+      'campaign_id', NULL,
+      'send_mode', v_schedule.send_mode
+    );
+  END IF;
+
+  -- All founders paused — exit
+  SELECT COUNT(*) INTO v_active_count FROM team_members WHERE NOT email_send_paused;
+  IF v_active_count = 0 THEN
+    INSERT INTO email_send_campaigns (idempotency_key, scheduled_for, status, abort_reason, send_mode)
+      VALUES (p_idempotency_key, p_now, 'paused', 'all_founders_paused', v_schedule.send_mode)
+      ON CONFLICT (idempotency_key) DO NOTHING;
+    RETURN jsonb_build_object(
+      'outcome', 'paused',
+      'campaign_id', NULL,
+      'send_mode', v_schedule.send_mode
+    );
+  END IF;
+
+  -- Claim today's campaign
+  INSERT INTO email_send_campaigns (idempotency_key, scheduled_for, status, send_mode)
+    VALUES (p_idempotency_key, p_now, 'pending', v_schedule.send_mode)
+    ON CONFLICT (idempotency_key) DO NOTHING
+    RETURNING id INTO v_campaign_id;
+
+  IF v_campaign_id IS NULL THEN
+    -- Another invocation already claimed — idempotent no-op
+    RETURN jsonb_build_object(
+      'outcome', 'idempotent_no_op',
+      'campaign_id', NULL,
+      'send_mode', v_schedule.send_mode
+    );
+  END IF;
+
+  RETURN jsonb_build_object(
+    'outcome', 'started',
+    'campaign_id', v_campaign_id,
+    'send_mode', v_schedule.send_mode
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.email_send_claim_today(TEXT, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.email_send_claim_today(TEXT, TIMESTAMPTZ) FROM anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.email_send_claim_today(TEXT, TIMESTAMPTZ) TO service_role;
