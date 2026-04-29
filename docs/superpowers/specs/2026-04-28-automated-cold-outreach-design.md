@@ -12,7 +12,7 @@
 The 3 founders currently send ~400 cold-outreach emails per Gmail account per day, manually. Each morning one of them logs into Gmail and triggers a YAMM/Mailmeteor merge against a CSV produced by the existing `email-tool`. This is a daily ~30-minute manual chore that is error-prone, easy to skip, and creates a tight coupling between human availability and outbound volume.
 
 **Goal:** replace the manual send step with a fully automated, schedule-driven pipeline that:
-- Sends ~300–400 emails per founder per day across all 3 founders' Gmail accounts
+- Sends 400 cold-outreach emails per founder per day across all 3 founders' Gmail accounts (1,200/day total), with a 499/day per-account hard ceiling that reserves 99 sends of headroom for the founder's manual sends and CRM auto-replies
 - Operates safely within Gmail's per-account daily quotas and per-second rate limits
 - Mimics human-pattern sending (jittered timing, content variants, no template fingerprinting) to minimize the chance of accounts being throttled or banned
 - Is observable and pause-able the moment something goes wrong
@@ -23,8 +23,8 @@ The 3 founders currently send ~400 cold-outreach emails per Gmail account per da
 - HTML emails / attachments / inline images
 - Open-tracking pixels or click tracking
 - A/B testing framework with statistical winner selection
-- Custom outreach domain (`proxiapp.com` or similar) — Phase 2 follow-up after this ships
-- Postmaster Tools enrollment — depends on owning a sending domain
+- Custom outreach domain — sending stays on `@berkeley.edu` indefinitely; no domain migration planned
+- Postmaster Tools enrollment — requires domain ownership we don't have; we rely on indirect proxies (bounce rate, reply rate, 403 signals)
 - Multi-account fan-out beyond the 3 founders' Workspace accounts
 - Auto-resume from critical pauses (always requires human action)
 
@@ -49,10 +49,15 @@ The 3 founders currently send ~400 cold-outreach emails per Gmail account per da
 - Same recipient domain hit multiple times same day from same sender
 
 ### Volume target & math
-- 3 accounts × 350/day steady = 1,050 emails/day total
-- Spread over 3 hours (5:30–8:30am drift window): 350 ÷ 180 min = ~2 sends/min/account
-- Average inter-send gap per account: ~30 seconds
-- Well below Gmail's 2.5 sends/sec ceiling and 2,000/day external cap
+- **3 accounts × 400 automated cold sends/day = 1,200 cold emails/day total**
+- Hard per-account ceiling: **499/day** (matches Gmail's free-account safety threshold). The 99-send buffer above the 400 automated target is reserved for the founder's manual sends, auto-replies, and CRM-driven follow-ups that share the same Gmail account.
+- Inter-send delay: **random 5–15 seconds per send per account** (avg ~10s) → ~6 sends/min/account
+- Send window per account: **400 sends ÷ 6/min ≈ 67 minutes** — campaigns finish well within an hour of starting
+- Per-second pace: 0.1 sends/sec/account → 25× under Gmail's 2.5/sec API ceiling
+- Daily volume: 400 sent / 2,000 Workspace external cap = **20% of cap** — comfortable headroom
+
+### Bounce-rate threshold rationale
+The deliverability industry's "soft" signal threshold is 2% hard bounces, but cold-outreach lists with prospect-discovery sources (Apollo, scraped LinkedIn, etc.) reliably run **3–4% bounces** on quality lists and 5–7% on lower-quality ones. We auto-pause at **5%** rather than 2% specifically because pausing at 2% would constantly trip on normal cold-outreach noise. 5% is the post-Yahoo/Google-2025-update threshold above which deliverability degrades meaningfully.
 
 ### What YAMM and Mailmeteor do (the patterns we mirror)
 - Send via the user's own Gmail OAuth (not third-party SMTP)
@@ -63,8 +68,8 @@ The 3 founders currently send ~400 cold-outreach emails per Gmail account per da
 - Limited spintax for greeting/sign-off variation
 - Lint templates against spammy patterns before save
 
-### Postmaster Tools limitation
-Berkeley owns `berkeley.edu`, not us. We cannot enroll the sending domain in Postmaster Tools, which means we have no direct visibility into spam complaint rate. We rely on indirect proxies (bounce rate, reply rate, 403 errors). This is the primary motivation for the Phase 2 custom-domain migration.
+### Postmaster Tools limitation (accepted, not mitigated)
+Berkeley owns `berkeley.edu`, not us. We cannot enroll the sending domain in Postmaster Tools, which means we have no direct visibility into spam complaint rate. We accept this limitation and rely on indirect proxies (bounce rate, reply rate, 403 errors). No domain migration is planned — sending stays on `@berkeley.edu` indefinitely.
 
 ---
 
@@ -132,7 +137,7 @@ CREATE TABLE email_send_campaigns (
   total_failed    INT DEFAULT 0,
   total_skipped   INT DEFAULT 0,
   abort_reason    TEXT,
-  warmup_day      INT,            -- day 1 = 250/account, day 2+ = 350/account
+  warmup_day      INT,            -- day 1 = 250/account, day 2+ = 400/account
   created_by      UUID REFERENCES team_members(id),  -- null = cron
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -200,23 +205,23 @@ CREATE INDEX ON email_send_queue (status, send_at) WHERE status = 'pending';
 CREATE INDEX ON email_send_queue (account_id, sent_at);
 CREATE INDEX ON email_send_queue (campaign_id, status);
 
--- 5) Schedule singleton (drift state, FK-free)
+-- 5) Schedule singleton (weekday-only fixed schedule, FK-free)
+-- Mon–Fri only, with day-of-week → start-time-PT mapping baked into code.
+-- See §5.1 for the exact times. Saturday/Sunday: no campaign runs.
 CREATE TABLE email_send_schedule (
   id                    INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   enabled               BOOLEAN NOT NULL DEFAULT FALSE,
-  anchor_at             TIMESTAMPTZ NOT NULL,        -- e.g. '2026-05-04 05:30:00 PT'
-  day_index             INT NOT NULL DEFAULT 0,
-  drift_per_day_min     INT NOT NULL DEFAULT 15,
-  drift_cap_local_hour  INT NOT NULL DEFAULT 13,     -- 1pm PT — wrap point
   warmup_started_on     DATE,                        -- null until enabled flipped on
   warmup_day_completed  INT NOT NULL DEFAULT 0,      -- gate for Day 1 → Day 2 ramp
   skip_next_run         BOOLEAN NOT NULL DEFAULT FALSE,
   last_run_at           TIMESTAMPTZ,
-  next_run_at           TIMESTAMPTZ,
+  next_run_at           TIMESTAMPTZ,                 -- denormalized for cron-job.org
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO email_send_schedule (id, anchor_at) VALUES (1, '2026-05-04 12:30:00+00') ON CONFLICT DO NOTHING;
--- ^ anchor in UTC; computed PT 5:30am. Adjust at deploy time.
+INSERT INTO email_send_schedule (id) VALUES (1) ON CONFLICT DO NOTHING;
+-- next_run_at is computed by the application from today's date and the
+-- weekday→time map. We store it for display + for cron-job.org's
+-- read-back-and-trigger flow, but the source of truth is the code.
 
 -- 6) Add the cross-table FK on priority_queue.campaign_id
 ALTER TABLE email_send_priority_queue
@@ -238,23 +243,57 @@ ALTER TABLE team_members
 ```typescript
 // src/lib/email-tool/safety-limits.ts
 export const SAFETY_LIMITS = {
-  ABSOLUTE_DAILY_CAP_PER_ACCOUNT:                 400,    // hard ceiling
+  // Hard ceiling. The system never schedules more than 499 sends per
+  // account per day. The 99-send buffer above the 400 automated target
+  // is reserved for the founder's manual sends, auto-replies, and CRM
+  // follow-ups that share the same Gmail account.
+  ABSOLUTE_DAILY_CAP_PER_ACCOUNT:                 499,
+  
+  // Steady-state automated cold-outreach target.
+  AUTOMATED_DAILY_TARGET_PER_ACCOUNT:             400,
+  
+  // Day-1 soft warmup cap (smoke-test day before going to full target).
   WARMUP_DAY_1_CAP:                               250,
-  WARMUP_DAY_2_PLUS_CAP:                          350,
-  MIN_INTER_SEND_GAP_SECONDS:                     10,
-  MAX_INTER_SEND_GAP_SECONDS:                     120,
-  MAX_CAMPAIGN_DURATION_HOURS:                    4,
+  
+  // Inter-send jitter range — closely mirrors YAMM's pacing model.
+  // Random uniform draw within these bounds per send.
+  // Avg ~10s → 6 sends/min/account → ~67min per 400-send campaign.
+  INTER_SEND_JITTER_MIN_SECONDS:                  5,
+  INTER_SEND_JITTER_MAX_SECONDS:                  15,
+  
+  // Belt-and-suspenders clamp — even if jitter math somehow produces a
+  // value outside the jitter range, we never go below this floor.
+  MIN_INTER_SEND_GAP_SECONDS_HARD_FLOOR:          5,
+  MAX_INTER_SEND_GAP_SECONDS_HARD_CEILING:        30,
+  
+  // If a campaign would span >2 hours total, abort and alert.
+  // At 6/min × 400 sends = ~67 min so this is well-margined.
+  MAX_CAMPAIGN_DURATION_HOURS:                    2,
+  
+  // Same-domain throttle: don't email >1 person at acme.com from one
+  // founder same day. Rest go to next day's pool.
   MAX_SENDS_PER_DOMAIN_PER_ACCOUNT_PER_DAY:       1,
+  
+  // Bounce rate that triggers auto-pause for an account. Set to 5%
+  // (not 2%) intentionally — see §2 "Bounce-rate threshold rationale".
   BOUNCE_RATE_PAUSE_THRESHOLD:                    0.05,
+  
+  // Per-tick processing budget.
   TICK_BUDGET_SENDS_PER_RUN:                      30,
   TICK_BUDGET_DURATION_SECONDS:                   240,
+  
+  // Stale-row threshold for crash recovery.
   CRASH_RECOVERY_STALE_MINUTES:                   10,
+  
+  // Priority CSV upload limit per single batch.
   PRIORITY_BATCH_MAX_ROWS_PER_UPLOAD:             500,
+  
+  // Pool low-water alert threshold (days of runway remaining).
   POOL_LOW_WATER_DAYS:                            5,
 } as const;
 ```
 
-These cannot be changed via UI; they require a code commit.
+These cannot be changed via UI; they require a code commit + PR review.
 
 ---
 
@@ -273,10 +312,10 @@ Triggered once per day by cron-job.org at `email_send_schedule.next_run_at`. All
    • Read email_send_schedule.skip_next_run
    • If true:
        - schedule.skip_next_run = false
-       - schedule.day_index += 1                  (drift continues)
-       - recompute next_run_at
-       - record campaign as 'skipped'
-       - alert founders
+       - schedule.last_run_at = now()
+       - schedule.next_run_at = computeNextRunAt(now())   -- next weekday slot
+       - record campaign as 'skipped' (zero queue rows inserted)
+       - alert founders: "Today's run skipped at admin request, resuming [next slot]"
        - exit
 
 ③ Priority list pull
@@ -289,17 +328,20 @@ Triggered once per day by cron-job.org at `email_send_schedule.next_run_at`. All
 ④ Daily cap math + pool pick
    • active_founder_count = number of founders NOT in email_send_paused state
        (if 0 → record campaign as 'paused', alert, exit)
-   • Warmup gate (the Day 1 → Day 2 ramp guard):
+   • Warmup gate (the Day 1 → steady-state ramp guard):
        prev = most-recent email_send_campaigns row with status IN ('done','exhausted')
        if schedule.warmup_day_completed == 0:
          daily_cap_per_acct = WARMUP_DAY_1_CAP (250)
        else if schedule.warmup_day_completed == 1:
          if prev.bounce_rate < 0.03 AND prev.had_no_auto_pauses AND prev.hard_5xx < 5:
-           daily_cap_per_acct = WARMUP_DAY_2_PLUS_CAP (350)
+           daily_cap_per_acct = AUTOMATED_DAILY_TARGET_PER_ACCOUNT (400)
          else:
            daily_cap_per_acct = WARMUP_DAY_1_CAP (250)   -- stay until clean
        else:
-         daily_cap_per_acct = WARMUP_DAY_2_PLUS_CAP (350)
+         daily_cap_per_acct = AUTOMATED_DAILY_TARGET_PER_ACCOUNT (400)
+   • Hard ceiling enforcement: daily_cap_per_acct never exceeds
+     ABSOLUTE_DAILY_CAP_PER_ACCOUNT (499). The 99-send buffer above 400
+     reserves headroom for the founder's personal Gmail activity.
    • daily_target = daily_cap_per_acct × active_founder_count
    • capped_priority_n = min(priority_n, daily_target)
    • If priority_n > daily_target:
@@ -329,12 +371,15 @@ Triggered once per day by cron-job.org at `email_send_schedule.next_run_at`. All
    • For each row, uniform_random() over founder's active variants
    • If founder has 0 active variants → that founder's chunk is dropped, alert
 
-⑧ Slot scheduling (per founder, independent jitter)
-   • cursor = campaign_start + random(0, 30s)
+⑧ Slot scheduling (per founder, independent jitter — mirrors YAMM's pacing)
+   • cursor = campaign_start + random(0, 10s)               -- small initial offset
    • for each send in chunk:
        slot = cursor
-       cursor += random(15s, 45s) clamped to [10s, 120s]
-   • If total span > MAX_CAMPAIGN_DURATION_HOURS → abort, alert (shouldn't happen at 350)
+       cursor += random(INTER_SEND_JITTER_MIN_SECONDS, INTER_SEND_JITTER_MAX_SECONDS)
+       --                                  5s              15s
+       cursor = clamp(cursor, MIN_HARD_FLOOR=5s, MAX_HARD_CEILING=30s) per gap
+   • Avg gap ≈ 10s → 6 sends/min/account → 400 sends in ~67 min
+   • If total span > MAX_CAMPAIGN_DURATION_HOURS (2h) → abort, alert (won't happen at 400)
 
 ⑨ Bulk insert into email_send_queue
    • One row per recipient × variant × slot
@@ -342,36 +387,64 @@ Triggered once per day by cron-job.org at `email_send_schedule.next_run_at`. All
 
 ⑩ Priority queue update + schedule advance
    • UPDATE email_send_priority_queue SET status='scheduled', campaign_id=...
-   • email_send_schedule.day_index += 1
    • email_send_schedule.last_run_at = now()
-   • email_send_schedule.next_run_at = compute_next()
-   • If campaign reached steady-state cap (350) and warmup_day_completed < 2:
+   • email_send_schedule.next_run_at = computeNextRunAt(now())   -- next weekday slot
+   • If campaign reached steady-state cap (400) and warmup_day_completed < 2:
        email_send_schedule.warmup_day_completed += 1
    • email_send_campaigns SET status='running', started_at=now()
    • Function returns
 ```
 
-### 5.1 Schedule drift logic (cap-and-wrap)
+### 5.1 Weekday-only schedule (fixed times)
+
+No drift, no anchor, no day_index. The schedule is a fixed map from day-of-week to PT start time. Saturday and Sunday have no campaigns.
 
 ```typescript
-function computeNextRunAt(schedule): Date {
-  const baseUtc = schedule.anchor_at;
-  const daysFromAnchor = schedule.day_index + 1;
-  const driftMinutes = daysFromAnchor * schedule.drift_per_day_min;
-  const tentative = baseUtc + days(daysFromAnchor) + minutes(driftMinutes);
-  
-  const ptHour = ptHourOf(tentative);
-  if (ptHour >= schedule.drift_cap_local_hour) {
-    // Wrap: skip ahead to next day at anchor PT time, reset drift
-    const wrapped = nextDayAtPtTime(tentative, ptHourOf(baseUtc), ptMinuteOf(baseUtc));
-    schedule.day_index = 0;  // drift resets at wrap (persisted on next run)
-    return wrapped;
+// src/lib/email-tool/schedule.ts
+export const WEEKDAY_START_TIMES_PT: Record<number, { hour: number; minute: number }> = {
+  1: { hour: 5,  minute:  0 },   // Monday    — 5:00 AM PT
+  2: { hour: 5,  minute: 30 },   // Tuesday   — 5:30 AM PT
+  3: { hour: 6,  minute:  0 },   // Wednesday — 6:00 AM PT
+  4: { hour: 6,  minute: 30 },   // Thursday  — 6:30 AM PT
+  5: { hour: 7,  minute:  0 },   // Friday    — 7:00 AM PT
+  // 0 = Sunday, 6 = Saturday — no entries → no campaigns
+};
+
+export function computeNextRunAt(now: Date = new Date()): Date | null {
+  // Walk forward up to 7 days to find the next weekday with an entry.
+  for (let i = 0; i < 7; i++) {
+    const candidate = addDays(now, i);
+    const dow = ptDayOfWeek(candidate);                 // 0..6 in PT
+    const slot = WEEKDAY_START_TIMES_PT[dow];
+    if (!slot) continue;                                // skip Sat/Sun
+    const ptStart = ptDateTime(candidate, slot.hour, slot.minute);
+    if (ptStart > now) return ptStart;                  // first future slot
   }
-  return tentative;
+  return null;                                          // shouldn't happen
 }
 ```
 
-The wrap day produces one ~17-hour gap (e.g., yesterday 12:45pm → today 5:30am), which is intentional — it's the price of staying in business hours. Drift then restarts from 5:30am.
+Behavior:
+- **Monday 5:00 AM PT** — campaign starts (drains 400 sends/account in ~67 min, finishing ~6:07 AM PT)
+- **Tuesday 5:30 AM PT** — start (finishes ~6:37 AM PT)
+- **Wednesday 6:00 AM PT** — start (finishes ~7:07 AM PT)
+- **Thursday 6:30 AM PT** — start (finishes ~7:37 AM PT)
+- **Friday 7:00 AM PT** — start (finishes ~8:07 AM PT)
+- **Saturday & Sunday** — no campaign
+
+The +30min/day stagger across weekdays gives the time-of-day variation that makes our send pattern look human (not always-the-same-time-each-day). Resetting to 5:00 AM each Monday means the +30min drift never carries past 7 AM PT — staying in the optimal "first thing in the morning" inbox window.
+
+#### After Friday's campaign
+
+`computeNextRunAt()` returns next Monday at 5:00 AM PT. cron-job.org's daily polling sees the new `next_run_at`, doesn't fire on Sat/Sun, and triggers Monday morning.
+
+#### What if Friday's run is missed (server down etc.)?
+
+The next morning's cron poll (Saturday) sees `next_run_at` is in the past. We don't backfill. The cron does an idempotent re-check, sees we're now on Saturday (no slot), and bumps `next_run_at` to next Monday 5:00 AM. Friday's slot is forfeited.
+
+#### Holidays / one-off skips
+
+The "Skip One Day" toggle (§9) handles ad-hoc skips. If you hit it on Sunday night, Monday's campaign is skipped and Tuesday's runs at its normal time. No drift accumulation because there's no drift.
 
 ---
 
@@ -460,10 +533,55 @@ Triggered every minute by Vercel's native cron. Drains `email_send_queue`.
 - Maximum: unlimited (practical: 4–6)
 - Each variant: subject_template + body_template + label
 
-### 7.3 Merge tags
-- `{{first_name}}` — falls back to `"there"`
-- `{{company}}` — falls back to `"your company"`
-- `{{founder_name}}` — sending founder's first name (rendered live, not at queue time)
+### 7.3 Merge tags — the per-recipient personalization model
+
+Two recipient variables are the **primary** personalization mechanism — these are the same `{{first_name}}` / `{{company}}` tokens YAMM uses, so the muscle memory transfers exactly:
+
+| Tag | Source | Fallback if blank | Notes |
+|---|---|---|---|
+| `{{first_name}}` | `email_pool.first_name` (or priority CSV column) | `there` | Most-used tag — every greeting should reference this |
+| `{{company}}` | `email_pool.company` (or priority CSV column) | `your company` | Used in subject and/or body opener |
+| `{{founder_name}}` | live read from sending founder's `team_members.name` | (always set) | Auto-populated, founder doesn't manage |
+
+**Authoring example:**
+
+```
+Subject: product prioritization at {{company}}
+
+{{ RANDOM | Hi | Hey }} {{first_name}},
+
+I'm a Berkeley CS student exploring how teams at {{company}} decide what
+product work to prioritize when there are competing user, analytics, and
+internal signals.
+
+Would love 10–15 minutes if you're open to it.
+
+{{ RANDOM | Cheers | Thanks | Best }},
+{{founder_name}}
+```
+
+When sent to `pat@acme.com` with `first_name=Pat`, `company=Acme`, `founder_name=Adit`:
+
+```
+Subject: product prioritization at Acme
+
+Hey Pat,
+
+I'm a Berkeley CS student exploring how teams at Acme decide what product
+work to prioritize when there are competing user, analytics, and internal
+signals.
+
+Would love 10–15 minutes if you're open to it.
+
+Cheers,
+Adit
+```
+
+**The two recipient tags `{{first_name}}` and `{{company}}` are first-class:**
+- The templates UI treats them as known tokens — autocomplete in the editor, syntax-highlighted in the live preview
+- The lint warns (Section 7.5) if a body lacks BOTH (no personalization at all)
+- The CSV upload page for priority lists (Section 10) explicitly requires `email`, `first_name`, `company` columns
+- The pool picker (`email_pool` table, existing) already has these columns populated
 
 ### 7.4 Limited spintax (greetings/sign-offs only)
 Syntax: `{{ RANDOM | option_a | option_b | option_c }}`
@@ -495,20 +613,7 @@ Warnings (savable with confirmation):
 
 ### 7.6 Templates UI
 
-Located at `/email-tool/admin/templates` (admin-only).
-
-Per-founder section listing variants with:
-- Active toggle
-- Edit / Delete actions
-- Subject preview
-- Body preview (first 80 chars)
-
-Edit modal:
-- Plain-text editor
-- Live preview pane: renders with sample data (`first_name="Sample"`, `company="Acme Corp"`, `founder_name=<current>`)
-- Spintax preview: shows N=3 random rolls
-- Lint runs on input change; save button disabled while blockers present
-- Save shows confirmation dialog if warnings present
+Lives as the **Templates** tab on the consolidated admin page at `/email-tool/admin?tab=templates`. See **Section 11.4** for the full UI design including the per-variant edit modal with autocomplete for `{{first_name}}`/`{{company}}`/`{{founder_name}}`, live preview with sample data, and inline lint feedback.
 
 ---
 
@@ -526,7 +631,7 @@ Cost: 1 indexed query per send (cheap).
 
 ## 9. Skip One Day toggle
 
-UI at `/email-tool/admin/schedule`. Button labeled `Skip tomorrow's run`.
+UI: `⏭ Skip Next Run` button in the consolidated admin page header (always visible — see §11.4).
 
 Click flow:
 - POST to `/api/cron/email-tool/schedule/skip` (admin-gated)
@@ -536,7 +641,7 @@ Click flow:
 
 Behavior:
 - Single-shot — skipping repeatedly requires repeated clicks
-- `day_index` increments anyway → drift continues, slot is forfeited
+- Slot is forfeited (no backfill); `next_run_at` advances to the *next* weekday slot
 - Founders alerted via Resend that the day was skipped
 
 ---
@@ -545,10 +650,12 @@ Behavior:
 
 ### 10.1 Upload UI
 
-Located at `/email-tool/admin/priority`. Admin-only.
+Triggered from the `➕ Upload Priority Batch` button (always visible in the consolidated admin page header — see §11.4) OR from the **Priority Queue** tab. Upload opens as a modal so the admin doesn't navigate away.
+
+Admin-only.
 
 Inputs:
-- Schedule for: dropdown of next 7 days, default = next campaign date (with actual time shown per drift schedule)
+- Schedule for: dropdown of next 7 weekdays (Sat/Sun excluded), default = next campaign date (with actual time shown per the weekday schedule)
 - CSV upload: columns `email`, `first_name`, `company`
 - OR paste box: comma- or newline-separated emails (names auto-derived if not provided)
 - Notes (optional batch label)
@@ -595,7 +702,7 @@ After /start runs and rows are in `email_send_queue`, cancellation moves to the 
 
 ### 11.1 Health dashboard
 
-Located at `/email-tool/admin/health`. Per-founder card:
+Lives as the **Overview** tab on the consolidated admin page (`/email-tool/admin`). See §11.4 for the full layout. Per-founder card:
 
 ```
 Status:        ✅ Healthy / ⚠ Warning / 🔴 Paused
@@ -633,6 +740,187 @@ Critical alerts include account name, error code, and a 1-click resume link sign
 | Admin clicks "Pause All" | All accounts | Manual resume |
 
 Resume is always an explicit human action — no auto-un-pause on serious flags.
+
+### 11.4 Consolidated admin UI
+
+All admin functionality lives on a single page: **`/email-tool/admin`** (admin-only — same gate as the existing email-tool admin section).
+
+The page has a **persistent header** with 3 primary action buttons (always visible regardless of which tab is active), then a tabbed body for configuration and observation.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Cold Outreach Automation                                  schedule:    │
+│                                                            ✅ ENABLED   │
+│  ┌─────────────────────┐  ┌─────────────────────┐  ┌────────────────┐  │
+│  │ 🛑 Pause All Sending │  │ ⏭ Skip Next Run    │  │ ➕ Upload Batch │  │
+│  └─────────────────────┘  └─────────────────────┘  └────────────────┘  │
+├─────────────────────────────────────────────────────────────────────────┤
+│  [ Overview ]  [ Templates ]  [ Schedule ]  [ Priority Queue ]          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  (tab content here)                                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### The 3 primary action buttons
+
+1. **🛑 Pause All Sending** (red, prominent)
+   - Confirmation dialog: "Pause cold outreach for all 3 founders? In-flight sends will complete; no new sends until you resume."
+   - On confirm: `UPDATE team_members SET email_send_paused=true, email_send_paused_reason='admin_pause', email_send_paused_at=now()`
+   - Header status changes to `🛑 ALL PAUSED — [Resume All]`
+   - The button itself becomes `▶️ Resume All Sending`
+   - Touch each founder individually for selective pause (Templates tab → per-founder controls)
+
+2. **⏭ Skip Next Run** (gray)
+   - Click immediately sets `email_send_schedule.skip_next_run = true` (no confirmation — easy to undo)
+   - Header shows banner: "Tomorrow's run (Tuesday 5:30 AM PT) will be skipped. [Undo]"
+   - Single-shot — re-press for additional skips
+   - Disabled (grayed out) if `enabled=false` or already-skipping
+
+3. **➕ Upload Priority Batch** (blue, primary action)
+   - Opens a modal directly (doesn't navigate)
+   - Modal has the upload UI from §10 (CSV upload OR paste-emails)
+   - Validation step + lead-owner attribution UI inline
+   - Confirmation submits and closes; toast: "Scheduled 47 priority emails for tomorrow's run"
+
+#### Tab 1 — Overview (default)
+
+Per-founder health cards (the dashboard from §11.1) plus aggregate row showing pool runway, today's totals. This is the "is everything healthy?" landing page.
+
+#### Tab 2 — Templates
+
+Per-founder template library:
+
+```
+┌─ Adit Mittal ─────────────────────  [+ New Variant]  [Pause Adit only]┐
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │ ✓ Adit v1                            Sent 1,247 · Reply 5.2% ✏  │ │
+│  │   Subject: product prioritization at {{company}}                  │ │
+│  │   "Hi {{first_name}}, I'm a Berkeley CS student exploring..."    │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │ ✓ Adit v2                            Sent  893 · Reply 8.1% ✏  │ │
+│  │   Subject: how does {{company}} prioritize product work?         │ │
+│  │   ...                                                            │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────┘
+
+[Srijay Vejendla section ...]
+[Asim Ali section ...]
+```
+
+Edit modal (per variant):
+
+```
+┌─ Edit variant: Adit v2 ────────────────────────────────────────────┐
+│                                                                    │
+│  Label:    [ Adit v2                                            ]  │
+│                                                                    │
+│  Subject:  [ how does {{company}} prioritize product work?      ]  │
+│            ✓ uses {{company}}                                      │
+│                                                                    │
+│  Body:                                                             │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ {{ RANDOM | Hi | Hey }} {{first_name}},                      │  │
+│  │                                                               │  │
+│  │ I'm a Berkeley CS student exploring how teams at             │  │
+│  │ {{company}} decide what product work to prioritize when      │  │
+│  │ there are competing user, analytics, and internal signals.   │  │
+│  │                                                               │  │
+│  │ Would love 10–15 minutes if you're open to it.               │  │
+│  │                                                               │  │
+│  │ {{ RANDOM | Cheers | Thanks | Best }},                       │  │
+│  │ {{founder_name}}                                             │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                    │
+│  Variables available:  {{first_name}}  {{company}}  {{founder_name}}│
+│                                                                    │
+│  ─────────────  Live Preview (with sample data) ───────────────    │
+│                                                                    │
+│  Subject: how does Acme prioritize product work?                   │
+│                                                                    │
+│  Hey Pat,                                                          │
+│                                                                    │
+│  I'm a Berkeley CS student exploring how teams at Acme decide      │
+│  what product work to prioritize when there are competing user,    │
+│  analytics, and internal signals.                                  │
+│                                                                    │
+│  Would love 10–15 minutes if you're open to it.                    │
+│                                                                    │
+│  Cheers,                                                           │
+│  Adit                                                              │
+│                                                                    │
+│  [Re-roll spintax preview]                                         │
+│                                                                    │
+│  ─────────────  Lint  ──────────────────────────────────────────   │
+│  ✅ No blockers                                                    │
+│  ⚠ 1 warning: subject 60/80 chars                                  │
+│                                                                    │
+│  [ Cancel ]                            [ Save ]   [ Save & Activate]│
+└────────────────────────────────────────────────────────────────────┘
+```
+
+Live preview re-renders on every keystroke. The "Variables available" row shows clickable chips that insert the tag at the cursor position.
+
+#### Tab 3 — Schedule
+
+```
+┌─ Schedule ─────────────────────────────────────────────────────────┐
+│                                                                    │
+│  Master toggle:  [ Enabled ⏵ ]    (default off; admin flips on)   │
+│                                                                    │
+│  Weekly schedule (PT):                                             │
+│    Monday      5:00 AM      ─ 400 sends/account ─ ~6:07 AM         │
+│    Tuesday     5:30 AM      ─ 400 sends/account ─ ~6:37 AM         │
+│    Wednesday   6:00 AM      ─ 400 sends/account ─ ~7:07 AM         │
+│    Thursday    6:30 AM      ─ 400 sends/account ─ ~7:37 AM         │
+│    Friday      7:00 AM      ─ 400 sends/account ─ ~8:07 AM         │
+│    Saturday    — no campaign —                                     │
+│    Sunday      — no campaign —                                     │
+│                                                                    │
+│  Next run:    Mon, May 4 — 5:00 AM PT (in 3d 7h)                  │
+│  Last run:    Fri, May 1 — 7:00 AM PT (1,047 sent, 41 replies)    │
+│                                                                    │
+│  Warmup status:  Day 2+ steady state (400/account)                 │
+│                                                                    │
+│  [ Skip next run ]      (same as the header button)                │
+│                                                                    │
+│  Recent runs:                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ Date     Started   Sent   Bounced   Replies   Status         │  │
+│  │ May 1   7:00 AM   1,047   12 (1.1%)   41      ✅ done        │  │
+│  │ Apr 30  6:30 AM   1,043    9 (0.9%)   38      ✅ done        │  │
+│  │ Apr 29  6:00 AM   1,051   15 (1.4%)   29      ✅ done        │  │
+│  │ ...                                                          │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+The weekly schedule grid is read-only — the times are hardcoded per §5.1 and only change with a code commit. Editable controls are: master toggle, skip-next, and warmup-skip override (admin button with a "this is a bad idea" banner).
+
+#### Tab 4 — Priority Queue
+
+```
+┌─ Priority Queue ──────────────────────────────────────────────────┐
+│                                                                   │
+│  [➕ Upload new batch]   (same as the header button)              │
+│                                                                   │
+│  Scheduled for tomorrow (Tue, May 5 — 5:30 AM PT):                │
+│  ┌─────────────────────────────────────────────────────────────┐  │
+│  │ "YC partner contacts" — 47 emails — uploaded by Adit 4:12pm │  │
+│  │ Owner attribution: Use lead owners (8 Adit, 3 Srijay, 1 Asim)│ │
+│  │ [ Show full list ▾ ]                          [ Cancel batch]│ │
+│  └─────────────────────────────────────────────────────────────┘  │
+│                                                                   │
+│  Sent / completed batches (last 30d):                             │
+│    May 1  "Demo follow-ups"  23 emails  → 5 replies (21.7%)       │
+│    Apr 27 "YC W26 cohort"    35 emails  → 12 replies (34.3%)      │
+│    ...                                                            │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+#### Routing summary (the change from earlier sections)
+
+The earlier sections referenced `/email-tool/admin/templates`, `/email-tool/admin/schedule`, `/email-tool/admin/priority`, `/email-tool/admin/health` as separate pages. **We consolidate to a single page** at `/email-tool/admin` with the 4 tabs above. Tabs are URL-routed (`?tab=templates`) so links from alerts work.
 
 ---
 
@@ -704,7 +992,7 @@ Variations: per-founder, per-campaign, per-week trend, per-recipient-domain succ
 These plug into the new health dashboard (§11.1) as additional cards:
 - "Top-performing variants this week"
 - "Adit's reply rate trend (4-week sparkline)"
-- "Last campaign: 350 sent, 28 replied (8% — 2pp above 30-day average)"
+- "Last campaign: 400 sent, 32 replied (8% — 2pp above 30-day average)"
 
 Founders get the iteration data they've never had before. Variants that consistently underperform get retired; high-performers get cloned and tweaked.
 
@@ -719,11 +1007,11 @@ Today this requires manual cleanup — founders see bounce notifications in thei
 ### 12.6 Activity feed integration
 
 The dashboard's existing activity feed (`activity_log` table) already shows lead-level events: stage changes, new replies, etc. With in-CRM sends, we add new event types to the feed:
-- `cold_outreach_sent` — "Adit sent 350 cold emails this morning (campaign 4f8…)"
+- `cold_outreach_sent` — "Adit sent 400 cold emails this morning (campaign 4f8…)"
 - `cold_outreach_replied` — "Pat at Acme replied to Adit's outreach (variant 'Adit v2')"
 - `cold_outreach_bounced` — "3 hard bounces today (auto-blacklisted)"
 
-The aggregate "morning send" event collapses 350 individual sends into one feed row with a click-through to the campaign details. Replies stay individual (those are interesting).
+The aggregate "morning send" event collapses 400 individual sends into one feed row with a click-through to the campaign details. Replies stay individual (those are interesting).
 
 ### 12.7 Daily founder digest enrichment
 
@@ -731,7 +1019,7 @@ The existing 8am PT daily digest (§11.2) gets a new "Yesterday's outreach" sect
 
 ```
 Yesterday's cold outreach — Adit
-  Sent:           347                       (3 deferred — same-domain dedup)
+  Sent:           397                       (3 deferred — same-domain dedup)
   Bounced:        4 (1.2%)                  ✅
   Replies so far: 14 (4.0% — 0.4pp above 7-day avg)
   Top variant:    "Adit v2" (8% reply rate, 60% of sends)
@@ -805,7 +1093,7 @@ Each PR is independently testable; pull the plug at any boundary if something lo
 
 After PR 5 ships and admin enables:
 - Day 1: 250/account = 750 total (smoke test day)
-- Day 2+: 350/account = 1,050 total (steady state)
+- Day 2+: 400/account = 1,200 total (steady state)
 - Day 1 → Day 2 ramp gate: only ramps if Day 1 had no auto-pauses, bounce rate <3%, fewer than 5 hard 5xx errors. Otherwise stays at 250 until two consecutive clean days.
 
 ---
@@ -814,13 +1102,17 @@ After PR 5 ships and admin enables:
 
 1. **Plus-aliasing Gmail filters** — each founder creates a Gmail filter that catches `to:<their_address>+unsubscribe@berkeley.edu` and labels/archives it appropriately. ~5 minutes per account. Documented in the pre-go-live checklist.
 
-2. **Template content** — founders write 2 actual variants each. I can provide starter templates from existing Gmail patterns; founders edit voice.
+2. **Template content** — founders write 2 actual variants each. I'll provide starter templates from existing Gmail patterns ("Berkeley student interested in product prioritization at..."); founders edit voice/length to taste.
 
 3. **Resend "from" address for critical alerts** — confirm an existing or new Resend sender; reuse the `RESEND_API_KEY`.
 
 4. **cron-job.org daily-trigger entry** — created/updated when admin first enables the schedule (URL provided in the schedule UI).
 
-5. **Phase 2: custom outreach domain** — register a domain (e.g. `proxiapp.com`), set up SPF + DKIM (2048-bit) + DMARC (`p=none; rua=` to start), enroll in Postmaster Tools, migrate the `email_template_variants` to use the new `From` address. Separate project after this ships and runs stably for ~30 days.
+### Auth confirmation — Gmail OAuth tokens already in place
+
+All 3 founders' Gmail accounts already have OAuth tokens with the necessary scopes (`gmail.readonly`, `gmail.send`, `gmail.modify`) — they were established as part of the existing Gmail integration (see `src/lib/gmail/auth.ts` + the existing `/api/gmail/connect` flow). The tokens auto-refresh in `src/lib/gmail/client.ts`. **No additional auth/OAuth setup is needed for this build.** The send pipeline reuses `getGmailClientForMember()` which is the same client the existing reply-sender already uses.
+
+If a founder's token is revoked at any point, the existing `gmail_connected` flag flips to false — the send pipeline detects this and pauses that account with `paused_reason='oauth_revoked'`. The founder reconnects via `/settings`, and admin manually resumes.
 
 ---
 
@@ -844,7 +1136,6 @@ After PR 5 ships and admin enables:
 - **Tick**: one execution of `/api/cron/email-tool/tick` (every minute)
 - **Variant**: one template option from `email_template_variants`
 - **Spintax**: the `{{ RANDOM | a | b }}` syntax for greeting/sign-off variation
-- **Drift**: the +15min/day shift in campaign start time
-- **Wrap**: when drift would cross 1pm PT, reset to anchor (5:30am) the next day
-- **Warmup**: Day 1 = 250/account, Day 2+ = 350/account ramp
+- **Weekday schedule**: fixed map from day-of-week to PT start time (Mon 5:00, Tue 5:30, Wed 6:00, Thu 6:30, Fri 7:00). Sat/Sun: no campaigns
+- **Warmup**: Day 1 = 250/account, Day 2+ = 400/account ramp (gated by Day-1 cleanliness check)
 - **Priority row**: a row from `email_send_priority_queue` (admin-uploaded, not from pool)
