@@ -40,6 +40,7 @@ interface QueueRow {
   recipient_company: string | null;
   template_variant_id: string;
   send_at: string;
+  attempts: number;
 }
 
 interface FounderRow {
@@ -60,15 +61,28 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
   const stats: RunTickStats = { processed: 0, sent: 0, failed: 0, skipped: 0 };
 
   // ── 1) Crash recovery sweep ───────────────────────────────────────────
+  // Per spec §6 step ②, APPEND a marker to last_error rather than clobber
+  // it — preserves upstream context (e.g., the last failed safety check or
+  // gmail error before the crash). Stale rows are rare so the per-row
+  // round-trip is acceptable.
   const staleCutoff = new Date(now.getTime() - SAFETY_LIMITS.CRASH_RECOVERY_STALE_MINUTES * 60_000).toISOString();
-  await supabase.from('email_send_queue')
-    .update({
-      status: 'pending',
-      sending_started_at: null,
-      last_error: 'recovered_from_stale_sending',
-    })
+  const { data: staleRows } = await supabase
+    .from('email_send_queue')
+    .select('id, last_error')
     .eq('status', 'sending')
     .lt('sending_started_at', staleCutoff);
+  for (const stale of (staleRows ?? []) as Array<{ id: string; last_error: string | null }>) {
+    const newLastError = stale.last_error
+      ? `${stale.last_error} [recovered_from_stale_sending]`
+      : 'recovered_from_stale_sending';
+    await supabase.from('email_send_queue')
+      .update({
+        status: 'pending',
+        sending_started_at: null,
+        last_error: newLastError,
+      })
+      .eq('id', stale.id);
+  }
 
   // ── 2) Active accounts ────────────────────────────────────────────────
   const { data: foundersData } = await supabase
@@ -97,7 +111,7 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
   // ── 4) Pull due rows ──────────────────────────────────────────────────
   const { data: dueData } = await supabase
     .from('email_send_queue')
-    .select('id, campaign_id, account_id, recipient_email, recipient_name, recipient_company, template_variant_id, send_at')
+    .select('id, campaign_id, account_id, recipient_email, recipient_name, recipient_company, template_variant_id, send_at, attempts')
     .eq('status', 'pending')
     .lte('send_at', now.toISOString())
     .in('account_id', activeIds)
@@ -138,13 +152,15 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
       continue;
     }
 
-    // Run safety checks
+    // Safety checks in spec §6 ⑤a order (cheap pause-trigger first, then
+    // cheap defer-trigger, then table-scoped checks, with variant lookup
+    // last because it hits a different table than the others).
     const checksToRun: Array<() => Promise<SafetyVerdict>> = [
       () => checkBounceRate(supabase, row.account_id),
-      () => checkActiveVariant(supabase, row.account_id),
+      () => checkPerSecondPace(supabase, row.account_id),
       () => checkRecipientDomainOnce(supabase, row.account_id, row.recipient_email, todayStartIso),
       () => checkReplySinceQueue(supabase, row.recipient_email),
-      () => checkPerSecondPace(supabase, row.account_id),
+      () => checkActiveVariant(supabase, row.account_id),
     ];
     let safetyFail: SafetyVerdict | null = null;
     for (const check of checksToRun) {
@@ -319,8 +335,8 @@ async function applySendOutcome(
           lead_id: leadId,
           team_member_id: row.account_id,
           type: 'email_outbound',
-          subject: variant.subject_template,
-          body: variant.body_template,
+          subject: outcome.rendered_subject,
+          body: outcome.rendered_body,
           gmail_message_id: outcome.gmail_message_id,
           gmail_thread_id: outcome.gmail_thread_id,
           campaign_id: row.campaign_id,
@@ -341,12 +357,24 @@ async function applySendOutcome(
         .eq('id', row.id);
       return 'skipped';
     case 'rate_limit_retry': {
+      const nextAttempt = row.attempts + 1;
+      // Spec §6 ⑤d: max 3 retries on 429, then status='failed'. The
+      // exponential-backoff schedule (5s/30s/2m) is deferred to PR 4 —
+      // for v1 we use a single 30s defer per attempt.
+      if (nextAttempt > 3) {
+        await supabase.from('email_send_queue').update({
+          status: 'failed',
+          last_error: 'rate_limit_retry_exhausted',
+          attempts: nextAttempt,
+        }).eq('id', row.id);
+        return 'failed';
+      }
       const newSendAt = new Date(now.getTime() + 30_000).toISOString();
       await supabase.from('email_send_queue').update({
         status: 'pending',
         send_at: newSendAt,
         sending_started_at: null,
-        attempts: 1, // simplified — PR 4 may track exponential backoff
+        attempts: nextAttempt,
         last_error: 'rate_limit_retry',
       }).eq('id', row.id);
       return 'rate_limit_retry';

@@ -32,7 +32,8 @@ export interface SendInput {
 }
 
 export type SendOutcome =
-  | { outcome: 'sent';            gmail_message_id: string; gmail_thread_id: string | null }
+  | { outcome: 'sent';            gmail_message_id: string; gmail_thread_id: string | null;
+      rendered_subject: string;   rendered_body: string }
   | { outcome: 'skipped';         last_error: string }
   | { outcome: 'rate_limit_retry' }
   | { outcome: 'account_pause';   reason: string }
@@ -81,6 +82,8 @@ export async function sendCampaignEmail(
       outcome: 'sent',
       gmail_message_id: `dryrun:${input.queueRow.id}`,
       gmail_thread_id: null,
+      rendered_subject: rendered.subject,
+      rendered_body: rendered.body,
     };
   }
 
@@ -94,6 +97,8 @@ export async function sendCampaignEmail(
       outcome: 'sent',
       gmail_message_id: res.data.id ?? `unknown:${input.queueRow.id}`,
       gmail_thread_id: res.data.threadId ?? null,
+      rendered_subject: rendered.subject,
+      rendered_body: rendered.body,
     };
   } catch (err) {
     return classifyGmailError(err, input.queueRow.id);

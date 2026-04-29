@@ -222,6 +222,29 @@ describe('sendCampaignEmail', () => {
         expect(r.gmail_thread_id).toMatch(/^mock-thread-/);
       }
     });
+
+    it('exposes the rendered subject + body for downstream CRM logging', async () => {
+      // Spec §12.2: interactions.subject/body must be the RENDERED content
+      // (post merge-tag + spintax), not the raw templates.
+      const r = await sendCampaignEmail(baseInput, mock);
+      expect(r.outcome).toBe('sent');
+      if (r.outcome === 'sent') {
+        expect(r.rendered_subject).toBe('product prioritization at Acme');
+        expect(r.rendered_body).toContain('Hi Pat,');
+        expect(r.rendered_body).toContain('Cheers,\nAdit');
+        expect(r.rendered_body).not.toContain('{{');
+      }
+    });
+
+    it('exposes rendered output even in dry_run mode', async () => {
+      const r = await sendCampaignEmail({ ...baseInput, sendMode: 'dry_run' }, mock);
+      expect(r.outcome).toBe('sent');
+      if (r.outcome === 'sent') {
+        expect(r.gmail_message_id).toBe('dryrun:q-1');
+        expect(r.rendered_subject).toBe('product prioritization at Acme');
+        expect(r.rendered_body).toContain('Hi Pat,');
+      }
+    });
   });
 
   describe('RFC 2822 wire-level invariants', () => {
