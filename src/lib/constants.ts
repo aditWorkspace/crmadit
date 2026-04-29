@@ -2,6 +2,7 @@ import { LeadStage, Priority } from '@/types';
 
 // Canonical forward progression — used for velocity tracking and stage comparisons
 export const STAGE_ORDER: LeadStage[] = [
+  'outreach_sent',
   'replied',
   'scheduling',
   'scheduled',
@@ -15,6 +16,7 @@ export const STAGE_ORDER: LeadStage[] = [
 
 // Stages that count as "active" in the pipeline (not terminal, not legacy)
 export const ACTIVE_STAGES: LeadStage[] = [
+  'outreach_sent',
   'replied',
   'scheduling',
   'scheduled',
@@ -76,6 +78,7 @@ export const BOOKING_URL = 'https://pmcrminternal.vercel.app/book';
 export const CALLS_STAGES: LeadStage[] = ['scheduled', 'call_completed', 'feedback_call', 'active_user'];
 
 export const STAGE_LABELS: Record<LeadStage, string> = {
+  outreach_sent: 'Cold Email Sent',
   replied: 'In Dialogue',
   scheduling: 'Scheduling Call',
   scheduled: 'Call Scheduled',
@@ -89,6 +92,7 @@ export const STAGE_LABELS: Record<LeadStage, string> = {
 };
 
 export const STAGE_COLORS: Record<LeadStage, string> = {
+  outreach_sent: 'bg-slate-100 text-slate-700 border-slate-200',
   replied: 'bg-blue-100 text-blue-800 border-blue-200',
   scheduling: 'bg-yellow-100 text-yellow-800 border-yellow-200',
   scheduled: 'bg-indigo-100 text-indigo-800 border-indigo-200',
@@ -102,6 +106,7 @@ export const STAGE_COLORS: Record<LeadStage, string> = {
 };
 
 export const STAGE_DOT_COLORS: Record<LeadStage, string> = {
+  outreach_sent: 'bg-slate-400',
   replied: 'bg-blue-500',
   scheduling: 'bg-yellow-500',
   scheduled: 'bg-indigo-500',

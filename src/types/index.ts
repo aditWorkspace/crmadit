@@ -1,4 +1,5 @@
 export type LeadStage =
+  | 'outreach_sent'  // cold email sent, no reply yet (added PR 4)
   | 'replied'
   | 'scheduling'
   | 'scheduled'
