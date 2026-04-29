@@ -75,43 +75,61 @@ Berkeley owns `berkeley.edu`, not us. We cannot enroll the sending domain in Pos
 
 ## 3. Architecture overview
 
+**Single cron, single entry point.** One Vercel cron entry runs every minute and serves both roles: it self-triggers the daily campaign when due, and drains the queue. No second external scheduler (cron-job.org dropped from this design).
+
 ```
-                 ┌────────────────────────────────┐
-                 │ DAILY TRIGGER  (cron-job.org)  │
-                 │ Fires at email_send_schedule.next_run_at
-                 └───────────────┬────────────────┘
+                ┌──────────────────────────────────────────┐
+                │  EVERY MINUTE  (vercel.json cron)        │
+                │  POST /api/cron/email-tool/tick          │
+                │                                          │
+                │  ① Self-trigger check                    │
+                │      if computeNextRunAt() ≤ now()       │
+                │      AND no campaign for today yet:      │
+                │         → run start phase (idempotent)   │
+                │                                          │
+                │  ② Crash recovery sweep                  │
+                │  ③ Drain due queue rows                  │
+                └────────────────┬─────────────────────────┘
+                                 │ (when self-triggered)
                                  ▼
-                ┌─────────────────────────────────┐
-                │ POST /api/cron/email-tool/start │
-                │  ① Kill switch / pause check    │
-                │  ② Skip-next-run check           │
-                │  ③ Priority-list pull            │
-                │  ④ Pool pick + reservation       │
-                │  ⑤ Round-robin assignment        │
-                │  ⑥ Domain-dedup pass             │
-                │  ⑦ Template variant pick         │
-                │  ⑧ Slot scheduling (jittered)    │
-                │  ⑨ Queue insert                  │
-                │  ⑩ Schedule advance              │
-                └───────────────┬─────────────────┘
-                                ▼
+                ┌──────────────────────────────────────────┐
+                │  start phase  — runs INSIDE the tick     │
+                │  (not a separate HTTP endpoint)          │
+                │                                          │
+                │  Wrapped in single SERIALIZABLE txn:     │
+                │    1) SELECT FOR UPDATE on schedule row  │
+                │    2) Read + clear skip_next_run         │
+                │    3) INSERT campaign with               │
+                │       idempotency_key = today's date,    │
+                │       ON CONFLICT DO NOTHING              │
+                │    4) If conflict → exit (already ran)   │
+                │                                          │
+                │  Then (outside txn, with campaign id):   │
+                │    5) Priority-list pull                 │
+                │    6) Pool pick + round-robin            │
+                │    7) Domain-dedup                       │
+                │    8) Template variant pick              │
+                │    9) Slot scheduling (5–15s jitter)     │
+                │   10) Bulk queue insert                  │
+                └────────────────┬─────────────────────────┘
+                                 ▼
                   email_send_queue (status=pending)
-                                ▼
-                ┌─────────────────────────────────┐
-                │ EVERY MINUTE  (vercel cron)     │
-                │ POST /api/cron/email-tool/tick  │
-                │  ① Crash recovery sweep          │
-                │  ② Per-tick safety checks        │
-                │  ③ Pull due rows (≤30/tick)      │
-                │  ④ Render template + send        │
-                │  ⑤ Apply error policy            │
-                │  ⑥ Update status / blacklist     │
-                └───────────────┬─────────────────┘
-                                ▼
-                  Gmail (delivered to prospect)
+                                 ▼
+                  Tick continues with drain phase →
+                  Gmail API → prospect inboxes
 ```
 
-**Two-stage rationale:** the morning trigger does the scheduling work in <30 seconds. The minute-tick drains the queue over 3 hours. Vercel's 5-minute function timeout would otherwise force us to use a queue anyway; this design makes the queue the source of truth and makes ticks idempotent.
+**Why one cron, not two:**
+- Vercel cron handles DST automatically when expressions use UTC; the start phase computes its trigger time in PT and self-checks. cron-job.org coupling, double-fires, and "who updates the cron entry when next_run_at changes" all disappear.
+- Self-healing: if a tick is missed (Vercel hiccup, deploy in flight), the next minute's tick still triggers the start phase as long as no campaign exists for today's date.
+- Single-failure surface for ops/debugging: there's exactly one place that fires.
+
+**Why idempotency via `idempotency_key = scheduled_for::date`:**
+- Two concurrent invocations both try `INSERT … ON CONFLICT (idempotency_key) DO NOTHING`. The losing writer's INSERT returns no row, signaling "another run already started for this date" — return early without inserting any queue rows.
+- The same idempotency key also catches the case where you manually click "Force run today" while the scheduled run is already in progress.
+- Combined with the SELECT FOR UPDATE on the schedule row, the skip-flag read/clear is also race-safe: only one writer reads `skip_next_run = true` and clears it.
+
+**Two-phase rationale (start phase → drain phase):** the start phase does the scheduling work in <30 seconds, ideally inside one tick invocation. The drain phase runs every minute over the ~67 minute window. Vercel's 5-minute function timeout means the drain MUST be queue-based and resumable; this design makes the queue the source of truth and makes ticks naturally idempotent.
 
 ---
 
@@ -119,14 +137,33 @@ Berkeley owns `berkeley.edu`, not us. We cannot enroll the sending domain in Pos
 
 All additions are pure-additive. Existing tables (`email_pool`, `email_blacklist`, `email_pool_state`, `team_members`) untouched except for new columns on `team_members`.
 
-### 4.1 New tables
+### 4.0 Migration split across PRs
 
-Migration ordering matters (FK dependencies). The migration creates tables in this order: `email_send_campaigns` → `email_template_variants` → `email_send_priority_queue` → `email_send_queue` → `email_send_schedule`. The `email_send_priority_queue.campaign_id` FK is added via `ALTER TABLE` *after* both `priority_queue` and `campaigns` exist (campaigns exists first, but the constraint is added last to keep the dependency graph linear).
+Schema lands with the feature that uses it, not all up front. This avoids the production CRM accumulating unused columns for weeks while later PRs are still being built. Three migrations, each scoped:
+
+| Migration file | Lands in | Contents | Why this PR |
+|---|---|---|---|
+| `021_email_send_core.sql` | **PR 1** | `email_send_campaigns`, `email_template_variants`, `email_send_queue`, `email_send_priority_queue`, `email_send_schedule`, `email_send_errors`, new columns on `team_members` | Core send-pipeline scaffolding; all consumed by PR 3's engine |
+| `022_email_send_crm_links.sql` | **PR 3** | `interactions.campaign_id`, `interactions.template_variant_id` columns + their indexes | Lands the same PR that starts writing to those columns |
+| `023_email_send_lead_source.sql` | **PR 4** | `leads.source_campaign_id` column + index, **new `outreach_sent` value added to STAGE_ORDER** | Lands the same PR that creates leads in this stage. The `outreach_sent` value is the most invasive change — it touches kanban + lead detail + filters — so we deliberately defer it until the auto-create wiring is shipping in the same PR. |
+
+This means PR 1's schema has no columns that nothing yet writes to, and the production lead pipeline doesn't gain a dead-letter stage value weeks before any lead occupies it.
+
+### 4.1 New tables (in `021_email_send_core.sql`)
+
+Migration ordering matters (FK dependencies). The migration creates tables in this order: `email_send_campaigns` → `email_template_variants` → `email_send_priority_queue` → `email_send_queue` → `email_send_schedule` → `email_send_errors`. The `email_send_priority_queue.campaign_id` FK is added via `ALTER TABLE` *after* both `priority_queue` and `campaigns` exist (campaigns exists first, but the constraint is added last to keep the dependency graph linear).
 
 ```sql
 -- 1) Per-day campaign run record (no FKs out)
 CREATE TABLE email_send_campaigns (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  -- Idempotency key — typically the PT date in 'YYYY-MM-DD' form (e.g.
+  -- '2026-05-04'). Two concurrent /start invocations for the same date
+  -- both try to INSERT here; the loser hits the unique constraint and
+  -- returns early. Manually-triggered runs use a different prefix
+  -- (e.g. 'manual-2026-05-04T18:33Z') so they don't collide with the
+  -- scheduled run.
+  idempotency_key TEXT NOT NULL,
   scheduled_for   TIMESTAMPTZ NOT NULL,
   started_at      TIMESTAMPTZ,
   completed_at    TIMESTAMPTZ,
@@ -138,9 +175,13 @@ CREATE TABLE email_send_campaigns (
   total_skipped   INT DEFAULT 0,
   abort_reason    TEXT,
   warmup_day      INT,            -- day 1 = 250/account, day 2+ = 400/account
+  send_mode       TEXT NOT NULL DEFAULT 'production',
+  -- production | dry_run | allowlist  (snapshot at campaign creation;
+  -- defined in §11.5, lets us reproduce historical runs)
   created_by      UUID REFERENCES team_members(id),  -- null = cron
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX ON email_send_campaigns (idempotency_key);
 CREATE INDEX ON email_send_campaigns (status, scheduled_for);
 
 -- 2) Per-founder template library (FK to team_members only)
@@ -211,19 +252,42 @@ CREATE INDEX ON email_send_queue (campaign_id, status);
 CREATE TABLE email_send_schedule (
   id                    INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   enabled               BOOLEAN NOT NULL DEFAULT FALSE,
+  send_mode             TEXT NOT NULL DEFAULT 'production',
+  -- production | dry_run | allowlist  (see §11.5 for semantics)
   warmup_started_on     DATE,                        -- null until enabled flipped on
   warmup_day_completed  INT NOT NULL DEFAULT 0,      -- gate for Day 1 → Day 2 ramp
   skip_next_run         BOOLEAN NOT NULL DEFAULT FALSE,
   last_run_at           TIMESTAMPTZ,
-  next_run_at           TIMESTAMPTZ,                 -- denormalized for cron-job.org
+  next_run_at           TIMESTAMPTZ,                 -- displayed in admin UI
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 INSERT INTO email_send_schedule (id) VALUES (1) ON CONFLICT DO NOTHING;
 -- next_run_at is computed by the application from today's date and the
--- weekday→time map. We store it for display + for cron-job.org's
--- read-back-and-trigger flow, but the source of truth is the code.
+-- weekday→time map (PT-aware, DST-correct). Source of truth is the code,
+-- not this column — the column exists for the admin UI to display.
 
--- 6) Add the cross-table FK on priority_queue.campaign_id
+-- 6) Errors / observability table (see §11.4)
+CREATE TABLE email_send_errors (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id     UUID REFERENCES email_send_campaigns(id),
+  account_id      UUID REFERENCES team_members(id),         -- nullable
+  queue_row_id    UUID REFERENCES email_send_queue(id),     -- nullable
+  error_class     TEXT NOT NULL,
+  -- 'crash'           — uncaught exception in tick handler
+  -- 'gmail_api_error' — Gmail returned 4xx/5xx (other than expected codes)
+  -- 'render_error'    — template render threw
+  -- 'config_error'    — missing variant, invalid OAuth, etc.
+  -- 'timeout'         — tick exceeded TICK_BUDGET_DURATION_SECONDS
+  -- 'unknown'         — fallback
+  error_code      TEXT,         -- Gmail API code, exception name, etc.
+  error_message   TEXT,
+  context         JSONB,        -- stack trace, request id, queue row id, etc.
+  occurred_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX ON email_send_errors (occurred_at, error_class);
+CREATE INDEX ON email_send_errors (campaign_id) WHERE campaign_id IS NOT NULL;
+
+-- 7) Add the cross-table FK on priority_queue.campaign_id
 ALTER TABLE email_send_priority_queue
   ADD CONSTRAINT fk_priority_campaign
   FOREIGN KEY (campaign_id) REFERENCES email_send_campaigns(id);
@@ -297,35 +361,52 @@ These cannot be changed via UI; they require a code commit + PR review.
 
 ---
 
-## 5. Daily flow (`/api/cron/email-tool/start`)
+## 5. Daily flow (start phase, runs inside the minute-tick when due)
 
-Triggered once per day by cron-job.org at `email_send_schedule.next_run_at`. All steps run inside a single function invocation in <30 seconds.
+The "start phase" is a function `runDailyStart(supabase)` called from the minute-tick handler when `computeNextRunAt() ≤ now()` AND no campaign has been started for today's PT date yet. Not a separate HTTP endpoint — the entire flow runs inside the same Vercel cron invocation.
+
+All steps complete in <30 seconds. Steps ① + ② + ③ run inside a single SERIALIZABLE transaction for race-safety; the rest run outside the transaction with the campaign id already established.
 
 ```
-① Kill-switch check
-   • Read email_send_schedule.enabled — if false, exit
+═════ TRANSACTION 1 (SERIALIZABLE, fast — <100ms) ═════════════════════
+① Kill-switch + idempotency claim (atomic)
+   BEGIN;
+   • SELECT * FROM email_send_schedule FOR UPDATE  -- single-row lock
+   • If schedule.enabled = false → ROLLBACK; exit
    • Read team_members.email_send_paused for all founders
-   • If ALL 3 founders paused → record campaign as 'paused', alert, exit
-   • If 1–2 paused → continue with the remaining founders only
+       - If ALL 3 paused → record campaign as 'paused'; ROLLBACK; alert; exit
+       - If 1–2 paused → continue with remaining founders only
+   • idempotency_key = format_pt_date(now())  -- e.g. '2026-05-04'
+   • INSERT INTO email_send_campaigns (idempotency_key, scheduled_for, status, ...)
+       VALUES (idempotency_key, now(), 'pending', ...)
+       ON CONFLICT (idempotency_key) DO NOTHING
+       RETURNING id;
+     - If no row returned → another invocation already started today's
+       campaign; ROLLBACK; exit (idempotent no-op)
+     - Else → store the new campaign_id
 
-② Skip-next-run check
-   • Read email_send_schedule.skip_next_run
-   • If true:
-       - schedule.skip_next_run = false
-       - schedule.last_run_at = now()
-       - schedule.next_run_at = computeNextRunAt(now())   -- next weekday slot
-       - record campaign as 'skipped' (zero queue rows inserted)
-       - alert founders: "Today's run skipped at admin request, resuming [next slot]"
+② Skip-next-run check (still inside Transaction 1)
+   • If schedule.skip_next_run = true:
+       - UPDATE email_send_campaigns SET status='skipped' WHERE id=campaign_id
+       - UPDATE email_send_schedule
+           SET skip_next_run = false,
+               last_run_at = now(),
+               next_run_at = computeNextRunAt(now())
+       - COMMIT;
+       - alert founders: "Today's run skipped at admin request"
        - exit
 
-③ Priority list pull
+③ COMMIT;   -- claim is durable: campaign row exists + skip is cleared
+═════ END TRANSACTION 1 ═══════════════════════════════════════════════
+
+④ Priority list pull
    • SELECT * FROM email_send_priority_queue
        WHERE scheduled_for_date = today
          AND status = 'pending'
        ORDER BY uploaded_at, id
    • priority_n = count of those rows
 
-④ Daily cap math + pool pick
+⑤ Daily cap math + pool pick
    • active_founder_count = number of founders NOT in email_send_paused state
        (if 0 → record campaign as 'paused', alert, exit)
    • Warmup gate (the Day 1 → steady-state ramp guard):
@@ -354,24 +435,24 @@ Triggered once per day by cron-job.org at `email_send_schedule.next_run_at`. All
        - if rows.length < regular_target → run a smaller campaign with what's there
    • combined = priority_rows ⊕ pool_rows
 
-⑤ Round-robin assignment
+⑥ Round-robin assignment
    • For each row in combined (in input order):
        - if priority row has override_owner set → assign to that founder
        - else → assign to founders[i % active_founder_count]
    • Skip paused founders in the rotation
 
-⑥ Domain-dedup pass (per founder)
+⑦ Domain-dedup pass (per founder)
    • For each founder's chunk:
        - group by lower(email_domain)
        - if any group has >1 row, keep first, return rest to unscheduled state
    • Pool rows returned: rolled back from blacklist (un-blacklist)
    • Priority rows returned: status reset to 'pending', alerted to admin
 
-⑦ Template variant pick (per recipient)
+⑧ Template variant pick (per recipient)
    • For each row, uniform_random() over founder's active variants
    • If founder has 0 active variants → that founder's chunk is dropped, alert
 
-⑧ Slot scheduling (per founder, independent jitter — mirrors YAMM's pacing)
+⑨ Slot scheduling (per founder, independent jitter — mirrors YAMM's pacing)
    • cursor = campaign_start + random(0, 10s)               -- small initial offset
    • for each send in chunk:
        slot = cursor
@@ -381,18 +462,19 @@ Triggered once per day by cron-job.org at `email_send_schedule.next_run_at`. All
    • Avg gap ≈ 10s → 6 sends/min/account → 400 sends in ~67 min
    • If total span > MAX_CAMPAIGN_DURATION_HOURS (2h) → abort, alert (won't happen at 400)
 
-⑨ Bulk insert into email_send_queue
+⑩ Bulk insert into email_send_queue
    • One row per recipient × variant × slot
    • status='pending'
 
-⑩ Priority queue update + schedule advance
+⑪ Priority queue update + schedule advance
    • UPDATE email_send_priority_queue SET status='scheduled', campaign_id=...
    • email_send_schedule.last_run_at = now()
    • email_send_schedule.next_run_at = computeNextRunAt(now())   -- next weekday slot
    • If campaign reached steady-state cap (400) and warmup_day_completed < 2:
        email_send_schedule.warmup_day_completed += 1
    • email_send_campaigns SET status='running', started_at=now()
-   • Function returns
+   • runDailyStart() returns; control returns to the tick handler which
+     proceeds with crash-recovery sweep + drain phase.
 ```
 
 ### 5.1 Weekday-only schedule (fixed times)
@@ -436,11 +518,13 @@ The +30min/day stagger across weekdays gives the time-of-day variation that make
 
 #### After Friday's campaign
 
-`computeNextRunAt()` returns next Monday at 5:00 AM PT. cron-job.org's daily polling sees the new `next_run_at`, doesn't fire on Sat/Sun, and triggers Monday morning.
+`computeNextRunAt()` returns next Monday at 5:00 AM PT. The minute-tick on Saturday/Sunday computes `due_at` and finds it's still in the future — self-trigger doesn't fire. Drain phase runs (no-op against an empty queue). Monday morning the tick at 5:00 AM PT sees `due_at ≤ now()`, idempotency check passes, and runDailyStart() fires.
 
-#### What if Friday's run is missed (server down etc.)?
+#### What if Friday's run is missed (Vercel hiccup, deploy in flight)?
 
-The next morning's cron poll (Saturday) sees `next_run_at` is in the past. We don't backfill. The cron does an idempotent re-check, sees we're now on Saturday (no slot), and bumps `next_run_at` to next Monday 5:00 AM. Friday's slot is forfeited.
+Self-healing: every minute the next tick re-checks. If Friday 7:00 AM tick was skipped but Friday 7:01 AM tick runs, it sees `due_at = 7:00 AM ≤ now()` and `already_started = false`, runs runDailyStart(). Worst case: a 2-3 minute delay vs. the scheduled time. If the entire morning's cron is down for hours, we forfeit the day — there's no backfill into past slots — but the next valid weekday's tick auto-recovers.
+
+DST handled correctly: `computeNextRunAt()` uses PT-zone math, so Sunday-March's 2am→3am jump and November's 3am→2am jump produce the right wall-clock times automatically.
 
 #### Holidays / one-off skips
 
@@ -450,19 +534,32 @@ The "Skip One Day" toggle (§9) handles ad-hoc skips. If you hit it on Sunday ni
 
 ## 6. Minute-tick flow (`/api/cron/email-tool/tick`)
 
-Triggered every minute by Vercel's native cron. Drains `email_send_queue`.
+The single entry point for the entire pipeline. Triggered every minute by Vercel's native cron. Both **self-triggers the daily start phase when due** and **drains `email_send_queue`** on every invocation.
 
 ```
-① Crash recovery sweep
+══════ PHASE 0: Self-trigger check ════════════════════════════════════
+① Compute today's expected start time
+   • due_at = computeNextRunAt(starting_from = today_at_midnight_pt)
+   • already_started = EXISTS(SELECT 1 FROM email_send_campaigns
+                               WHERE idempotency_key = format_pt_date(now()))
+   • If now() >= due_at AND NOT already_started AND schedule.enabled:
+       → invoke runDailyStart(supabase) inline (Section 5)
+       → if it returns having inserted queue rows, fall through to drain
+       → if it short-circuits (skip flag, all paused, idempotency conflict),
+          fall through to drain anyway (older queue rows may exist)
+
+══════ PHASE 1: Crash recovery + drain ════════════════════════════════
+② Crash recovery sweep
    UPDATE email_send_queue
-   SET status='pending', sending_started_at=NULL
+   SET status='pending', sending_started_at=NULL,
+       last_error = COALESCE(last_error, '') || ' [recovered_from_stale_sending]'
    WHERE status='sending'
      AND sending_started_at < now() - interval '10 minutes'
 
-② Pause check + stale-account filter
+③ Pause check + stale-account filter
    • Read paused state for all founders; filter from candidate set
 
-③ Pull due rows
+④ Pull due rows
    SELECT id, account_id, ... FROM email_send_queue
    WHERE send_at <= now()
      AND status = 'pending'
@@ -472,21 +569,22 @@ Triggered every minute by Vercel's native cron. Drains `email_send_queue`.
    FOR UPDATE SKIP LOCKED
    • UPDATE selected rows SET status='sending', sending_started_at=now()
 
-④ For each row:
-   ④a Per-tick safety checks (in order, fail-fast):
+⑤ For each row:
+   ⑤a Per-tick safety checks (in order, fail-fast):
        • Bounce-rate check (this account, last 7d) — pause if >5%
        • Per-second pace (since last sent for this account) — defer +15s if <10s
        • Recipient-domain check (race-safe re-verify) — skip if already sent today
        • Reply-since-queue check (recipient → us, last 4h) — status='skipped'
        • Variant active check — status='failed' if 0 active variants for founder
+       • Send-mode check — see §11.5 (dry_run / allowlist gate the send call)
    
-   ④b Render template:
+   ⑤b Render template:
        • Look up email_template_variants by ID
        • Substitute {{first_name}}, {{company}}, {{founder_name}}
        • Apply spintax (greeting/sign-off only): {{ RANDOM | a | b | c }}
        • HTML-escape merge values (defense in depth, plain text anyway)
    
-   ④c Build and send via Gmail API:
+   ⑤c Build and send via Gmail API:
        From:           "{{founder_full_name}}" <{{founder_email}}>
        To:             {{recipient_email}}
        Subject:        rendered subject
@@ -497,8 +595,13 @@ Triggered every minute by Vercel's native cron. Drains `email_send_queue`.
        X-Priority:     3
        MIME:           text/plain; charset=utf-8
        Body:           rendered body (NO unsubscribe footer)
+       
+       In dry_run mode: skip the Gmail API call entirely. Synthesize
+       gmail_message_id = 'dryrun:' || queue_row_id and proceed.
+       In allowlist mode: real call, but only if recipient is on
+       the allowlist; otherwise skip with last_error='not_in_allowlist'.
    
-   ④d Apply error policy:
+   ⑤d Apply error policy:
        success → status='sent', sent_at=now(), gmail_message_id stored
        429 userRateLimitExceeded → exponential backoff (5s/30s/2m), max 3 retries,
                                    then status='failed'
@@ -508,14 +611,18 @@ Triggered every minute by Vercel's native cron. Drains `email_send_queue`.
        Hard bounce 5xx → INSERT INTO email_blacklist, status='skipped'
        Soft bounce 4xx → status='failed' (no retry until next campaign)
        Other 5xx → status='failed' with last_error
+       Uncaught exception → re-thrown; outer wrapper writes email_send_errors
+                            row with error_class='crash' (see §11.4)
 
-⑤ Per-tick budget cap
+⑥ Per-tick budget cap
    • Exit after 30 sends OR 240 seconds, whichever first
 
-⑥ Campaign completion check
+⑦ Campaign completion check
    • If 0 pending rows for this campaign → mark 'done', completed_at=now()
    • Trigger daily-digest update (handled by separate cron, just updates campaign row)
 ```
+
+The entire tick handler body is wrapped in a try/catch. Uncaught exceptions are written to `email_send_errors` with `error_class='crash'` (see §11.4). The crash counter (3+ crashes in 10min → global pause) reads from this table.
 
 ---
 
@@ -631,7 +738,7 @@ Cost: 1 indexed query per send (cheap).
 
 ## 9. Skip One Day toggle
 
-UI: `⏭ Skip Next Run` button in the consolidated admin page header (always visible — see §11.4).
+UI: `⏭ Skip Next Run` button in the consolidated admin page header (always visible — see §11.6).
 
 Click flow:
 - POST to `/api/cron/email-tool/schedule/skip` (admin-gated)
@@ -650,7 +757,7 @@ Behavior:
 
 ### 10.1 Upload UI
 
-Triggered from the `➕ Upload Priority Batch` button (always visible in the consolidated admin page header — see §11.4) OR from the **Priority Queue** tab. Upload opens as a modal so the admin doesn't navigate away.
+Triggered from the `➕ Upload Priority Batch` button (always visible in the consolidated admin page header — see §11.6) OR from the **Priority Queue** tab. Upload opens as a modal so the admin doesn't navigate away.
 
 Admin-only.
 
@@ -702,7 +809,7 @@ After /start runs and rows are in `email_send_queue`, cancellation moves to the 
 
 ### 11.1 Health dashboard
 
-Lives as the **Overview** tab on the consolidated admin page (`/email-tool/admin`). See §11.4 for the full layout. Per-founder card:
+Lives as the **Overview** tab on the consolidated admin page (`/email-tool/admin`). See §11.6 for the full layout. Per-founder card:
 
 ```
 Status:        ✅ Healthy / ⚠ Warning / 🔴 Paused
@@ -741,7 +848,141 @@ Critical alerts include account name, error code, and a 1-click resume link sign
 
 Resume is always an explicit human action — no auto-un-pause on serious flags.
 
-### 11.4 Consolidated admin UI
+### 11.4 Logging, error tracking, observability
+
+The health dashboard surfaces *aggregate* state. The `email_send_errors` table captures *individual* error events for debugging and for crash counting. They serve different purposes and are NOT redundant.
+
+#### Crash signal — explicit, not inferred
+
+The "tick handler crashes 3× in 10min triggers global pause" rule from §11.3 reads from `email_send_errors`, NOT from queue-row state:
+
+```sql
+SELECT COUNT(*) FROM email_send_errors
+WHERE error_class = 'crash'
+  AND occurred_at > now() - interval '10 minutes';
+-- if >= 3 → pause all accounts, alert founders
+```
+
+This intentionally distinguishes:
+- **Crash** = uncaught exception escaped the tick handler. Counted.
+- **Timeout** = tick ran past `TICK_BUDGET_DURATION_SECONDS` but completed gracefully. Logged with `error_class='timeout'` but NOT counted toward the crash threshold (timeouts are normal under load and shouldn't trigger global pause).
+- **Stale `sending` row** = recovered by Section 6 step ②'s sweep. Logged as a per-row event with `error_class='unknown', error_message='recovered_from_stale_sending'`. NOT counted as a crash (the previous tick may have completed cleanly and the row was stuck for a different reason).
+
+#### Where errors get written
+
+Two enforcement points:
+
+1. **Outer try/catch wrapping `runTick`** (the entire tick handler body):
+   ```typescript
+   export async function POST(req) {
+     const startedAt = Date.now();
+     try {
+       await runTick(supabase);
+     } catch (err) {
+       await supabase.from('email_send_errors').insert({
+         error_class: 'crash',
+         error_code:  err.constructor.name,
+         error_message: String(err.message ?? err),
+         context: { stack: err.stack, ms_elapsed: Date.now() - startedAt },
+       });
+       // Re-check threshold; pause all if exceeded
+       if (await recentCrashCount() >= 3) {
+         await pauseAllAccounts({ reason: 'repeated_tick_crashes' });
+         await sendCriticalAlert(...);
+       }
+       throw err;  // let Vercel logs see the failure
+     }
+     // Timeout check: if we ran past budget, log but don't error
+     const ms = Date.now() - startedAt;
+     if (ms > SAFETY_LIMITS.TICK_BUDGET_DURATION_SECONDS * 1000 - 5000) {
+       await supabase.from('email_send_errors').insert({
+         error_class: 'timeout',
+         error_message: `tick ran ${ms}ms`,
+         context: { ms_elapsed: ms },
+       });
+     }
+   }
+   ```
+
+2. **Per-send try/catch** inside the drain loop, classifying Gmail errors:
+   ```typescript
+   try {
+     await sendOneEmail(queueRow);
+   } catch (err) {
+     await logSendError({
+       queue_row_id: queueRow.id,
+       error_class: classifyGmailError(err),  // 'gmail_api_error' | 'render_error' | etc.
+       error_code: err.code,
+       error_message: err.message,
+     });
+     // continue to next row — DON'T propagate up to outer catch
+   }
+   ```
+
+This means a Gmail 5xx on one row doesn't trigger the crash counter. Only an actually-unhandled exception does.
+
+#### Structured logging — minimal, Vercel-native
+
+Console output goes to Vercel's built-in log stream. We add a small logger utility that emits JSON-formatted lines to stdout:
+
+```typescript
+// src/lib/email-tool/log.ts
+export function log(level: 'info' | 'warn' | 'error', event: string, fields?: object) {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    level,
+    event,                         // 'tick_start', 'send_ok', 'send_failed', etc.
+    component: 'email-send',
+    ...fields,
+  }));
+}
+```
+
+Used at every key transition (tick start, runDailyStart fired, per-send success/failure summary at end of tick, auto-pause). Vercel's log search across these JSON fields lets ops grep for things like `event=auto_pause` or `error_class=crash` directly in the dashboard.
+
+#### Sentry / external error tracking — deferred
+
+Sentry integration would capture stack traces, request context, and route-level grouping out of the box. **Not in v1** — the `email_send_errors` table covers the immediate need (crash counting + post-incident debugging). PR 5's pre-go-live checklist includes a row "Add Sentry or equivalent error tracking" so it's tracked but not blocking. If founders adopt Sentry later, the existing logger emits enough fields for Sentry's Vercel integration to pick up automatically.
+
+### 11.5 Send modes (production, dry_run, allowlist)
+
+Three modes, controlled via `email_send_schedule.send_mode` (DB column) so it can be toggled from the admin UI without a deploy:
+
+| Mode | Gmail API call? | Queue rows written? | CRM side effects? | Use case |
+|---|---|---|---|---|
+| **`production`** | ✅ Real send | ✅ | ✅ Lead create, interaction insert | Normal operation |
+| **`dry_run`** | ❌ Skipped | ✅ | ✅ With synthetic `gmail_message_id = 'dryrun:<queue_id>'` | First days of warmup; regression testing PR 4's scheduling math without sending |
+| **`allowlist`** | ✅ Real send, only to allowlist | ✅ | ✅ | Pre-go-live smoke testing — sends real emails but only to founders' personal addresses |
+
+#### Precise dry_run definition
+
+`dry_run` means: **everything runs except the Gmail API call**.
+- `runDailyStart()` runs in full — pool pick, blacklist insert, round-robin, domain dedup, slot scheduling, queue insert
+- The minute-tick drains rows normally
+- For each row: rendering happens, safety checks run, **Gmail API call is skipped**, `gmail_message_id` is set to `'dryrun:' || queue_row_id` (never matches a real Gmail ID), `status='sent'`
+- The downstream CRM integrations from §12 fire as if real: lead is auto-created, interaction is inserted with the synthetic message id, daily digest reflects what *would* have happened
+- **One exception**: the email_blacklist insert still happens. Dry-run consumes pool rows for real, just doesn't send to them. This is intentional — you want dry-run to model the actual operational footprint, not just the send path. (Operators can manually un-blacklist after a dry-run if they want to re-pick those rows in production.)
+
+#### Allowlist mode
+
+A hardcoded list of test addresses lives in env: `EMAIL_SEND_ALLOWLIST=adit-test@gmail.com,srijay-test@gmail.com,asim-test@gmail.com`. In allowlist mode:
+- Pool rows whose `email` doesn't match the allowlist get `status='skipped', last_error='not_in_allowlist'`
+- Allowlist matches go through real Gmail send, real lead create, real everything
+- The 3 founders get to see real cold outreach arrive at their `+test` aliases on Day 0 — closes the gap between "code typechecks" and "the system actually delivers"
+
+#### Mode UI
+
+In the Schedule tab (§11.6), a clearly-marked dropdown labeled **Send mode**:
+
+```
+Send mode:    [ production ▼ ]
+              ↳ Banner if not 'production': "⚠ DRY-RUN — no emails will leave Gmail"
+                                            "🧪 ALLOWLIST — only sending to test addresses"
+```
+
+The schedule's `send_mode` is snapshotted into each `email_send_campaigns` row at start time so historical campaigns remain reproducible — you can look back and know whether yesterday's run was real.
+
+### 11.6 Consolidated admin UI
 
 All admin functionality lives on a single page: **`/email-tool/admin`** (admin-only — same gate as the existing email-tool admin section).
 
@@ -1026,28 +1267,35 @@ Yesterday's cold outreach — Adit
   Pool runway:    13 days remaining
 ```
 
-### 12.8 Schema additions to support §12.1–§12.7
+### 12.8 Schema additions — split across PRs (see §4.0 for full split)
 
-Already covered in the data model, but to make the integration explicit:
+These columns/values land **with the feature that uses them**, not in PR 1's bulk migration. This avoids the production CRM accumulating unused columns for weeks while later PRs are still being built.
 
+**Migration `022_email_send_crm_links.sql` (lands in PR 3, alongside the send pipeline):**
 ```sql
--- On `interactions` (existing table) — link interactions to campaigns and variants
+-- Link interactions to the campaign + variant that produced them
 ALTER TABLE interactions
   ADD COLUMN campaign_id          UUID REFERENCES email_send_campaigns(id),
   ADD COLUMN template_variant_id  UUID REFERENCES email_template_variants(id);
 
 CREATE INDEX ON interactions (campaign_id) WHERE campaign_id IS NOT NULL;
 CREATE INDEX ON interactions (template_variant_id) WHERE template_variant_id IS NOT NULL;
+```
 
--- On `leads` (existing table) — link leads to the campaign that first created them
+**Migration `023_email_send_lead_source.sql` (lands in PR 4, alongside the cron + lead-creation wiring):**
+```sql
+-- Link leads to the campaign that first created them
 ALTER TABLE leads
   ADD COLUMN source_campaign_id   UUID REFERENCES email_send_campaigns(id);
 
 CREATE INDEX ON leads (source_campaign_id) WHERE source_campaign_id IS NOT NULL;
 
 -- New stage value: 'outreach_sent' (sent-but-no-reply-yet)
--- This is a stage BEFORE 'replied' in the pipeline; once they reply,
--- the existing reply pipeline advances them to 'replied' as today.
+-- IMPORTANT: this is the most invasive change — it adds a value to STAGE_ORDER
+-- and is rendered in the kanban board, lead detail UI, filters, and the
+-- weekly retro analytics. We deliberately defer it to PR 4 (the same PR
+-- that creates leads in this stage) so the production pipeline never has
+-- a stage value with zero leads in it.
 ```
 
 The new `outreach_sent` stage requires updating `STAGE_ORDER` in `src/lib/constants.ts` and adding a UI label "Awaiting Outreach Reply". `replied` already displays as "Awaiting Reply" — `outreach_sent` displays as "Cold Email Sent".
@@ -1077,24 +1325,98 @@ None of these are in scope for v1. Listing them here so the design is intentiona
 
 ## 13. Phased rollout — 5 PRs
 
-The CRM integration work (§12) is woven into each PR rather than tacked on at the end — every PR's primary outcome is functional, but each one also extends the CRM in some way.
+Migrations land with the feature that uses them (§4.0). CRM integration work (§12) is woven into PRs 3, 4, 5 rather than tacked on at the end. Each PR is independently testable; pull the plug at any boundary if something looks off.
 
-| PR | Effort | Scope | Integration work | Live behavior |
-|---|---|---|---|---|
-| **PR 1** | 1d | Schema + safety constants | + `interactions.campaign_id`, `interactions.template_variant_id`, `leads.source_campaign_id` columns; add `outreach_sent` stage to `STAGE_ORDER` | Tables exist, no functionality |
-| **PR 2** | 3d | Templates UI + variant CRUD + lint + spintax parser | (none — pure UI) | Founders can write/preview templates; nothing sends |
-| **PR 3** | 3.5d | Send pipeline + dry-run mode | + Lead auto-create at send via existing `createLeadFromOutreach` helper; + Interaction insert with `campaign_id`/`template_variant_id`; + Bounce/unsubscribe→lead-state side effects | Engine runs in dry-run; debug endpoint sends ONE test email and creates the lead + interaction in CRM |
-| **PR 4** | 4d | Cron routes + scheduling + Skip toggle + Priority CSV upload + admin schedule UI | + Activity log entries for campaign events (`cold_outreach_sent`, `cold_outreach_bounced`); + Lead `tags += ['source:cold_outreach', 'campaign:<short_id>']` | Cron infrastructure live; `schedule.enabled = false` default |
-| **PR 5** | 3.5d | Health dashboard + alerts + warmup gate + pre-go-live checklist | + Per-variant / per-founder / per-campaign analytics views; + Daily digest "Yesterday's outreach" section; + Activity feed event types | System ready; admin flips `enabled = true` to start Day 1 |
+### PR 1 — Core scaffolding (1 day)
+- Migration `021_email_send_core.sql`: `email_send_campaigns`, `email_template_variants`, `email_send_queue`, `email_send_priority_queue`, `email_send_schedule`, `email_send_errors`, new columns on `team_members`. Run via `claude_exec_sql`.
+- `src/lib/email-tool/safety-limits.ts` — hardcoded ceilings
+- `src/lib/email-tool/types.ts` — TS types for new entities
+- `src/lib/email-tool/log.ts` — structured-log utility (§11.4)
+- **No** `interactions.campaign_id` / `leads.source_campaign_id` / `outreach_sent` stage yet — those land with their consumers
+- Smoke test: `SELECT 1 FROM email_send_queue LIMIT 0` succeeds; one `email_send_errors` insert succeeds and is queryable
+- **Done means:** schema in prod, no functionality, no risk to existing CRM behavior
 
-**Total: ~15 working days** (was 14; integration adds ~1 day across PRs 3 and 5).
+### PR 2 — Templates UI (3 days)
+- `/email-tool/admin?tab=templates` page
+- `POST/PATCH/DELETE /api/cron/email-tool/templates` endpoints
+- Pre-save lint (§7.5) + spintax parser
+- Live preview pane with sample merge data (`first_name="Sample"`, `company="Acme Corp"`)
+- Unit tests for `render-template`: spintax distribution is uniform; merge tags work; HTML-escape happens
+- **Done means:** founders edit + preview templates in UI; nothing sends yet
 
-Each PR is independently testable; pull the plug at any boundary if something looks off.
+### PR 3 — Send pipeline + Gmail mock + send modes (3.5 days)
+
+**Prerequisite (must land in this PR or before):** a `MockGmailClient` that satisfies the same shape as the real client returned by `getGmailClientForMember()` in `src/lib/gmail/client.ts`. Approach: extract an interface, give the existing implementation that interface, add a `MockGmailClient` for tests. Without this, PR 3's send pipeline is untestable beyond a smoke test.
+
+- Migration `022_email_send_crm_links.sql`: `interactions.campaign_id`, `interactions.template_variant_id` columns + indexes
+- `src/lib/email-tool/send.ts` — `sendCampaignEmail(queueRow, gmailClient)`: renders, applies headers, sends via the *injected* `gmailClient`
+- `src/lib/email-tool/safety-checks.ts` — all per-tick safety checks
+- `src/lib/email-tool/start.ts` — `runDailyStart(supabase, opts)` — pure function, takes a clock injection for testability
+- `src/lib/email-tool/tick.ts` — `runTick(supabase, opts)` — drain phase only (self-trigger added in PR 4)
+- **Send modes** (§11.5) implemented end-to-end:
+  - `production` — real Gmail call
+  - `dry_run` — skips Gmail, synthesizes `gmail_message_id = 'dryrun:<queue_id>'`
+  - `allowlist` — Gmail call gated by `EMAIL_SEND_ALLOWLIST` env var
+- **CRM integration calls** wired:
+  - `createLeadFromOutreach()` after each successful send
+  - `interactions` row insert with `campaign_id` + `template_variant_id`
+  - Bounce/unsubscribe → lead state changes
+- Unit tests using `MockGmailClient`: full dry-run of a 10-row campaign asserts queue rows transition `pending → sending → sent`, lead rows are created, interactions are inserted with correct campaign+variant ids
+- Manually-triggerable debug endpoint (admin-only): runs allowlist mode against a single recipient to validate real Gmail headers / `List-Unsubscribe` / `+unsubscribe` aliasing
+- **Done means:** I can hit a debug endpoint, real email arrives at your `+test` address with all headers correct, and a CRM lead+interaction exists for it
+
+### PR 4 — Cron self-trigger + scheduling + Skip + Priority CSV (4 days)
+- Migration `023_email_send_lead_source.sql`: `leads.source_campaign_id` column + index, **`outreach_sent` value added to `STAGE_ORDER`** in `src/lib/constants.ts` and the lead-detail UI label map
+- `src/app/api/cron/email-tool/tick/route.ts` — single endpoint, calls `runDailyStart` when due (§3, §6)
+- `vercel.json` cron entry: `* * * * *` for the tick (every minute)
+- Schedule weekday-map + DST-correct `computeNextRunAt` in `src/lib/email-tool/schedule.ts` (§5.1)
+- Idempotency transaction (§5 step ①+②+③) wired
+- Skip-One-Day toggle UI + endpoint
+- Priority CSV upload UI + validation + DB writes
+- Admin Schedule tab: read-only weekday grid + master toggle + send-mode dropdown + recent runs table
+- Activity log entries for `cold_outreach_sent` / `cold_outreach_bounced`
+- Lead tagging: `source:cold_outreach`, `campaign:<short_id>`
+- Lead `source_campaign_id` populated by `createLeadFromOutreach()` for first-touch leads
+- Integration test: end-to-end campaign in `dry_run` mode through the full cron path
+- **Default `email_send_schedule.enabled = false` on deploy.** Nothing fires until admin flips it
+- **Done means:** cron infrastructure live and testable, but inert by default
+
+### PR 5 — Health dashboard + alerts + warmup gate + go-live (3.5 days)
+- `/email-tool/admin?tab=overview` (default tab) — health cards per founder, pool runway, today's totals
+- Auto-pause logic firing in `runTick`: 5% bounce rate, 403, OAuth revoked, repeated crashes — all set `email_send_paused=true` + alert
+- Resend critical-alert path: bypasses digest for 🔴 events; 1-click resume link with short-lived signed token
+- Daily digest extension (existing 8am PT cron): "Yesterday's outreach" section per founder
+- Per-variant / per-founder / per-campaign analytics SQL views (or RPC functions)
+- `email_send_schedule.warmup_started_on` + warmup-curve enforcement (Day 1 = 250, Day 2+ = 400 if clean)
+- Crash counter wiring: `recentCrashCount()` reads from `email_send_errors`, threshold check after each crash log
+- **Pre-go-live checklist** (live in the Schedule tab UI, not just docs):
+  - [ ] Each founder has ≥2 active variants
+  - [ ] Each founder's plus-aliasing Gmail filter set up (link to setup instructions)
+  - [ ] `vercel.json` cron registered (visible via Vercel dashboard)
+  - [ ] One `dry_run` campaign run succeeded in the last 7 days
+  - [ ] One `allowlist` campaign run succeeded in the last 7 days (real send to founders' `+test`)
+  - [ ] All 3 Gmail OAuth tokens valid (`gmail_connected = true`)
+  - [ ] Sentry / external error tracking integrated *(non-blocking — checkbox to keep it on the radar; v1 ships with `email_send_errors` table only)*
+- Once all green, "Enable schedule" button becomes clickable
+- **Done means:** live system, sending real emails on the warmup curve
+
+### Total estimated effort
+
+| Phase | Effort |
+|---|---|
+| PR 1 | 1 day |
+| PR 2 | 3 days |
+| PR 3 | 3.5 days |
+| PR 4 | 4 days |
+| PR 5 | 3.5 days |
+| **Total** | **~15 working days** |
 
 After PR 5 ships and admin enables:
-- Day 1: 250/account = 750 total (smoke test day)
-- Day 2+: 400/account = 1,200 total (steady state)
-- Day 1 → Day 2 ramp gate: only ramps if Day 1 had no auto-pauses, bounce rate <3%, fewer than 5 hard 5xx errors. Otherwise stays at 250 until two consecutive clean days.
+- **Day 0 (recommended):** run one `allowlist` campaign to founders' `+test` aliases — validates entire stack with real Gmail
+- **Day 1:** 250/account = 750 total (smoke test day in `production` mode)
+- **Day 2+:** 400/account = 1,200 total (steady state)
+
+The Day-1 → Day-2 ramp gate (§5 step ⑤) only ramps if Day 1 had no auto-pauses, bounce rate <3%, fewer than 5 hard 5xx errors. Otherwise stays at 250 until two consecutive clean days.
 
 ---
 
