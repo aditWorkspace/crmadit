@@ -2,6 +2,11 @@
 // supabase/migrations/021_email_send_core.sql. See spec §4.1 for
 // authoritative column definitions; this file is the consumer-facing
 // TypeScript shape.
+//
+// Convention note: nullable DB columns use `T | null`, not `T?`. This
+// matches PostgREST's actual response shape (it returns `null`, never
+// `undefined`). The legacy `src/types/index.ts` uses `?:` optionals;
+// this is a deliberate divergence — don't "fix" it back to `?:`.
 
 export type CampaignStatus =
   | 'pending'   // INSERTed; runDailyStart not yet completed all 11 steps
@@ -102,7 +107,7 @@ export interface EmailSendPriorityRow {
   company: string | null;
   uploaded_by: string;
   uploaded_at: string;
-  scheduled_for_date: string;
+  scheduled_for_date: string;       // 'YYYY-MM-DD' — DATE column, not ISO timestamp
   notes: string | null;
   override_blacklist: boolean;
   override_owner: string | null;
