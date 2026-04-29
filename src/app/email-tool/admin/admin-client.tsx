@@ -5,6 +5,7 @@ import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { TemplatesTab } from './templates-tab';
 import { ScheduleTab } from './schedule-tab';
 import { PriorityTab } from './priority-tab';
+import { OverviewTab } from './overview-tab';
 import { PriorityUploadModal } from '@/components/email-tool/priority-upload-modal';
 
 type TabId = 'overview' | 'templates' | 'schedule' | 'priority';
@@ -159,11 +160,7 @@ export default function AdminClient({ memberName }: Props) {
 
         <main>
           {tab === 'templates' && <TemplatesTab />}
-          {tab === 'overview' && (
-            <div className="text-sm text-gray-500 italic p-8 text-center bg-white rounded-md border border-gray-200">
-              Overview tab is built in PR 5 (health dashboard, per-founder cards, pool runway).
-            </div>
-          )}
+          {tab === 'overview' && <OverviewTab />}
           {tab === 'schedule' && <ScheduleTab />}
           {tab === 'priority' && <PriorityTab />}
         </main>
