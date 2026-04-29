@@ -65,10 +65,14 @@ describe('lintTemplate', () => {
 
     it('multiple blockers stack — one body can produce many blockers', () => {
       const r = lintTemplate({
-        subject_template: 'noreply',
-        body_template: 'Hi.',
+        subject_template: 'noreply important',
+        body_template: 'Hi. unsubscribe via bit.ly/x',  // 30 chars-ish but contains bit.ly + unsubscribe
       });
-      expect(r.blockers.length).toBeGreaterThanOrEqual(3); // noreply + body_too_short + maybe others
+      // subject_noreply + url_shortener + forbidden_word_unsubscribe = 3 blockers
+      // body_too_short may or may not trigger depending on exact length — don't depend on it
+      expect(r.blockers.map(b => b.code)).toEqual(
+        expect.arrayContaining(['subject_noreply', 'url_shortener', 'forbidden_word_unsubscribe'])
+      );
     });
   });
 
@@ -136,6 +140,15 @@ describe('lintTemplate', () => {
         body_template: valid.body_template + ' https://a.com https://b.com',
       });
       expect(r.warnings.some(w => w.code === 'too_many_links')).toBe(false);
+    });
+
+    it('no_personalization is a warning, NOT a blocker (regression)', () => {
+      const r = lintTemplate({
+        subject_template: 'hello there',
+        body_template: 'Hi there, hope you are well. Long enough body. Thanks.',
+      });
+      expect(r.blockers.find(b => b.code === 'no_personalization')).toBeUndefined();
+      expect(r.warnings.find(w => w.code === 'no_personalization')).toBeDefined();
     });
   });
 

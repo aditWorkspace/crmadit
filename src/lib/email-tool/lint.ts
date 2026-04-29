@@ -85,16 +85,11 @@ export function lintTemplate(input: LintInput): LintResult {
   const bodyHasFirstName = MERGE_TAG_FIRST_NAME.test(body);
   const bodyHasCompany = MERGE_TAG_COMPANY.test(body);
   if (!bodyHasFirstName && !bodyHasCompany) {
-    // Personalization is required — treated as both a blocker and a warning
-    // so the UI can surface it prominently while still giving it a warning
-    // code (consistent with the savable-with-confirmation UX contract).
-    const noPersonalizationIssue: LintIssue = {
+    warnings.push({
       code: 'no_personalization',
       severity: 'warning',
       message: 'Body uses neither {{first_name}} nor {{company}}. Cold outreach without personalization gets flagged.',
-    };
-    blockers.push({ ...noPersonalizationIssue, severity: 'blocker' });
-    warnings.push(noPersonalizationIssue);
+    });
   }
 
   const linkCount = (body.match(/https?:\/\//g) ?? []).length;
