@@ -7,6 +7,21 @@ export interface GmailClientResult {
   accessToken: string;
 }
 
+// Narrower interface used by the cold-outreach send pipeline.
+// The real client returned by getGmailClientForMember() implements this
+// implicitly via duck typing; the MockGmailClient implements it explicitly.
+// Captures only the surface PR 3's send path actually uses.
+export interface CampaignGmailClient {
+  users: {
+    messages: {
+      send: (params: {
+        userId: string;
+        requestBody: { raw: string };
+      }) => Promise<{ data: { id?: string | null; threadId?: string | null } }>;
+    };
+  };
+}
+
 // Simple in-memory lock to prevent concurrent token refresh for the same member
 const refreshLocks = new Map<string, Promise<string>>();
 
