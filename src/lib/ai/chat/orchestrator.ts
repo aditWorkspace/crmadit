@@ -6,6 +6,7 @@ import { formatProfileCards } from './profile-card';
 import { runAdvocate } from './advocate';
 import { runJudge } from './judge';
 import { runLookup } from './lookup';
+import { runFilter } from './filter';
 import type { HistoryMessage } from './types';
 
 interface AnswerArgs {
@@ -13,26 +14,29 @@ interface AnswerArgs {
   history?: HistoryMessage[];
 }
 
-// Top-level entry point for the insights chat. Routes the question through
-// either a single-call lookup path or the FOR/AGAINST/JUDGE debate.
 export async function answerChat({ question, history = [] }: AnswerArgs): Promise<string> {
-  // Cap history to last 6 turns (12 messages) so we don't blow up context
-  // on long threads. Most scope-question context lives in retrieved cards,
-  // not in chat history.
   const trimmedHistory = history.slice(-12);
 
-  // 1. Fetch knowledge docs + build lead index + classify in parallel.
-  const [knowledgeDocs, leadIndex, routed] = await Promise.all([
+  // Classify first. Filter and clarify don't need FTS retrieval at all —
+  // skip the parallel fetch when the router routes to those buckets.
+  const routed = await classifyQuestion(question);
+
+  if (routed.kind === 'clarify') {
+    return `Before I answer — ${routed.clarify_question}`;
+  }
+
+  if (routed.kind === 'filter') {
+    return runFilter({ filter: routed.filter });
+  }
+
+  // lookup / scope still need knowledge docs + lead index + retrieval.
+  const [knowledgeDocs, leadIndex, transcripts] = await Promise.all([
     fetchKnowledgeDocs(),
     buildLeadIndex(),
-    classifyQuestion(question),
+    retrieveTranscripts(routed.search_terms, 8),
   ]);
-
-  // 2. Retrieve profile cards by FTS on the router-emitted terms.
-  const transcripts = await retrieveTranscripts(routed.search_terms, 8);
   const retrievedCards = formatProfileCards(transcripts);
 
-  // 3. Route.
   if (routed.kind === 'lookup') {
     return runLookup({
       question,
@@ -43,7 +47,7 @@ export async function answerChat({ question, history = [] }: AnswerArgs): Promis
     });
   }
 
-  // Scope question -> parallel advocates -> judge.
+  // routed.kind === 'scope'
   const [forArg, againstArg] = await Promise.all([
     runAdvocate({
       side: 'for',
