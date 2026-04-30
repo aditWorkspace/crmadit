@@ -26,10 +26,30 @@ export function decideFilterMode(args: {
 }
 
 export interface FilterMatch {
+  // Used to dedupe when one lead has multiple matching transcripts.
+  // null for advisor / misc transcripts that have no lead — those never
+  // collapse against each other.
+  lead_id: string | null;
   company: string;
   contact: string;
   date: string;     // YYYY-MM-DD
   evidence: string;
+}
+
+// Collapse repeated matches for the same lead. Input order wins (callers
+// pass matches in created_at DESC order, so the most recent transcript
+// is the one we keep). Null lead_ids are passed through untouched.
+export function dedupeMatchesByLead(matches: FilterMatch[]): FilterMatch[] {
+  const seen = new Set<string>();
+  const out: FilterMatch[] = [];
+  for (const m of matches) {
+    if (m.lead_id) {
+      if (seen.has(m.lead_id)) continue;
+      seen.add(m.lead_id);
+    }
+    out.push(m);
+  }
+  return out;
 }
 
 export function renderFilterMarkdown(args: {
@@ -53,6 +73,10 @@ export function renderFilterMarkdown(args: {
     for (const m of matches) {
       parts.push(`- **${m.company}** (${m.contact}, ${m.date}) — "${m.evidence}"`);
     }
+    parts.push('');
+    parts.push(
+      `_Want me to draft a follow-up for ${matches.length === 1 ? 'this prospect' : 'these prospects'}? Reply with names or "all"._`,
+    );
   }
 
   if (failures > 0) {
@@ -227,13 +251,13 @@ ${cards}`;
     const t = byId.get(m.id);
     if (!t) continue;
     const { company, contact, date } = transcriptLabel(t);
-    matches.push({ company, contact, date, evidence: m.evidence });
+    matches.push({ lead_id: t.lead_id, company, contact, date, evidence: m.evidence });
   }
 
   return renderFilterMarkdown({
     checked: transcripts.length,
     criterion: filter.criterion,
-    matches,
+    matches: dedupeMatchesByLead(matches),
     failures: 0,
   });
 }
@@ -257,7 +281,7 @@ async function runFanOut(
     }
     if (r.value.match && r.value.evidence) {
       const { company, contact, date } = transcriptLabel(t);
-      matches.push({ company, contact, date, evidence: r.value.evidence });
+      matches.push({ lead_id: t.lead_id, company, contact, date, evidence: r.value.evidence });
     }
   }
 
@@ -268,7 +292,7 @@ async function runFanOut(
   return renderFilterMarkdown({
     checked: transcripts.length,
     criterion: filter.criterion,
-    matches,
+    matches: dedupeMatchesByLead(matches),
     failures,
   });
 }
