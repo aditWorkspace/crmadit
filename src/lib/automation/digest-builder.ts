@@ -368,6 +368,26 @@ export async function buildDailyDigest(): Promise<{
     lines.push('No significant pipeline activity yesterday.');
   }
 
+  // ── Granola sync health ────────────────────────────────────────────────
+  // Counts only Granola-sourced transcripts (those carrying a granola_note_id)
+  // imported in the last 24h. Manual paste/uploads don't count toward the
+  // automation health number.
+  const { count: granolaImported24h } = await supabase
+    .from('transcripts')
+    .select('id', { count: 'exact', head: true })
+    .not('granola_note_id', 'is', null)
+    .gte('created_at', yesterday);
+
+  const { data: granolaSyncRows } = await supabase
+    .from('granola_sync_state')
+    .select('api_key_label, last_run_at, last_error');
+
+  const granolaErrors = (granolaSyncRows || []).filter(r => r.last_error);
+  const granolaStaleKeys = (granolaSyncRows || []).filter(r => {
+    if (!r.last_run_at) return true;
+    return (now.getTime() - new Date(r.last_run_at).getTime()) > 2 * 60 * 60 * 1000;
+  });
+
   // ── PR 5: Yesterday's cold outreach ──────────────────────────────────────
   const outreachData = await getYesterdayOutreachData(supabase);
 
@@ -383,6 +403,26 @@ export async function buildDailyDigest(): Promise<{
   if (outreachText) {
     lines.push(outreachText);
   }
+
+  // Granola text section. Always present so a sudden zero is visible.
+  const granolaTextLines: string[] = [
+    `GRANOLA SYNC: ${granolaImported24h ?? 0} transcript${granolaImported24h === 1 ? '' : 's'} imported in last 24h`,
+  ];
+  if (granolaErrors.length > 0) {
+    for (const err of granolaErrors) {
+      granolaTextLines.push(`  ⚠ ${err.api_key_label} error: ${err.last_error}`);
+    }
+  }
+  if (granolaStaleKeys.length > 0) {
+    for (const stale of granolaStaleKeys) {
+      const ageMin = stale.last_run_at
+        ? Math.round((now.getTime() - new Date(stale.last_run_at).getTime()) / 60000)
+        : null;
+      granolaTextLines.push(`  ⚠ ${stale.api_key_label} cron stale: last run ${ageMin !== null ? ageMin + 'm ago' : 'never'}`);
+    }
+  }
+  lines.push('');
+  lines.push(...granolaTextLines);
 
   const text = lines.join('\n');
 
@@ -549,6 +589,23 @@ export async function buildDailyDigest(): Promise<{
         )
       : '';
 
+  // Granola health HTML — always rendered so a zero is visible.
+  const granolaHasIssue = granolaErrors.length > 0 || granolaStaleKeys.length > 0;
+  const granolaSection = `
+    <div style="margin-bottom:24px;padding:12px 14px;border-radius:8px;border:1px solid ${granolaHasIssue ? '#fecaca' : '#bbf7d0'};background:${granolaHasIssue ? '#fef2f2' : '#f0fdf4'};">
+      <p style="margin:0;font-size:13px;color:${granolaHasIssue ? '#991b1b' : '#166534'};">
+        <strong>Granola sync:</strong> ${granolaImported24h ?? 0} transcript${granolaImported24h === 1 ? '' : 's'} imported in last 24h
+      </p>
+      ${granolaHasIssue ? `
+      <ul style="margin:6px 0 0 18px;padding:0;font-size:12px;color:#991b1b;">
+        ${granolaErrors.map(e => `<li>${escHtml(e.api_key_label)} error: ${escHtml(e.last_error || '')}</li>`).join('')}
+        ${granolaStaleKeys.map(s => {
+          const ageMin = s.last_run_at ? Math.round((now.getTime() - new Date(s.last_run_at).getTime()) / 60000) : null;
+          return `<li>${escHtml(s.api_key_label)} cron stale: last run ${ageMin !== null ? ageMin + 'm ago' : 'never'}</li>`;
+        }).join('')}
+      </ul>` : ''}
+    </div>`;
+
   const html = `
 <!DOCTYPE html>
 <html>
@@ -571,6 +628,7 @@ export async function buildDailyDigest(): Promise<{
     <!-- Body -->
     <div style="padding:24px 32px;">
       ${needsFounderSection}
+      ${granolaSection}
       ${outreachSection}
       ${movedSection}
       ${newSection}

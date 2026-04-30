@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSession } from '@/hooks/use-session';
 import { toast } from 'sonner';
-import { formatDate } from '@/lib/utils';
+import { formatDate, formatRelativeTime as formatRelative, cn } from '@/lib/utils';
 import { Mail, CheckCircle, XCircle, RefreshCw, Loader2, Calendar, Fingerprint, Sparkles } from '@/lib/icons';
 import { startRegistration } from '@simplewebauthn/browser';
 
@@ -26,6 +26,16 @@ export default function SettingsPage() {
   const [registeringPasskey, setRegisteringPasskey] = useState(false);
   const [syncingGranola, setSyncingGranola] = useState(false);
   const [granolaResult, setGranolaResult] = useState<null | { total_imported: number; by_key: Array<{ label: string; scanned: number; imported: number; dup: number; no_match: number; low_confidence: number; errors: number; imported_log: Array<{ note_id: string; lead?: string; reason?: string }> }> }>(null);
+  const [granolaStatus, setGranolaStatus] = useState<null | { keys: Array<{ label: string; last_run_at: string | null; last_synced_at: string | null; last_error: string | null; notes_imported: number | null; notes_skipped: number | null; healthy: boolean; reason: string | null }> }>(null);
+
+  const fetchGranolaStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/settings/granola-status');
+      if (!res.ok) return;
+      const data = await res.json();
+      setGranolaStatus(data);
+    } catch { /* silent — banner just won't render */ }
+  }, []);
 
   const handleGranolaSync = async (mode: 'incremental' | 'backfill' = 'incremental') => {
     if (syncingGranola) return;
@@ -68,6 +78,10 @@ export default function SettingsPage() {
   useEffect(() => {
     fetchMembers();
   }, [fetchMembers]);
+
+  useEffect(() => {
+    fetchGranolaStatus();
+  }, [fetchGranolaStatus]);
 
   useEffect(() => {
     if (!user) return;
@@ -361,6 +375,34 @@ export default function SettingsPage() {
               </p>
             </div>
           </div>
+          {granolaStatus && granolaStatus.keys.length > 0 && (
+            <div className={cn(
+              'px-6 py-3 border-b text-xs',
+              granolaStatus.keys.every(k => k.healthy)
+                ? 'bg-green-50 border-green-100 text-green-800'
+                : 'bg-red-50 border-red-100 text-red-800',
+            )}>
+              <div className="flex flex-col gap-1">
+                {granolaStatus.keys.map(k => (
+                  <div key={k.label} className="flex items-center gap-2">
+                    <span className={cn(
+                      'inline-block h-1.5 w-1.5 rounded-full',
+                      k.healthy ? 'bg-green-500' : 'bg-red-500',
+                    )} />
+                    <span className="font-mono uppercase tracking-wide text-[10px] opacity-70">{k.label}</span>
+                    {k.healthy ? (
+                      <span>
+                        last run {k.last_run_at ? formatRelative(k.last_run_at) : 'never'}
+                        {k.last_synced_at ? ` · cursor at ${formatRelative(k.last_synced_at)}` : ''}
+                      </span>
+                    ) : (
+                      <span className="font-medium">{k.reason || 'unhealthy'}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="px-6 py-4 flex flex-wrap items-center gap-2">
             <button
               onClick={() => handleGranolaSync('incremental')}
