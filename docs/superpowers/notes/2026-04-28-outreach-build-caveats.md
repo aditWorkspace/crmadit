@@ -247,3 +247,44 @@ The double-cast bypasses type checking. The real `getGmailClientForMember` retur
 | C19 | (duplicate of C2) | 🟢 DONE |
 
 **Outstanding items:** C10 + C13 are both 🟡 WATCH (cosmetic / mitigated by other layers). All 🔴 OPEN items closed. System is ready for go-live pending Adit's pre-flight checklist.
+
+---
+
+## C20. Schedule re-enable retroactive trigger — 🟢 DONE (2026-04-29)
+
+**What happened:** Flipping `email_send_schedule.enabled = true` at 9:15pm PT on Wed 2026-04-29 caused the next cron-job.org tick (~14 seconds later) to immediately trigger `runDailyStart` for today's PT date. Today's slot was 6:00am PT — already 15 hours past — but `maybeSelfTrigger`'s only time check was `now >= todaySlot`, which was true. RPC `email_send_claim_today` saw no campaign for idempotency_key `'2026-04-29'`, so it created one and the system sent **750 real cold-outreach emails at 9:15pm** (250/founder × 3 founders). Recipients were real prospects from `email_pool`. Sends completed cleanly (0 failures) but happened at the wrong time.
+
+**Root cause:** Two missing guards in time-of-day logic.
+
+1. `tick.ts` `maybeSelfTrigger` had no upper bound on how long after a slot was acceptable to retroactively trigger. Any time after the slot, same PT date, no-existing-campaign would fire it.
+2. `runDailyStart` had no defense-in-depth check on PT hour. Even if a slot was somehow triggered late, the function would proceed unconditionally.
+
+**Why:** When designing the self-trigger, I focused on "did we miss the slot because the cron was down" (answer: trigger it as soon as the cron comes back). I didn't model "the schedule was off all morning and got enabled in the evening".
+
+**Fix:**
+- New `SAFETY_LIMITS.SLOT_GRACE_MINUTES = 30`. `maybeSelfTrigger` only self-triggers if `now ≤ slot + 30min`. After that, the slot is missed; wait for tomorrow.
+- New `SAFETY_LIMITS.SEND_ALLOWED_PT_HOUR_MIN = 4`, `SEND_ALLOWED_PT_HOUR_MAX = 12`. `runDailyStart` aborts (`reason='pm_hours_disallowed'`) if the PT hour is outside `[4, 12)`. Defense-in-depth — even if upstream gating is bypassed, no PM sends ever fire.
+- 7 unit tests in `morning-only-guards.test.ts` cover the boundaries (4am ✓, 11:59am ✓, 12pm ✗, 9pm ✗, 3am ✗, slot times ✓).
+
+**Recovery action taken:**
+- Set `skip_next_run = true` so Thursday morning's slot is skipped.
+- Manually set `warmup_day_completed = 1` so Friday's run uses the Day-2+ cap (400/founder) — Wed's accidental 750 effectively WAS Day 1.
+- Hardcoded the PM-block + slot-grace fixes (this entry).
+
+**Lesson:** When toggling state that gates "should we run this thing now" decisions, model the worst-case time-of-day. "What if someone enables this 12 hours after the trigger window?" is a real question, not an edge case.
+
+---
+
+## C21. `lead_stage` enum missing `outreach_sent` — 🟢 DONE (2026-04-29)
+
+**What happened:** `/api/pipeline?filter=*` returned HTTP 500 with `invalid input value for enum lead_stage: "outreach_sent"`. Pipeline (Kanban + List) showed empty. User saw "No leads in the pipeline" and panicked thinking data was deleted.
+
+**Root cause:** Migration `023_email_send_lead_source.sql` added `'outreach_sent'` to TypeScript's `LeadStage` union and `STAGE_ORDER` / `ACTIVE_STAGES` constants, but explicitly DID NOT add the value to the DB enum — its comment said "leads.stage is unconstrained TEXT today". That comment was wrong: `leads.stage` in production is a Postgres enum named `lead_stage`. Every server-side query that filtered `.in('stage', ACTIVE_STAGES)` therefore tried to cast the literal `'outreach_sent'` to the enum type and failed.
+
+The bug was latent for ~24 hours after migration 023 — only manifested tonight when `ACTIVE_STAGES` was first read by a request after the merge to `main` (which brought in the granola/chat work that didn't itself touch this code, but caused enough downstream that I noticed the empty pipeline).
+
+**Fix:** `029_add_outreach_sent_enum_value.sql` — `ALTER TYPE lead_stage ADD VALUE IF NOT EXISTS 'outreach_sent'`. Idempotent. Applied via Supabase.
+
+**Verification:** prod `/api/pipeline?filter=all` now returns 200 with a populated leads array. Kanban + List views recover on refresh.
+
+**Lesson:** When a comment says "this column is TEXT" without DDL evidence, verify against `information_schema.columns`. Cheap query, prevents real outages. Also: enums ARE additive-safe via `ADD VALUE IF NOT EXISTS` — there's no excuse for skipping the DDL update.

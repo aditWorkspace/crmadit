@@ -549,6 +549,22 @@ async function maybeSelfTrigger(supabase: Supa, now: Date): Promise<void> {
   if (!todaySlot) return; // Sat/Sun
   if (now < todaySlot) return; // not yet due
 
+  // Slot grace window. If the slot was due but we're more than
+  // SLOT_GRACE_MINUTES past it, the slot is considered missed — wait for
+  // tomorrow's slot rather than firing retroactively. Prevents the
+  // 2026-04-29 9:15pm incident where flipping enabled=true caused the
+  // cron to immediately trigger today's 6:00am slot.
+  const slotGraceMs = SAFETY_LIMITS.SLOT_GRACE_MINUTES * 60_000;
+  if (now.getTime() > todaySlot.getTime() + slotGraceMs) {
+    log('info', 'tick_slot_grace_expired', {
+      idempotency_key: todayKey,
+      slot: todaySlot.toISOString(),
+      now: now.toISOString(),
+      minutes_late: Math.round((now.getTime() - todaySlot.getTime()) / 60_000),
+    });
+    return;
+  }
+
   log('info', 'tick_self_trigger', { idempotency_key: todayKey });
   await runDailyStart(supabase, { now });
 }

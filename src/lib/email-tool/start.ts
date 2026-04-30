@@ -84,6 +84,33 @@ export async function runDailyStart(
   const now = opts.now ?? new Date();
   const idempotencyKey = opts.idempotencyKey ?? formatPtDate(now);
 
+  // ── Hard PM-block (defense-in-depth) ────────────────────────────────────
+  // The schedule's slot times are 5:00–7:00 AM PT. NEVER fire a campaign
+  // outside [SEND_ALLOWED_PT_HOUR_MIN, SEND_ALLOWED_PT_HOUR_MAX). The cost
+  // of an unintended PM send is high (deliverability impact, recipient
+  // impression, founder trust), so we trip the brakes hard rather than
+  // trusting upstream gating alone.
+  //
+  // Triggered by 2026-04-29 9:15pm incident. See safety-limits.ts comment
+  // on SEND_ALLOWED_PT_HOUR_MIN/MAX for full context.
+  const ptHour = parseInt(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Los_Angeles',
+      hour: 'numeric',
+      hourCycle: 'h23',
+    }).format(now),
+    10,
+  );
+  if (ptHour < SAFETY_LIMITS.SEND_ALLOWED_PT_HOUR_MIN || ptHour >= SAFETY_LIMITS.SEND_ALLOWED_PT_HOUR_MAX) {
+    log('warn', 'start_aborted_pm_hours', {
+      pt_hour: ptHour,
+      allowed_min: SAFETY_LIMITS.SEND_ALLOWED_PT_HOUR_MIN,
+      allowed_max: SAFETY_LIMITS.SEND_ALLOWED_PT_HOUR_MAX,
+      idempotency_key: idempotencyKey,
+    });
+    return { kind: 'aborted', campaign_id: null, reason: 'pm_hours_disallowed' };
+  }
+
   // ── Steps ①+②+③: claim today via RPC ──────────────────────────────────
   // C11+C12 fix: compute nextRunAt once here; the RPC stores it in the
   // skip-flag path (C12), and step ⑪ reuses the same value (C11).

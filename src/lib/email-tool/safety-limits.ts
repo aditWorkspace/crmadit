@@ -60,4 +60,27 @@ export const SAFETY_LIMITS = {
 
   // Pool low-water alert threshold (days of runway remaining at full volume).
   POOL_LOW_WATER_DAYS: 5,
+
+  // Morning-only enforcement. The schedule slots are 5:00–7:00am PT
+  // (Mon–Fri). NO sends ever fire outside this window. Two-layer defense:
+  //
+  //   1. SLOT_GRACE_MINUTES — tick.ts only self-triggers runDailyStart if
+  //      `now` is within (slot, slot + grace_minutes]. Catches the case
+  //      where the schedule is enabled mid-day and the cron tries to fire
+  //      "today's" slot retroactively.
+  //
+  //   2. SEND_ALLOWED_PT_HOUR_MIN/MAX — runDailyStart aborts if the PT
+  //      hour falls outside [MIN, MAX). Defense-in-depth: even if a slot
+  //      grace check is bypassed somehow, sends never fire in the PM.
+  //      MIN=4 lets the legitimate 5/6/7am slots through; MAX=12 is the
+  //      explicit no-PM cutoff.
+  //
+  // Triggered by 2026-04-29 incident: enabling schedule at 9:15pm caused
+  // the cron to retroactively trigger today's already-passed 6:00am slot,
+  // sending 750 emails at 9:15pm PT instead of the intended 6:30am next
+  // morning. See docs/superpowers/notes/2026-04-28-outreach-build-caveats.md
+  // (entry: "C20 — schedule re-enable retroactive trigger").
+  SLOT_GRACE_MINUTES: 30,
+  SEND_ALLOWED_PT_HOUR_MIN: 4,
+  SEND_ALLOWED_PT_HOUR_MAX: 12,
 } as const;
