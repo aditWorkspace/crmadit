@@ -54,6 +54,6 @@ ${args.question}`;
     model: LOOKUP_MODEL,
     maxTokens: 1200,
     timeoutMs: 60_000,
-    fallbackModels: ['deepseek/deepseek-v4-flash', 'deepseek/deepseek-v3.2'],
+    fallbackModels: ['deepseek/deepseek-r1'],
   });
 }

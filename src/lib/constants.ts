@@ -54,16 +54,17 @@ export const QWEN_FREE_MODEL = TRIAGE_MODEL;
 export const CLASSIFIER_MODEL = DECIDER_MODEL;
 
 // Insights-chat debate pipeline. Founder explicitly asked for DeepSeek
-// everywhere — no Anthropic models. v4-pro is the primary; v3 is the
-// fallback for 429/5xx (still DeepSeek, no Anthropic in the stack).
-//   - CHAT_ROUTER_MODEL   DeepSeek v3. Classifies lookup vs scope + emits FTS terms.
-//   - LOOKUP_MODEL        DeepSeek v4-pro. Single-call path for factual questions.
-//   - ADVOCATE_MODEL      DeepSeek v4-pro. FOR/AGAINST advocates in scope-question debates.
-//   - JUDGE_MODEL         DeepSeek v4-pro. The deliberation step.
+// everywhere — no Anthropic models. v3-0324 (chat) is the workhorse;
+// r1 is the reasoning-tuned model used at the judge step.
+//   - CHAT_ROUTER_MODEL   DeepSeek v3. Classifies bucket + emits FTS terms.
+//   - LOOKUP_MODEL        DeepSeek v3. Single-call path for factual questions
+//                          and per-transcript filter classifier.
+//   - ADVOCATE_MODEL      DeepSeek v3. FOR/AGAINST advocates in scope debates.
+//   - JUDGE_MODEL         DeepSeek r1. Reasoning model for the deliberation.
 export const CHAT_ROUTER_MODEL = DECIDER_MODEL;
-export const LOOKUP_MODEL = 'deepseek/deepseek-v4-pro';
-export const ADVOCATE_MODEL = 'deepseek/deepseek-v4-pro';
-export const JUDGE_MODEL = 'deepseek/deepseek-v4-pro';
+export const LOOKUP_MODEL = 'deepseek/deepseek-chat-v3-0324';
+export const ADVOCATE_MODEL = 'deepseek/deepseek-chat-v3-0324';
+export const JUDGE_MODEL = 'deepseek/deepseek-r1';
 
 // Fast-loop follow-up window (in minutes from the original auto-reply).
 // Clamped to the business-hours window by pickFastLoopTime.
