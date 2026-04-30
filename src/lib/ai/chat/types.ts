@@ -28,12 +28,25 @@ export interface TranscriptRow {
   lead_stage?: string | null;
 }
 
-export type QuestionKind = 'lookup' | 'scope';
+export type QuestionKind = 'lookup' | 'filter' | 'scope' | 'clarify';
 
-export interface RouterOutput {
-  kind: QuestionKind;
-  search_terms: string[];
+export interface FilterSpec {
+  // null means "user did not specify N"; the executor defaults to 20.
+  n: number | null;
+  // v1 only supports recency-ordered selection. Schema kept open for
+  // future ordering modes (e.g. 'all', 'this_week') without breaking changes.
+  ordering: 'recent';
+  // Natural-language criterion as the founder phrased it. The classifier
+  // tests each transcript against this string verbatim.
+  criterion: string;
+  criterion_type: 'factual' | 'semantic';
 }
+
+export type RouterOutput =
+  | { kind: 'lookup'; search_terms: string[] }
+  | { kind: 'scope'; search_terms: string[] }
+  | { kind: 'filter'; search_terms: string[]; filter: FilterSpec }
+  | { kind: 'clarify'; clarify_question: string };
 
 export interface AdvocateOutput {
   side: 'for' | 'against';
