@@ -55,7 +55,9 @@ export async function callAIMessages(params: AiCallMessagesParams): Promise<stri
       // Retryable: 429 (rate limit) or 5xx (server error). Anything else is
       // a permanent failure (bad model id, auth, malformed payload) that
       // would fail on every fallback the same way — bail immediately.
-      const retryable = /API error (429|5\d\d)/.test(message);
+      const retryable =
+        /API error (429|5\d\d)/.test(message) ||
+        /empty response/i.test(message);
       if (!retryable) throw lastErr;
       console.warn(`[openrouter] ${model} failed (${message.slice(0, 100)}), trying next fallback`);
     }
@@ -92,7 +94,11 @@ async function singleAttempt(params: AiCallMessagesParams): Promise<string> {
 
     const data = await response.json();
     let content = data.choices?.[0]?.message?.content;
-    if (!content) throw new Error('Empty response from OpenRouter');
+    if (!content) {
+      throw new Error(
+        `Empty response from OpenRouter (model=${params.model || DEFAULT_MODEL})`,
+      );
+    }
 
     // Strip markdown code fences if the model wraps JSON in ```json ... ```
     if (params.jsonMode) {
