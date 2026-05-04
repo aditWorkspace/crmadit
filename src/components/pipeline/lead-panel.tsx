@@ -676,7 +676,7 @@ export function LeadPanel({ leadId, onClose, onDelete }: LeadPanelProps) {
       fetch(`/api/leads/${leadId}/interactions`, { headers: h }).then(r => r.json()),
       fetch(`/api/leads/${leadId}/action-items`, { headers: h }).then(r => r.json()),
       supabase.from('activity_log').select('*, team_member:team_members(id, name)').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(30),
-      supabase.from('team_members').select('id, name, email, gmail_connected, created_at'),
+      supabase.from('team_members').select('id, name, email, gmail_connected, created_at').is('departed_at', null),
       fetch(`/api/leads/${leadId}/transcripts`, { headers: h }).then(r => r.json()),
     ]).then(([leadRes, intRes, aiRes, actRes, memRes, transcriptRes]) => {
       if (leadRes.lead) setLead(leadRes.lead);
