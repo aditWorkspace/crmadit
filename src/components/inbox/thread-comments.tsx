@@ -160,7 +160,7 @@ export function ThreadComments({ threadId }: ThreadCommentsProps) {
           Internal
         </span>
         <span className="text-[11px] text-gray-400">
-          Only Adit, Srijay, and Asim can see comments.
+          Only the team can see comments.
         </span>
       </div>
 

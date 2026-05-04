@@ -56,7 +56,7 @@ export const QA_BANK: QaItem[] = [
     id: 'team',
     triggers: ['who are you', 'team', 'founders', 'about you', 'background'],
     answer:
-      'Three Berkeley co-founders, Adit, Srijay, and Asim, mostly CS and business. This is our primary project.',
+      'Berkeley co-founders Adit and Asim — CS and business. This is our primary project.',
   },
   {
     id: 'funding',

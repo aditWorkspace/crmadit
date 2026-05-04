@@ -371,7 +371,7 @@ export default function SettingsPage() {
             <div className="flex-1">
               <h2 className="text-sm font-semibold text-gray-900">Granola Transcript Sync</h2>
               <p className="text-xs text-gray-500 mt-0.5">
-                Pulls Adit&apos;s and Srijay&apos;s Granola notes from the last 48 hours and imports any that match a CRM lead. The cron runs every 30 min on its own; this button is for when you don&apos;t want to wait.
+                Pulls Adit&apos;s Granola notes from the last 48 hours and imports any that match a CRM lead. The cron runs every 30 min on its own; this button is for when you don&apos;t want to wait.
               </p>
             </div>
           </div>

@@ -16,7 +16,7 @@ export interface ClassifyFirstReplyOptions {
 
 // 25-category classifier. Emits category + extracted metadata (dates, referrals).
 // Writer module handles prose generation separately on Haiku.
-export const FIRST_REPLY_SYSTEM_PROMPT = `You are classifying a prospect's reply to an outreach email from Proxi, a PM command center built by three Berkeley students (Adit, Srijay, Asim).
+export const FIRST_REPLY_SYSTEM_PROMPT = `You are classifying a prospect's reply to an outreach email from Proxi, a PM command center built by Berkeley students.
 
 Return ONLY a JSON object:
 {

@@ -92,10 +92,11 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
 
-  // Get ALL team members for attendee list, but only connected ones for freebusy
+  // Get ACTIVE team members for attendee list (departed founders are
+  // never invited to new bookings — see C20 / Srijay departure 2026-05-04).
   const [{ data: allMembers }, { data: connectedMembers }] = await Promise.all([
-    supabase.from('team_members').select('id, name, email'),
-    supabase.from('team_members').select('id, name, email').eq('gmail_connected', true),
+    supabase.from('team_members').select('id, name, email').is('departed_at', null),
+    supabase.from('team_members').select('id, name, email').eq('gmail_connected', true).is('departed_at', null),
   ]);
 
   if (!connectedMembers?.length) {
@@ -183,9 +184,20 @@ export async function POST(req: NextRequest) {
 
   const founderEmails = (allMembers ?? connectedMembers).map(m => m.email);
   const allEmails = [...new Set([...founderEmails, email, ...cleanGuests])];
+  // Build team-name string dynamically from active members so departed
+  // founders never appear in the calendar event title or signoff.
+  // Sort: Adit first (primary), then alphabetical.
+  const founderNames = (allMembers ?? connectedMembers)
+    .map(m => m.name)
+    .sort((a, b) => (a === 'Adit' ? -1 : b === 'Adit' ? 1 : a.localeCompare(b)));
+  const teamLabel =
+    founderNames.length === 0 ? 'the team'
+    : founderNames.length === 1 ? founderNames[0]
+    : founderNames.length === 2 ? `${founderNames[0]} & ${founderNames[1]}`
+    : `${founderNames.slice(0, -1).join(', ')} & ${founderNames[founderNames.length - 1]}`;
 
   const event = await createMeetingEvent(freeMembers[0].id, {
-    summary: `Quick chat — ${name} × Adit, Srijay & Asim`,
+    summary: `Quick chat — ${name} × ${teamLabel}`,
     description: note
       ? `Booking note: ${note}\n\nsource:proxi_crm`
       : 'source:proxi_crm',
@@ -247,7 +259,7 @@ export async function POST(req: NextRequest) {
   <p style="margin:16px 0;"><a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pmcrminternal.vercel.app'}/book?rescheduleEventId=${encodeURIComponent(event.eventId)}&email=${encodeURIComponent(email)}&name=${encodeURIComponent(name.trim())}" style="color:#b45309;font-size:13px;text-decoration:underline;">Need to reschedule?</a></p>
 
   <p style="font-size:13px;color:#888;margin-top:24px;">A calendar invite has also been sent to your email. All times are in Pacific Time (PT).</p>
-  <p style="font-size:13px;color:#aaa;">— Adit, Srijay & Asim</p>
+  <p style="font-size:13px;color:#aaa;">— ${teamLabel}</p>
 </div>`,
       }),
     }).catch(() => { /* non-fatal — calendar invite still sent */ });
@@ -288,7 +300,7 @@ export async function POST(req: NextRequest) {
 
   ${founderMeetSection}
 
-  <p style="font-size:13px;color:#aaa;">— Adit, Srijay & Asim</p>
+  <p style="font-size:13px;color:#aaa;">— ${teamLabel}</p>
 </div>`,
         }),
       }).catch(() => { /* non-fatal */ });

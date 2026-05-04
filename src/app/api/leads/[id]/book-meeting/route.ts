@@ -27,7 +27,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .single(),
     supabase
       .from('team_members')
-      .select('id, name, email, gmail_connected'),
+      .select('id, name, email, gmail_connected')
+      .is('departed_at', null),
   ]);
 
   if (!leadRes.data) {

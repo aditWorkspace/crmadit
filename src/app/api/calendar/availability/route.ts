@@ -36,7 +36,8 @@ export async function GET(req: NextRequest) {
   const { data: members } = await supabase
     .from('team_members')
     .select('id, name, email')
-    .eq('gmail_connected', true);
+    .eq('gmail_connected', true)
+    .is('departed_at', null);
 
   // Use cached availability for fast loads (warmed by cron every 15 min)
   const { data: cachedData, fromCache, failedCount } = await getCachedAvailability(timeMin, timeMax);
@@ -92,11 +93,11 @@ export async function GET(req: NextRequest) {
       return overlaps(cursor, slotEnd, busyByMember[m.id]);
     }).length;
 
-    // When bookingOnly: Adit AND Srijay must both be free. Asim doesn't matter.
+    // When bookingOnly: Adit must be free. He's the primary call-taker;
+    // other active founders are bonus attendees but not gating.
+    // (Srijay departed 2026-05-04; previously Adit AND Srijay were required.)
     if (bookingOnly) {
-      const requiredMembers = (members ?? []).filter(m =>
-        m.name === 'Adit' || m.name === 'Srijay'
-      );
+      const requiredMembers = (members ?? []).filter(m => m.name === 'Adit');
       const requiredBusy = requiredMembers.some(m => {
         if (!fetchedMemberIds.has(m.id)) return true; // assume busy if no data
         return overlaps(cursor, slotEnd, busyByMember[m.id]);

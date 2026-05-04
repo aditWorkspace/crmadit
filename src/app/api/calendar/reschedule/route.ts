@@ -85,9 +85,10 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
 
+  // Active founders only — departed members are never invited to reschedules.
   const [{ data: allMembers }, { data: connectedMembers }] = await Promise.all([
-    supabase.from('team_members').select('id, name, email'),
-    supabase.from('team_members').select('id, name, email').eq('gmail_connected', true),
+    supabase.from('team_members').select('id, name, email').is('departed_at', null),
+    supabase.from('team_members').select('id, name, email').eq('gmail_connected', true).is('departed_at', null),
   ]);
 
   if (!connectedMembers?.length) {
@@ -144,9 +145,19 @@ export async function POST(req: NextRequest) {
 
   const founderEmails = (allMembers ?? connectedMembers).map(m => m.email);
   const allEmails = [...new Set([...founderEmails, email, ...cleanGuests])];
+  // Build dynamic team-name string from active founders (departed founders
+  // already filtered out at the query above).
+  const founderNames = (allMembers ?? connectedMembers)
+    .map(m => m.name)
+    .sort((a, b) => (a === 'Adit' ? -1 : b === 'Adit' ? 1 : a.localeCompare(b)));
+  const teamLabel =
+    founderNames.length === 0 ? 'the team'
+    : founderNames.length === 1 ? founderNames[0]
+    : founderNames.length === 2 ? `${founderNames[0]} & ${founderNames[1]}`
+    : `${founderNames.slice(0, -1).join(', ')} & ${founderNames[founderNames.length - 1]}`;
 
   const event = await createMeetingEvent(freeMembers[0].id, {
-    summary: `Quick chat — ${name.trim()} × Adit, Srijay & Asim`,
+    summary: `Quick chat — ${name.trim()} × ${teamLabel}`,
     description: note?.trim()
       ? `Booking note: ${note.trim()}\n\n(Rescheduled)\nsource:proxi_crm`
       : '(Rescheduled)\nsource:proxi_crm',
@@ -195,7 +206,7 @@ export async function POST(req: NextRequest) {
   ${meetSection}
 
   <p style="font-size:13px;color:#888;margin-top:24px;">An updated calendar invite has been sent. All times are in Pacific Time (PT).</p>
-  <p style="font-size:13px;color:#aaa;">— Adit, Srijay & Asim</p>
+  <p style="font-size:13px;color:#aaa;">— ${teamLabel}</p>
 </div>`,
       }),
     }).catch(() => { /* non-fatal */ });
@@ -225,7 +236,7 @@ export async function POST(req: NextRequest) {
     <p style="margin:0;font-size:14px;"><strong>Duration:</strong> ${durationMinutes} minutes</p>
   </div>
 
-  <p style="font-size:13px;color:#aaa;">— Adit, Srijay & Asim</p>
+  <p style="font-size:13px;color:#aaa;">— ${teamLabel}</p>
 </div>`,
         }),
       }).catch(() => { /* non-fatal */ });

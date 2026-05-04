@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   const result = await callAI({
     model: 'deepseek/deepseek-chat-v3-0324',
     systemPrompt: `You are a sales email assistant for Proxi AI, a product prioritization tool for PMs.
-The team is 3 Berkeley co-founders (Adit, Srijay, Asim) doing outbound outreach to PMs and CEOs.
+The team is 2 Berkeley co-founders (Adit, Asim) doing outbound outreach to PMs and CEOs.
 
 Write a short, professional mass email to send to multiple prospects at the "${stageLabel}" stage.
 
@@ -27,7 +27,7 @@ Rules:
 - No filler ("I hope this finds you well")
 - Reference Proxi AI naturally
 - Include a clear call-to-action
-- Sign off with just "Srijay" on a new line
+- Sign off with just "Adit" on a new line
 - Output a JSON object with "subject" and "body" fields only
 - The body should NOT include "Dear X" or any salutation — it goes to many people`,
     userMessage: `Stage: ${stageLabel}
