@@ -19,7 +19,8 @@ async function handler(req: NextRequest) {
   const { data: members, error } = await supabase
     .from('team_members')
     .select('id, gmail_connected, gmail_history_id')
-    .eq('gmail_connected', true);
+    .eq('gmail_connected', true)
+    .is('departed_at', null);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!members || members.length === 0) {

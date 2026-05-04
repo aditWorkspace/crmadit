@@ -7,6 +7,7 @@ export async function GET() {
   const { data, error } = await supabase
     .from('team_members')
     .select('id, name, email, gmail_connected')
+    .is('departed_at', null)
     .order('name');
 
   if (error) {

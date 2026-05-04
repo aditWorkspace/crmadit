@@ -63,7 +63,8 @@ async function handler(req: NextRequest) {
   const supabase = createAdminClient();
   const { data: members, error } = await supabase
     .from('team_members')
-    .select('id, name, email');
+    .select('id, name, email')
+    .is('departed_at', null);
 
   if (error || !members?.length) {
     return NextResponse.json({ error: 'Failed to fetch team members' }, { status: 500 });

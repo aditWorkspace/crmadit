@@ -101,7 +101,8 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
   // ── 2) Active accounts ────────────────────────────────────────────────
   const { data: foundersData } = await supabase
     .from('team_members')
-    .select('id, name, email, email_send_paused');
+    .select('id, name, email, email_send_paused')
+    .is('departed_at', null);
   const allFounders = (foundersData ?? []) as FounderRow[];
   const activeFounders = allFounders.filter(f => !f.email_send_paused);
   if (activeFounders.length === 0) {

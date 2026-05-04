@@ -156,6 +156,18 @@ export async function POST(req: NextRequest) {
       : Promise.resolve({ data: [], error: null }),
   ]);
 
+  // Synergy s2 — exclude departed founders from auto-routing. A departed
+  // founder can't send mail, so routing to them would queue rows that
+  // never drain. Pull active-founder ids once and filter the routing
+  // tables.
+  const { data: activeFoundersData } = await supabase
+    .from('team_members')
+    .select('id')
+    .is('departed_at', null);
+  const activeFounderIds = new Set(
+    ((activeFoundersData ?? []) as Array<{ id: string }>).map(f => f.id)
+  );
+
   const blacklistedSet = new Set(
     ((blacklistedRes.data ?? []) as Array<{ email: string }>).map(b => b.email.toLowerCase())
   );
@@ -166,17 +178,20 @@ export async function POST(req: NextRequest) {
     const e = l.contact_email.toLowerCase();
     if (l.stage === 'dead') {
       deadLeadEmails.add(e);
-    } else if (l.owned_by) {
+    } else if (l.owned_by && activeFounderIds.has(l.owned_by)) {
+      // Only route to ACTIVE founders — a departed founder can't send,
+      // so an exact-match lead owned by them must fall through to round-
+      // robin assignment among active founders.
       activeLeadOwners.set(e, l.owned_by);
     }
   }
 
   // Synergy s2 — domain → owner. First owner per domain (most-recently-updated
   // active lead) wins. Skip exact-email matches (those are already in
-  // activeLeadOwners and don't need domain inference).
+  // activeLeadOwners and don't need domain inference). Active founders only.
   const domainOwners = new Map<string, string>();
   for (const l of (domainLeadRes.data ?? []) as Array<{ contact_email: string; owned_by: string | null }>) {
-    if (!l.owned_by) continue;
+    if (!l.owned_by || !activeFounderIds.has(l.owned_by)) continue;
     const domain = l.contact_email.split('@')[1]?.toLowerCase();
     if (domain && !domainOwners.has(domain)) {
       domainOwners.set(domain, l.owned_by);

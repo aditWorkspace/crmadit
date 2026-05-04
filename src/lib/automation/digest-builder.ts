@@ -89,6 +89,20 @@ export async function buildDailyDigest(): Promise<{
   const yesterday = subDays(now, 1).toISOString();
   const todayStr = format(now, 'yyyy-MM-dd');
 
+  // Pre-fetch departed founder names so each section can label their leads
+  // as "(frozen)" — per D1: keep the leads visible in the digest, but make
+  // it clear they won't auto-update because the founder no longer has an
+  // active Gmail / send pipeline.
+  const { data: departedRows } = await supabase
+    .from('team_members')
+    .select('name')
+    .not('departed_at', 'is', null);
+  const departedNames = new Set(((departedRows ?? []) as Array<{ name: string }>).map(r => r.name));
+  const labelOwner = (name: string | undefined | null): string => {
+    if (!name) return '';
+    return departedNames.has(name) ? `${name} (frozen)` : name;
+  };
+
   // 1. Leads that moved stages yesterday
   const { data: stageChanges } = await supabase
     .from('activity_log')
@@ -114,7 +128,7 @@ export async function buildDailyDigest(): Promise<{
         company_name: lead?.company_name ?? '',
         from_stage: details?.from ?? '',
         to_stage: details?.to ?? '',
-        owner_name: member?.name ?? '',
+        owner_name: labelOwner(member?.name),
       };
     });
 
@@ -131,7 +145,7 @@ export async function buildDailyDigest(): Promise<{
     return {
       contact_name: l.contact_name,
       company_name: l.company_name,
-      owner_name: member?.name ?? '',
+      owner_name: labelOwner(member?.name),
     };
   });
 
@@ -157,7 +171,7 @@ export async function buildDailyDigest(): Promise<{
         company_name: l.company_name,
         stage: l.stage,
         hours_stale: Math.round(differenceInHours(now, new Date(l.last_contact_at!))),
-        owner_name: member?.name ?? '',
+        owner_name: labelOwner(member?.name),
       };
     })
     .sort((a, b) => b.hours_stale - a.hours_stale)
@@ -187,7 +201,7 @@ export async function buildDailyDigest(): Promise<{
       text: a.text,
       lead_name: lead?.contact_name ?? 'Unknown',
       due_date: a.due_date,
-      owner_name: member?.name ?? '',
+      owner_name: labelOwner(member?.name),
     };
   });
 
@@ -212,7 +226,7 @@ export async function buildDailyDigest(): Promise<{
       text: a.text,
       lead_name: lead?.contact_name ?? 'Unknown',
       due_date: a.due_date,
-      owner_name: member?.name ?? '',
+      owner_name: labelOwner(member?.name),
       days_overdue: daysOverdue,
     };
   });
@@ -237,7 +251,7 @@ export async function buildDailyDigest(): Promise<{
       stage: l.stage,
       heat_score: l.heat_score,
       ai_next_action: l.ai_next_action!,
-      owner_name: member?.name ?? '',
+      owner_name: labelOwner(member?.name),
     };
   });
 
@@ -269,7 +283,7 @@ export async function buildDailyDigest(): Promise<{
       lead_id: r.lead_id,
       contact_name: lead?.contact_name ?? 'Unknown',
       company_name: lead?.company_name ?? '',
-      owner_name: member?.name ?? '',
+      owner_name: labelOwner(member?.name),
       kind,
       reason: reasonStr,
     };

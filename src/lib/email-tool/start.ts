@@ -151,6 +151,7 @@ export async function runDailyStart(
     const { data: foundersData } = await supabase
       .from('team_members')
       .select('id, name, email, email_send_paused')
+      .is('departed_at', null)
       .order('name', { ascending: true });
     const activeFounders = ((foundersData ?? []) as Array<ActiveFounder & { email_send_paused: boolean }>)
       .filter(f => !f.email_send_paused)

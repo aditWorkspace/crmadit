@@ -210,10 +210,14 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
 
       const { data: member } = await supabase
         .from('team_members')
-        .select('id, name, email, gmail_connected')
+        .select('id, name, email, gmail_connected, departed_at')
         .eq('id', lead.owned_by)
         .single();
       if (!member?.gmail_connected) continue;
+      // Skip leads owned by departed founders — they can't auto-respond.
+      // The lead stays in the CRM (per "freeze" policy); a current founder
+      // can manually take over by emailing the prospect from their account.
+      if (member.departed_at) continue;
 
       const hoursAgo = Math.round(
         (Date.now() - new Date(lastInteraction.occurred_at).getTime()) / (1000 * 60 * 60)

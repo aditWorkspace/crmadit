@@ -5,7 +5,7 @@ import { stripHtml } from '@/lib/utils';
 import { STAGE_LABELS, STAGE_COLORS, STALE_THRESHOLDS, PRIORITY_COLORS } from '@/lib/constants';
 import { LeadStage, Priority } from '@/types';
 import { AlertCircle, Phone, Clock, Users, Repeat, ArrowUpRight, ArrowDownLeft, Search } from '@/lib/icons';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 
 export interface PipelineLead {
   id: string;
@@ -195,6 +195,20 @@ const GROUP_ORDER = ['needs_attention', 'calls', 'active', 'long_term', 'paused'
 
 export function LeadList({ leads, selectedId, filter, onFilterChange, onSelect }: LeadListProps) {
   const [search, setSearch] = useState('');
+  const [departedNames, setDepartedNames] = useState<Set<string>>(new Set());
+
+  // Fetch which founders have departed so the owner legend can render
+  // them as grayed-out (D3-b: show but mark as departed).
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/team/departed')
+      .then(r => (r.ok ? r.json() : { departed: [] }))
+      .then((data: { departed: Array<{ name: string }> }) => {
+        if (!cancelled) setDepartedNames(new Set((data.departed ?? []).map(m => m.name)));
+      })
+      .catch(() => { /* fail-open: legend just shows everyone normally */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Filter by search
   const filtered = useMemo(() => {
@@ -221,14 +235,22 @@ export function LeadList({ leads, selectedId, filter, onFilterChange, onSelect }
             <h2 className="text-sm font-semibold text-gray-900">Pipeline</h2>
             <p className="text-[11px] text-gray-400">{leads.length} leads</p>
           </div>
-          {/* Owner legend */}
+          {/* Owner legend. Departed founders are shown grayed out so historical
+              attribution stays visible in the pipeline. */}
           <div className="flex items-center gap-2">
-            {Object.entries(OWNER_COLORS).map(([name, color]) => (
-              <div key={name} className="flex items-center gap-1">
-                <div className={cn('h-2 w-2 rounded-full', color)} />
-                <span className="text-[10px] text-gray-400">{name[0]}</span>
-              </div>
-            ))}
+            {Object.entries(OWNER_COLORS).map(([name, color]) => {
+              const isDeparted = departedNames.has(name);
+              return (
+                <div
+                  key={name}
+                  className={cn('flex items-center gap-1', isDeparted && 'opacity-40')}
+                  title={isDeparted ? `${name} (departed — leads frozen)` : name}
+                >
+                  <div className={cn('h-2 w-2 rounded-full', color)} />
+                  <span className={cn('text-[10px]', isDeparted ? 'text-gray-300 line-through' : 'text-gray-400')}>{name[0]}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
 
