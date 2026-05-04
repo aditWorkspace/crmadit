@@ -48,7 +48,10 @@ export function KanbanBoard() {
 
   const fetchLeads = useCallback(async () => {
     if (!user) return;
-    const res = await fetch(`/api/leads?${KANBAN_STAGES.map(s => `stage=${s}`).join('&')}&limit=200`, {
+    // limit=1000 covers the full active pipeline. Earlier 200 silently
+    // truncated frozen / less-recently-updated leads (e.g., everything
+    // owned by departed founders) since the API sorts by updated_at desc.
+    const res = await fetch(`/api/leads?${KANBAN_STAGES.map(s => `stage=${s}`).join('&')}&limit=1000`, {
       headers: { 'x-team-member-id': user.team_member_id },
     });
     if (res.ok) {
