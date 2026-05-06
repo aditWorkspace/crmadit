@@ -20,6 +20,9 @@ export async function GET(req: NextRequest) {
   const ownedBy = searchParams.get('owned_by');
   const sourcedBy = searchParams.get('sourced_by');
   const pocStatus = searchParams.get('poc_status');
+  // AI-extracted interest tag from the latest transcript per lead.
+  // Values: 'high' | 'medium' | 'low'.
+  const interestLevel = searchParams.get('interest_level');
   const preset = searchParams.get('preset'); // 'my_leads', 'awaiting_response', 'awaiting_demo', 'stale'
   const sortBy = searchParams.get('sort_by') || 'updated_at';
   const sortDir = searchParams.get('sort_dir') || 'desc';
@@ -58,6 +61,28 @@ export async function GET(req: NextRequest) {
   if (ownedBy) query = query.eq('owned_by', ownedBy);
   if (sourcedBy) query = query.eq('sourced_by', sourcedBy);
   if (pocStatus) query = query.eq('poc_status', pocStatus);
+
+  // Interest filter — pre-fetch lead_ids whose LATEST transcript per lead has
+  // ai_interest_level matching the requested level, then constrain the main
+  // query with .in('id', ...). We don't join transcripts directly because a
+  // lead can have multiple transcripts and we only care about the most recent.
+  if (interestLevel === 'high' || interestLevel === 'medium' || interestLevel === 'low') {
+    const { data: matchingTranscripts } = await supabase
+      .from('transcripts')
+      .select('lead_id, ai_interest_level, created_at')
+      .eq('ai_interest_level', interestLevel)
+      .order('created_at', { ascending: false });
+    const matchingLeadIds = Array.from(
+      new Set(((matchingTranscripts ?? []) as Array<{ lead_id: string }>).map(t => t.lead_id))
+    );
+    if (matchingLeadIds.length === 0) {
+      // No leads match — short-circuit with empty result rather than letting
+      // the .in() clause filter to "nothing" via empty array (which Postgres
+      // handles fine but is clearer to express explicitly).
+      return NextResponse.json({ leads: [], total: 0, page, limit });
+    }
+    query = query.in('id', matchingLeadIds);
+  }
 
   // Preset filters
   if (preset === 'my_leads') {

@@ -71,6 +71,10 @@ export function LeadTable() {
   const [selectedStages, setSelectedStages] = useState<LeadStage[]>([]);
   const [selectedPriority, setSelectedPriority] = useState('');
   const [selectedOwner, setSelectedOwner] = useState('');
+  // AI-extracted transcript signal — values: '' | 'high' | 'medium' | 'low'.
+  // Filters leads to those whose latest transcript was tagged at the chosen
+  // interest level by the transcript-processor pipeline.
+  const [selectedInterest, setSelectedInterest] = useState('');
   const [sortBy, setSortBy] = useState('updated_at');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [page, setPage] = useState(1);
@@ -103,6 +107,7 @@ export function LeadTable() {
     selectedStages.forEach((s) => params.append('stage', s));
     if (selectedPriority) params.set('priority', selectedPriority);
     if (selectedOwner) params.set('owned_by', selectedOwner);
+    if (selectedInterest) params.set('interest_level', selectedInterest);
     params.set('sort_by', sortBy);
     params.set('sort_dir', sortDir);
     params.set('page', String(page));
@@ -117,7 +122,7 @@ export function LeadTable() {
       setTotal(data.total || 0);
     }
     setLoading(false);
-  }, [user, preset, debouncedSearch, selectedStages, selectedPriority, selectedOwner, sortBy, sortDir, page]);
+  }, [user, preset, debouncedSearch, selectedStages, selectedPriority, selectedOwner, selectedInterest, sortBy, sortDir, page]);
 
   useEffect(() => {
     fetchLeads();
@@ -262,6 +267,7 @@ export function LeadTable() {
     selectedStages.forEach((s) => params.append('stage', s));
     if (selectedPriority) params.set('priority', selectedPriority);
     if (selectedOwner) params.set('owned_by', selectedOwner);
+    if (selectedInterest) params.set('interest_level', selectedInterest);
     params.set('sort_by', sortBy);
     params.set('sort_dir', sortDir);
     params.set('limit', '1000');
@@ -414,6 +420,35 @@ export function LeadTable() {
             {members.map((m) => (
               <DropdownMenuItem key={m.id} onClick={() => { setSelectedOwner(m.id); setPage(1); }}>
                 {m.name}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* Interest filter — sources from transcripts.ai_interest_level
+            (the same value rendered as a tag in the lead detail's
+            transcript section). */}
+        <DropdownMenu>
+          <DropdownMenuTrigger className="inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground">
+            Interest{' '}
+            {selectedInterest && (
+              <span className="font-medium text-xs capitalize">{selectedInterest}</span>
+            )}
+            <ChevronDown className="h-3.5 w-3.5" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem onClick={() => { setSelectedInterest(''); setPage(1); }}>
+              All
+            </DropdownMenuItem>
+            {(['high', 'medium', 'low'] as const).map((level) => (
+              <DropdownMenuItem key={level} onClick={() => { setSelectedInterest(level); setPage(1); }}>
+                <span
+                  className={cn(
+                    'mr-2 h-2 w-2 rounded-full inline-block',
+                    level === 'high' ? 'bg-emerald-500' : level === 'medium' ? 'bg-yellow-500' : 'bg-gray-400',
+                  )}
+                />
+                <span className="capitalize">{level}</span>
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
