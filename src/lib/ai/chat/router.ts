@@ -54,7 +54,10 @@ export async function classifyQuestion(question: string): Promise<RouterOutput> 
     userMessage: `Question: ${question}`,
     model: CHAT_ROUTER_MODEL,
     jsonMode: true,
-    maxTokens: 400,
+    // Router emits a small JSON object (kind + 3-5 search terms). 200 is
+    // ample and conserves OpenRouter credits — the original 400 burned
+    // budget and tripped a 402 when credits got tight.
+    maxTokens: 200,
   });
 
   try {

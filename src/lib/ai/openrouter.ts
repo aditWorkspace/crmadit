@@ -89,6 +89,14 @@ async function singleAttempt(params: AiCallMessagesParams): Promise<string> {
 
     if (!response.ok) {
       const error = await response.text();
+      // Distinguish a credits-depleted 402 from a transient API error so
+      // the chat UI can show a clean "top up credits" message instead of
+      // dumping a raw stacktrace at the user.
+      if (response.status === 402) {
+        const e = new Error('OpenRouter credits depleted — add credits at https://openrouter.ai/settings/credits');
+        (e as Error & { code?: string }).code = 'OPENROUTER_CREDITS_DEPLETED';
+        throw e;
+      }
       throw new Error(`OpenRouter API error ${response.status}: ${error}`);
     }
 

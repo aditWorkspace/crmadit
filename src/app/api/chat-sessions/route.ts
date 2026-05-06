@@ -63,13 +63,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ session: chatSession, messages: [userMsg, assistantMsg] });
   } catch (err) {
     console.error('[chat-sessions POST] AI pipeline failed:', err);
-    // Still return session with user message even if AI fails — surface
-    // the error message so the founder can see it instead of "try again"
     const detail = err instanceof Error ? err.message : String(err);
+    const code = (err as Error & { code?: string }).code;
+    const userFacing =
+      code === 'OPENROUTER_CREDITS_DEPLETED'
+        ? `**OpenRouter credits ran out.** The AI pipeline can't run until you add credits. Top up at https://openrouter.ai/settings/credits and retry your question.`
+        : `Failed to generate answer:\n\n\`\`\`\n${detail}\n\`\`\``;
     const errorMsg = {
       id: crypto.randomUUID(),
       role: 'assistant',
-      content: `Failed to generate answer:\n\n\`\`\`\n${detail}\n\`\`\``,
+      content: userFacing,
       created_at: new Date().toISOString(),
     };
     return NextResponse.json({ session: chatSession, messages: [userMsg, errorMsg] });

@@ -67,15 +67,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ userMessage: userMsg, assistantMessage: assistantMsg });
   } catch (err) {
     console.error('[chat-sessions messages POST] AI pipeline failed:', err);
-    // Persist a visible assistant turn carrying the error so the user sees
-    // it inline in the thread (instead of the UI silently breaking).
     const detail = err instanceof Error ? err.message : String(err);
+    const code = (err as Error & { code?: string }).code;
+    // Friendly inline message for the credit-depletion case so the user
+    // can act on it directly instead of staring at a stacktrace.
+    const userFacing =
+      code === 'OPENROUTER_CREDITS_DEPLETED'
+        ? `**OpenRouter credits ran out.** The AI pipeline can't run until you add credits. Top up at https://openrouter.ai/settings/credits and retry your question.`
+        : `Failed to generate answer:\n\n\`\`\`\n${detail}\n\`\`\``;
     const { data: assistantMsg } = await supabase
       .from('chat_messages')
       .insert({
         session_id: id,
         role: 'assistant',
-        content: `Failed to generate answer:\n\n\`\`\`\n${detail}\n\`\`\``,
+        content: userFacing,
       })
       .select('id, role, content, created_at')
       .single();
