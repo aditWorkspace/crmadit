@@ -6,9 +6,10 @@ import { TemplatesTab } from './templates-tab';
 import { ScheduleTab } from './schedule-tab';
 import { PriorityTab } from './priority-tab';
 import { OverviewTab } from './overview-tab';
+import { AbTestTab } from './ab-test-tab';
 import { PriorityUploadModal } from '@/components/email-tool/priority-upload-modal';
 
-type TabId = 'overview' | 'templates' | 'schedule' | 'priority';
+type TabId = 'overview' | 'templates' | 'schedule' | 'priority' | 'ab-test';
 
 interface Props {
   memberName: string;
@@ -19,6 +20,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'templates', label: 'Templates' },
   { id: 'schedule', label: 'Schedule' },
   { id: 'priority', label: 'Priority Queue' },
+  { id: 'ab-test', label: 'A/B Test' },
 ];
 
 interface ScheduleSummary {
@@ -163,6 +165,7 @@ export default function AdminClient({ memberName }: Props) {
           {tab === 'overview' && <OverviewTab />}
           {tab === 'schedule' && <ScheduleTab />}
           {tab === 'priority' && <PriorityTab />}
+          {tab === 'ab-test' && <AbTestTab />}
         </main>
       </div>
 

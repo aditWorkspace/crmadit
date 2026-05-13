@@ -330,11 +330,19 @@ export async function runDailyStart(
         .in('id', deferredPriorityIds);
     }
 
-    // ── Step ⑧: variant pick per recipient (uniform random per founder) ──
+    // ── Step ⑧: variant pick per recipient (strict round-robin per founder)
+    // Round-robin gives an exact-equal split across a founder's active
+    // variants — required for A/B tests where we want N samples per arm.
+    // Sort by id so the rotation order is deterministic across runs;
+    // recipient order within a founder's chunk is already shuffled
+    // upstream (round-robin starts at index 0 each day, so the FIRST
+    // recipient lands on variant[0] consistently, but the recipient
+    // itself rotates day-to-day).
     const { data: variantsData } = await supabase
       .from('email_template_variants')
       .select('id, founder_id')
-      .eq('is_active', true);
+      .eq('is_active', true)
+      .order('id', { ascending: true });
     const variantsByFounder = new Map<string, string[]>();
     for (const v of (variantsData ?? []) as Array<{ id: string; founder_id: string }>) {
       const list = variantsByFounder.get(v.founder_id) ?? [];
@@ -364,8 +372,10 @@ export async function runDailyStart(
       }
       const chunk = dedupedByFounder[fi];
       let cursor = startMs + Math.floor(Math.random() * 10_000); // ≤10s initial offset
+      let recipientIdx = 0;
       for (const a of chunk) {
-        const variantId = founderVariants[Math.floor(Math.random() * founderVariants.length)];
+        const variantId = founderVariants[recipientIdx % founderVariants.length];
+        recipientIdx++;
         queueRows.push({
           campaign_id: campaignId,
           account_id: founder.id,
