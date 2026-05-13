@@ -69,16 +69,24 @@ export default function EmailToolClient({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Upload + filter (admin) — separate from the bulk blacklist upload.
-  // Takes a CSV the user is about to send, removes rows whose email is
-  // already in the blacklist, blacklists the survivors, and returns the
-  // cleaned CSV for download.
+  // Upload + filter (admin). Default behavior: add survivors to the
+  // pool. The "put at top" checkbox toggles between pool_top (sent next)
+  // and pool_bottom (sent after everything else). The legacy
+  // blacklist-only mode lives in the separate "Blacklist upload" section
+  // above — it's not surfaced here anymore.
+  type FilterMode = 'blacklist' | 'pool_top' | 'pool_bottom';
+  const [putAtTop, setPutAtTop] = useState<boolean>(true);
+  const filterMode: FilterMode = putAtTop ? 'pool_top' : 'pool_bottom';
   const [filtering, setFiltering] = useState(false);
   const [filterResult, setFilterResult] = useState<{
+    mode: FilterMode;
     inputRows: number;
     outputRows: number;
+    skippedNoEmail: number;
     alreadyBlacklisted: number;
     newlyBlacklisted: number;
+    poolInserted: number;
+    alreadyInPool: number;
   } | null>(null);
   const [filterError, setFilterError] = useState<string | null>(null);
   const filterInputRef = useRef<HTMLInputElement>(null);
@@ -128,20 +136,23 @@ export default function EmailToolClient({
     }
   }
 
-  async function filterCsv(file: File) {
+  async function filterCsv(file: File, mode: FilterMode) {
     setFiltering(true);
     setFilterError(null);
     setFilterResult(null);
     try {
       const form = new FormData();
       form.append('file', file);
+      form.append('mode', mode);
       const res = await fetch('/api/cron/email-tool/csv-filter', { method: 'POST', body: form });
       if (!res.ok) {
         // Error responses are JSON with { ok: false, reason }.
         let reason = `http ${res.status}`;
         try {
           const j = await res.json();
-          if (j && typeof j.reason === 'string') reason = j.reason;
+          if (j && typeof j.reason === 'string') {
+            reason = j.detail ? `${j.reason}: ${j.detail}` : j.reason;
+          }
         } catch {}
         setFilterError(reason);
         return;
@@ -149,8 +160,11 @@ export default function EmailToolClient({
 
       const inputRows = Number(res.headers.get('X-Input-Rows') ?? '0');
       const outputRows = Number(res.headers.get('X-Output-Rows') ?? '0');
+      const skippedNoEmail = Number(res.headers.get('X-Skipped-No-Email') ?? '0');
       const alreadyBlacklisted = Number(res.headers.get('X-Already-Blacklisted') ?? '0');
       const newlyBlacklisted = Number(res.headers.get('X-Newly-Blacklisted') ?? '0');
+      const poolInserted = Number(res.headers.get('X-Pool-Inserted') ?? '0');
+      const alreadyInPool = Number(res.headers.get('X-Already-In-Pool') ?? '0');
 
       // Trigger the browser download.
       const blob = await res.blob();
@@ -167,8 +181,18 @@ export default function EmailToolClient({
       // Defer revoke a tick so Safari/Firefox finish the download trigger.
       setTimeout(() => URL.revokeObjectURL(url), 1000);
 
-      setFilterResult({ inputRows, outputRows, alreadyBlacklisted, newlyBlacklisted });
-      setBlacklistSize(prev => prev + newlyBlacklisted);
+      setFilterResult({
+        mode,
+        inputRows,
+        outputRows,
+        skippedNoEmail,
+        alreadyBlacklisted,
+        newlyBlacklisted,
+        poolInserted,
+        alreadyInPool,
+      });
+      if (newlyBlacklisted > 0) setBlacklistSize(prev => prev + newlyBlacklisted);
+      if (poolInserted > 0) setRemaining(prev => prev + poolInserted);
     } catch {
       setFilterError('network error');
     } finally {
@@ -313,10 +337,21 @@ export default function EmailToolClient({
               <Upload className="h-3 w-3" /> Upload + filter (admin)
             </p>
             <p className="text-xs text-gray-500">
-              Upload a CSV you{"'"}re about to send. We{"'"}ll remove rows already in the
-              blacklist, add the rest to the blacklist (so they{"'"}re never sent again),
-              and return a clean CSV to download.
+              Upload a CSV. Rows with no email are skipped, rows already
+              blacklisted or already in pool are dropped. Survivors get
+              added to the pool.
             </p>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-700 pl-1">
+              <input
+                type="checkbox"
+                checked={putAtTop}
+                onChange={e => setPutAtTop(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium text-gray-800">Put at top of pool.</span>{' '}
+                These will be the next emails sent. Uncheck to add to the bottom instead.
+              </span>
+            </label>
             <input
               ref={filterInputRef}
               type="file"
@@ -324,14 +359,19 @@ export default function EmailToolClient({
               disabled={filtering}
               onChange={e => {
                 const f = e.target.files?.[0];
-                if (f) filterCsv(f);
+                if (f) filterCsv(f, filterMode);
               }}
               className="text-xs text-gray-500 file:mr-3 file:px-3 file:py-2 file:rounded-md file:border-0 file:bg-gray-100 file:text-gray-800 file:cursor-pointer hover:file:bg-gray-200 disabled:opacity-40"
             />
             {filtering && <p className="text-xs text-gray-400 inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Filtering…</p>}
             {filterResult && (
               <p className="text-xs text-emerald-700">
-                Uploaded {filterResult.inputRows.toLocaleString()} rows · {filterResult.alreadyBlacklisted.toLocaleString()} already blacklisted · {filterResult.newlyBlacklisted.toLocaleString()} newly added · downloaded clean.csv with {filterResult.outputRows.toLocaleString()} rows.
+                Uploaded {(filterResult.inputRows + filterResult.skippedNoEmail).toLocaleString()} rows ·{' '}
+                {filterResult.skippedNoEmail.toLocaleString()} skipped (no email) ·{' '}
+                {filterResult.alreadyBlacklisted.toLocaleString()} already blacklisted ·{' '}
+                {filterResult.alreadyInPool.toLocaleString()} already in pool ·{' '}
+                {filterResult.poolInserted.toLocaleString()} added to pool{' '}
+                {filterResult.mode === 'pool_top' ? 'TOP' : filterResult.mode === 'pool_bottom' ? 'BOTTOM' : ''}.
               </p>
             )}
             {filterError && <p className="text-xs text-red-600">Filter failed: {filterError}</p>}
