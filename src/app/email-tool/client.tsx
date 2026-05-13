@@ -302,6 +302,14 @@ export default function EmailToolClient({
             <Target className="h-5 w-5 text-gray-400" />
             Hi {name}.
           </h1>
+          {isAdmin && (
+            <a
+              href="/email-tool/admin?tab=overview"
+              className="text-xs text-gray-500 hover:text-gray-900 inline-flex items-center gap-1 border border-gray-200 hover:border-gray-300 rounded-md px-2 py-1 transition"
+            >
+              admin <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
         </div>
 
         <button
