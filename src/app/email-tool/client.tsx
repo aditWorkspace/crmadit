@@ -69,6 +69,10 @@ export default function EmailToolClient({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Reversal state — one batch ID at a time may be in flight.
+  const [reversingId, setReversingId] = useState<string | null>(null);
+  const [reverseError, setReverseError] = useState<string | null>(null);
+
   // Upload + filter (admin). Default behavior: add survivors to the
   // pool. The "put at top" checkbox toggles between pool_top (sent next)
   // and pool_bottom (sent after everything else). The legacy
@@ -199,6 +203,46 @@ export default function EmailToolClient({
       setFiltering(false);
       if (filterInputRef.current) filterInputRef.current.value = '';
     }
+  }
+
+  async function reverseBatch(h: HistoryEntry) {
+    const label = h.title ?? formatEntryDate(h.created_at);
+    if (!window.confirm(
+      `Reverse "${label}"?\n\n` +
+      `This will:\n` +
+      `  • Remove the 400 emails from blacklist\n` +
+      `  • Restore the pool pointer to where it was\n` +
+      `  • Delete the history row\n` +
+      `  • Clear the founder's cooldown\n\n` +
+      `The Google Sheet itself stays in Drive — delete it manually if you want.`
+    )) return;
+    setReversingId(h.id);
+    setReverseError(null);
+    try {
+      const res = await fetch(`/api/cron/email-tool/batch/${h.id}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        setReverseError(data.detail ?? data.reason ?? `http ${res.status}`);
+        return;
+      }
+      // Drop the reversed row from local history + bump remaining count
+      setHistory(prev => prev.filter(x => x.id !== h.id));
+      setRemaining(prev => prev + (data.reversed_emails ?? 0));
+      // Clear cooldown locally so the button re-enables instantly.
+      setNextAvailable(null);
+    } catch {
+      setReverseError('network error');
+    } finally {
+      setReversingId(null);
+    }
+  }
+
+  // Batches older than 24h can't be reversed (server-side guard). Mirror
+  // that here so we hide the button instead of showing it just to 409.
+  function canReverse(h: HistoryEntry): boolean {
+    if (!now) return false;
+    const ageHours = (now.getTime() - new Date(h.created_at).getTime()) / 3_600_000;
+    return ageHours <= 24;
   }
 
   async function uploadBlacklist(files: FileList) {
@@ -393,17 +437,30 @@ export default function EmailToolClient({
                       {isAdmin && h.created_by ? <> · by {h.created_by}</> : null}
                     </span>
                   </div>
-                  <a
-                    href={h.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 hover:text-blue-800 inline-flex items-center gap-1 text-xs"
-                  >
-                    open <ExternalLink className="h-3 w-3" />
-                  </a>
+                  <div className="flex items-center gap-3">
+                    {canReverse(h) && (
+                      <button
+                        onClick={() => reverseBatch(h)}
+                        disabled={reversingId === h.id}
+                        className="text-red-600 hover:text-red-800 text-xs disabled:opacity-40"
+                        title="Undo this batch: removes the 400 emails from blacklist, restores the pool pointer, deletes the history row, clears cooldown. Only works on the most recent batch and within 24h."
+                      >
+                        {reversingId === h.id ? 'reversing…' : 'reverse'}
+                      </button>
+                    )}
+                    <a
+                      href={h.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:text-blue-800 inline-flex items-center gap-1 text-xs"
+                    >
+                      open <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
                 </li>
               ))}
             </ul>
+            {reverseError && <p className="text-xs text-red-600">Reverse failed: {reverseError}</p>}
           </div>
         )}
       </div>
