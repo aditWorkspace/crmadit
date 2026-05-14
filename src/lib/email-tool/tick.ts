@@ -4,6 +4,8 @@
 
 import type { createAdminClient } from '@/lib/supabase/admin';
 import { sendCampaignEmail, type SendOutcome } from './send';
+import { renderTemplate } from './render-template';
+import { sendReplyInThread } from '@/lib/gmail/send';
 import { SAFETY_LIMITS } from './safety-limits';
 import {
   checkBounceRate, checkPerSecondPace, checkRecipientDomainOnce,
@@ -44,6 +46,12 @@ interface QueueRow {
   template_variant_id: string;
   send_at: string;
   attempts: number;
+  /** When non-null, this row is a follow-up bump and must be sent as a
+   *  reply in the original thread (sendReplyInThread) instead of as
+   *  a fresh outbound (sendCampaignEmail). The original thread id is
+   *  pre-populated in gmail_thread_id below at start.ts step ⑤a. */
+  parent_queue_id: string | null;
+  gmail_thread_id: string | null;
 }
 
 interface FounderRow {
@@ -126,7 +134,7 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
   // ── 4) Pull due rows ──────────────────────────────────────────────────
   const { data: dueData } = await supabase
     .from('email_send_queue')
-    .select('id, campaign_id, account_id, recipient_email, recipient_name, recipient_company, template_variant_id, send_at, attempts')
+    .select('id, campaign_id, account_id, recipient_email, recipient_name, recipient_company, template_variant_id, send_at, attempts, parent_queue_id, gmail_thread_id')
     .eq('status', 'pending')
     .lte('send_at', now.toISOString())
     .in('account_id', activeIds)
@@ -239,13 +247,28 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
     // Send (with try/catch around the whole thing)
     let outcome: SendOutcome;
     try {
-      outcome = await sendCampaignEmail({
-        queueRow: { ...row, status: 'pending' as const },
-        variant,
-        founder: { id: founder.id, name: founder.name, email: founder.email },
-        sendMode,
-        allowlist,
-      }, gmail);
+      if (row.parent_queue_id && row.gmail_thread_id) {
+        // Follow-up bump: send as reply in the original Gmail thread.
+        // Renders the template here so the bump body still gets
+        // `{{first_name}}` / `{{company}}` substitution. The tracking
+        // pixel is embedded in the HTML part via trackingQueueId =
+        // row.id (so opens on the follow-up are also counted).
+        outcome = await sendFollowupReply({
+          row,
+          variant,
+          founder,
+          sendMode,
+          allowlist,
+        });
+      } else {
+        outcome = await sendCampaignEmail({
+          queueRow: { ...row, status: 'pending' as const },
+          variant,
+          founder: { id: founder.id, name: founder.name, email: founder.email },
+          sendMode,
+          allowlist,
+        }, gmail);
+      }
     } catch (err) {
       const e = err as Error;
       log('error', 'tick_send_threw', { queue_row_id: row.id, err: e.message });
@@ -568,6 +591,90 @@ async function maybeSelfTrigger(supabase: Supa, now: Date): Promise<void> {
 
   log('info', 'tick_self_trigger', { idempotency_key: todayKey });
   await runDailyStart(supabase, { now });
+}
+
+/**
+ * Send a follow-up bump as a reply in the original Gmail thread.
+ *
+ * The fresh-cold path goes through `sendCampaignEmail` → `buildRawMime`,
+ * which constructs a top-level send. Follow-ups must instead use
+ * `sendReplyInThread` so Gmail stitches the bump into the existing
+ * conversation (the recipient sees the original outreach + the bump
+ * in one thread). This wrapper takes the queue row + variant +
+ * founder, renders the variant, calls sendReplyInThread with the
+ * tracking pixel embedded, and produces a SendOutcome-shaped result.
+ *
+ * Dry-run / allowlist gating mirrors sendCampaignEmail so the two send
+ * modes behave identically end-to-end.
+ */
+interface FollowupSendInput {
+  row: QueueRow;
+  variant: VariantRow;
+  founder: FounderRow;
+  sendMode: SendMode;
+  allowlist: string[];
+}
+async function sendFollowupReply(input: FollowupSendInput): Promise<SendOutcome> {
+  const { row, variant, founder, sendMode, allowlist } = input;
+
+  if (sendMode === 'allowlist') {
+    const allow = allowlist.map(e => e.toLowerCase());
+    if (!allow.includes(row.recipient_email.toLowerCase())) {
+      return { outcome: 'skipped', last_error: 'not_in_allowlist' };
+    }
+  }
+
+  let rendered: { subject: string; body: string };
+  try {
+    rendered = renderTemplate({
+      subject_template: variant.subject_template,
+      body_template: variant.body_template,
+      first_name: row.recipient_name,
+      company: row.recipient_company,
+      founder_name: founder.name.split(/\s+/)[0] || founder.name,
+    });
+  } catch (err) {
+    return { outcome: 'failed', last_error: `render_error: ${(err as Error).message}` };
+  }
+
+  if (sendMode === 'dry_run') {
+    return {
+      outcome: 'sent',
+      gmail_message_id: `dryrun:${row.id}`,
+      gmail_thread_id: row.gmail_thread_id ?? null,
+      rendered_subject: rendered.subject,
+      rendered_body: rendered.body,
+    };
+  }
+
+  try {
+    const messageId = await sendReplyInThread({
+      teamMemberId: founder.id,
+      threadId: row.gmail_thread_id ?? undefined,
+      to: row.recipient_email,
+      subject: rendered.subject, // sendReplyInThread auto-prepends "Re: " if missing
+      body: rendered.body,
+      trackingQueueId: row.id, // embeds the open-tracking pixel in the HTML part
+    });
+    return {
+      outcome: 'sent',
+      gmail_message_id: messageId || `unknown:${row.id}`,
+      gmail_thread_id: row.gmail_thread_id ?? null,
+      rendered_subject: rendered.subject,
+      rendered_body: rendered.body,
+    };
+  } catch (err) {
+    const e = err as Error & { code?: number; errors?: Array<{ reason?: string }> };
+    const code = e.code ?? 0;
+    const reason = e.errors?.[0]?.reason ?? '';
+    if (code === 429) return { outcome: 'rate_limit_retry' };
+    if (code === 403 && (reason === 'dailyLimitExceeded' || reason === 'quotaExceeded')) {
+      return { outcome: 'account_pause', reason };
+    }
+    if (code >= 500 && code <= 599) return { outcome: 'hard_bounce', code, reason };
+    if (code >= 400 && code <= 499) return { outcome: 'soft_bounce', code, reason };
+    return { outcome: 'failed', last_error: `followup_send_error:${code}:${reason || (e.message ?? '?')}:${row.id}` };
+  }
 }
 
 // Returns the start of "today" in PT as an ISO string.

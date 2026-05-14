@@ -626,11 +626,22 @@ async function processMessage(
       if (threadId) {
         const { data: q } = await supabase
           .from('email_send_queue')
-          .select('id, campaign_id, account_id, rendered_subject, rendered_body, gmail_message_id, sent_at, template_variant_id')
+          .select('id, campaign_id, account_id, rendered_subject, rendered_body, gmail_message_id, sent_at, template_variant_id, replied_at')
           .eq('gmail_thread_id', threadId)
           .eq('status', 'sent')
           .maybeSingle();
         queueMatch = q as QueueMatch | null;
+        // Denormalize the reply timestamp to the queue row so the
+        // follow-up selector in start.ts can be a single-table WHERE
+        // clause. First inbound on the thread wins; later inbounds
+        // (same recipient bumping again) don't overwrite.
+        if (queueMatch && !(q as { replied_at?: string | null } | null)?.replied_at) {
+          await supabase
+            .from('email_send_queue')
+            .update({ replied_at: occurredAt })
+            .eq('id', queueMatch.id)
+            .is('replied_at', null);
+        }
       }
 
       // Owner: prefer the founder who actually sent the outreach (queue.account_id).
@@ -732,6 +743,18 @@ async function processMessage(
       if (!lead.stage || isForwardStage(lead.stage, 'replied')) {
         updates.stage = 'replied';
       }
+    }
+    // Denormalize the reply timestamp to the email_send_queue row so the
+    // follow-up selector in start.ts can read a single column. Path 3
+    // fires for known-contact threads; the queue row may or may not
+    // exist (lead might predate the email-tool campaign), so a no-op
+    // when there's no match is fine.
+    if (threadId) {
+      await supabase
+        .from('email_send_queue')
+        .update({ replied_at: occurredAt })
+        .eq('gmail_thread_id', threadId)
+        .is('replied_at', null);
     }
 
     // Detect scheduling signals in inbound emails

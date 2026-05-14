@@ -12,6 +12,11 @@
 
 import type { createAdminClient } from '@/lib/supabase/admin';
 import { SAFETY_LIMITS } from './safety-limits';
+import {
+  FOLLOWUP_DAILY_CAP_PER_FOUNDER,
+  FOLLOWUP_MIN_AGE_HOURS,
+  FOLLOWUP_MAX_AGE_HOURS,
+} from './constants';
 import { computeNextRunAt } from './schedule';
 import type { SendMode } from './types';
 import { log } from './log';
@@ -203,7 +208,16 @@ export async function runDailyStart(
     // (tagged with source='pool:<campaign_id>' so domain-dedup rollback
     // can undo only its own inserts) and advances email_pool_state's
     // pointer so subsequent campaigns won't re-pick these rows.
-    const regularTarget = dailyTarget - cappedPriorityRows.length;
+    //
+    // Per founder we now reserve FOLLOWUP_DAILY_CAP_PER_FOUNDER slots
+    // for opener-no-reply bumps (filled in step ⑤a). The fresh-cold
+    // pool target is dailyTarget minus those reserved slots minus
+    // whatever today's priority queue is using. If fewer follow-up
+    // candidates are eligible, total daily can drop below dailyTarget
+    // — by design, per the user's spec.
+    const reservedForFollowups = FOLLOWUP_DAILY_CAP_PER_FOUNDER * activeFounders.length;
+    const freshTotalTarget = Math.max(0, dailyTarget - reservedForFollowups);
+    const regularTarget = Math.max(0, freshTotalTarget - cappedPriorityRows.length);
     let poolRows: PoolRow[] = [];
     if (regularTarget > 0) {
       const { data: pool } = await supabase.rpc('email_tool_pick_batch', { p_limit: regularTarget });
@@ -229,7 +243,121 @@ export async function runDailyStart(
         }
       }
     }
-    if (cappedPriorityRows.length === 0 && poolRows.length === 0) {
+    // ── Step ⑤a: opener-no-reply follow-up pick (per founder) ─────────────
+    // For each active founder, find queue rows where the original send
+    // landed 3–14 days ago, was opened, never replied to, and never
+    // followed up. Random sample up to FOLLOWUP_DAILY_CAP_PER_FOUNDER.
+    // Each picked row spawns a follow-up queue row whose
+    // parent_queue_id points back at the original and whose
+    // template_variant_id is the founder's is_followup variant.
+    //
+    // Skipped (warn-logged, not fatal) if a founder has no active
+    // is_followup variant — they just don't get follow-ups today.
+    interface FollowupRow {
+      campaign_id: string;
+      account_id: string;
+      recipient_email: string;
+      recipient_name: string | null;
+      recipient_company: string | null;
+      template_variant_id: string;
+      send_at: string;
+      source: 'pool';   // re-use existing enum; parent_queue_id is the distinguishing flag
+      priority_id: null;
+      gmail_thread_id: string | null;
+      parent_queue_id: string;
+    }
+    const followupQueueRows: FollowupRow[] = [];
+    const followupSourceIds: string[] = []; // original queue ids to mark followed_up_at on insert success
+
+    const followupNow = now.getTime();
+    const minSentAtIso = new Date(followupNow - FOLLOWUP_MAX_AGE_HOURS * 3_600_000).toISOString();
+    const maxSentAtIso = new Date(followupNow - FOLLOWUP_MIN_AGE_HOURS * 3_600_000).toISOString();
+
+    for (const founder of activeFounders) {
+      // Look up this founder's active is_followup variant once.
+      const { data: fuVariantRow } = await supabase
+        .from('email_template_variants')
+        .select('id')
+        .eq('founder_id', founder.id)
+        .eq('is_active', true)
+        .eq('is_followup', true)
+        .order('id', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      const fuVariantId = (fuVariantRow as { id: string } | null)?.id;
+      if (!fuVariantId) {
+        log('warn', 'start_no_followup_variant', { founder_id: founder.id });
+        continue;
+      }
+
+      // Candidates: opened ≥3d ago, never replied, never followed up.
+      // Random-sample server-side with a generous LIMIT then shuffle in
+      // JS — Supabase doesn't expose `ORDER BY random()` on the JS
+      // client. The LIMIT is a soft cap (10x the daily target should
+      // be plenty even for a heavy day).
+      const { data: candidatesData } = await supabase
+        .from('email_send_queue')
+        .select('id, recipient_email, recipient_name, recipient_company, gmail_thread_id')
+        .eq('account_id', founder.id)
+        .is('parent_queue_id', null)
+        .not('opened_at', 'is', null)
+        .is('replied_at', null)
+        .is('followed_up_at', null)
+        .gte('sent_at', minSentAtIso)
+        .lte('sent_at', maxSentAtIso)
+        .limit(FOLLOWUP_DAILY_CAP_PER_FOUNDER * 10);
+      const candidates = (candidatesData ?? []) as Array<{
+        id: string;
+        recipient_email: string;
+        recipient_name: string | null;
+        recipient_company: string | null;
+        gmail_thread_id: string | null;
+      }>;
+      if (candidates.length === 0) continue;
+
+      // Fisher–Yates style shuffle for an unbiased pick.
+      for (let i = candidates.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+      }
+      const picked = candidates.slice(0, FOLLOWUP_DAILY_CAP_PER_FOUNDER);
+
+      // Schedule each follow-up with its own per-founder jitter cursor.
+      // Stagger them across the same window the fresh-cold drain will
+      // use; tick.ts picks rows when send_at ≤ now() regardless of
+      // type.
+      let fuCursor = followupNow + Math.floor(Math.random() * 10_000);
+      for (const orig of picked) {
+        followupQueueRows.push({
+          campaign_id: campaignId,
+          account_id: founder.id,
+          recipient_email: orig.recipient_email,
+          recipient_name: orig.recipient_name,
+          recipient_company: orig.recipient_company,
+          template_variant_id: fuVariantId,
+          send_at: new Date(fuCursor).toISOString(),
+          source: 'pool',
+          priority_id: null,
+          gmail_thread_id: orig.gmail_thread_id,
+          parent_queue_id: orig.id,
+        });
+        followupSourceIds.push(orig.id);
+        const range = SAFETY_LIMITS.INTER_SEND_JITTER_MAX_SECONDS - SAFETY_LIMITS.INTER_SEND_JITTER_MIN_SECONDS;
+        const jitterSec = SAFETY_LIMITS.INTER_SEND_JITTER_MIN_SECONDS + Math.random() * range;
+        const clampedSec = Math.max(
+          SAFETY_LIMITS.MIN_INTER_SEND_GAP_SECONDS_HARD_FLOOR,
+          Math.min(jitterSec, SAFETY_LIMITS.MAX_INTER_SEND_GAP_SECONDS_HARD_CEILING),
+        );
+        fuCursor += clampedSec * 1000;
+      }
+    }
+    log('info', 'start_followups_picked', {
+      campaign_id: campaignId,
+      total: followupQueueRows.length,
+      cap_per_founder: FOLLOWUP_DAILY_CAP_PER_FOUNDER,
+    });
+
+    if (cappedPriorityRows.length === 0 && poolRows.length === 0 && followupQueueRows.length === 0) {
       await supabase.from('email_send_campaigns')
         .update({ status: 'exhausted', completed_at: now.toISOString() })
         .eq('id', campaignId);
@@ -237,7 +365,7 @@ export async function runDailyStart(
       await sendCriticalAlert(supabase, {
         event: 'pool_exhausted',
         subject: 'Email pool exhausted — no recipients available',
-        body: `Today's campaign found zero recipients in email_pool (after blacklist filtering) and no pending priority rows. The campaign is marked exhausted.\n\nManual action: refresh the pool via /email-tool admin (or the existing CSV upload tool) and retry today's run.`,
+        body: `Today's campaign found zero recipients in email_pool (after blacklist filtering), no pending priority rows, and no follow-up candidates. The campaign is marked exhausted.\n\nManual action: refresh the pool via /email-tool admin (or the existing CSV upload tool) and retry today's run.`,
         context: { campaign_id: campaignId, idempotency_key: idempotencyKey },
       });
       return { kind: 'aborted', campaign_id: campaignId, reason: 'pool_exhausted' };
@@ -338,10 +466,16 @@ export async function runDailyStart(
     // upstream (round-robin starts at index 0 each day, so the FIRST
     // recipient lands on variant[0] consistently, but the recipient
     // itself rotates day-to-day).
+    // Exclude is_followup variants from the fresh-cold rotation — those
+    // are reserved for the follow-up flow (step ⑤a) and are looked up
+    // by founder_id + is_followup=true there. Mixing them into the
+    // round-robin here would send "bumping in case it got lost" copy
+    // to fresh leads.
     const { data: variantsData } = await supabase
       .from('email_template_variants')
       .select('id, founder_id')
       .eq('is_active', true)
+      .eq('is_followup', false)
       .order('id', { ascending: true });
     const variantsByFounder = new Map<string, string[]>();
     for (const v of (variantsData ?? []) as Array<{ id: string; founder_id: string }>) {
@@ -402,18 +536,38 @@ export async function runDailyStart(
     // the same campaign, keep the FIRST occurrence (priority rows are
     // earlier in `combined` so priority wins). Without this dedupe, the
     // bulk insert would fail with 23505 on the unique constraint.
+    //
+    // Follow-up rows are kept SEPARATE from the dedupe gate above because
+    // a follow-up's recipient_email may legitimately coincide with a
+    // fresh-cold target picked in the same campaign (rare but possible
+    // when a recipient's domain is shared across pool and follow-up).
+    // We let the unique constraint surface that as a hard failure if it
+    // ever happens — the data would be corrupt either way.
     const seenEmails = new Set<string>();
-    const dedupedQueueRows = queueRows.filter(r => {
+    const dedupedFreshRows = queueRows.filter(r => {
       if (seenEmails.has(r.recipient_email)) return false;
       seenEmails.add(r.recipient_email);
       return true;
     });
-    if (dedupedQueueRows.length < queueRows.length) {
+    // Drop follow-ups that collide with a fresh-cold send in the same
+    // campaign (recipient_email match) — campaign-level UNIQUE
+    // constraint forbids two rows per (campaign_id, recipient_email).
+    const collisionFreeFollowups = followupQueueRows.filter(r => !seenEmails.has(r.recipient_email));
+    for (const r of collisionFreeFollowups) seenEmails.add(r.recipient_email);
+    const followupDropped = followupQueueRows.length - collisionFreeFollowups.length;
+    if (followupDropped > 0) {
+      log('warn', 'start_followup_collisions', {
+        campaign_id: campaignId,
+        dropped: followupDropped,
+      });
+    }
+    const dedupedQueueRows = [...dedupedFreshRows, ...collisionFreeFollowups];
+    if (dedupedQueueRows.length < queueRows.length + followupQueueRows.length) {
       log('warn', 'start_queue_dedupe', {
         campaign_id: campaignId,
-        original: queueRows.length,
+        original: queueRows.length + followupQueueRows.length,
         deduped: dedupedQueueRows.length,
-        dropped: queueRows.length - dedupedQueueRows.length,
+        dropped: (queueRows.length + followupQueueRows.length) - dedupedQueueRows.length,
       });
     }
     if (dedupedQueueRows.length > 0) {
@@ -426,6 +580,22 @@ export async function runDailyStart(
         return { kind: 'aborted', campaign_id: campaignId, reason: 'queue_insert_error' };
       }
     }
+
+    // After the queue insert succeeds, mark the original rows that
+    // spawned follow-ups so the next campaign's step ⑤a doesn't pick
+    // them again. Only mark those whose follow-up actually made it
+    // into the queue (collision-free).
+    const insertedFollowupSourceIds = collisionFreeFollowups.map(r => r.parent_queue_id);
+    if (insertedFollowupSourceIds.length > 0) {
+      await supabase
+        .from('email_send_queue')
+        .update({ followed_up_at: now.toISOString() })
+        .in('id', insertedFollowupSourceIds);
+    }
+    // followupSourceIds is the FULL list including collisions — keep
+    // the variable referenced to avoid TS unused warning; logging the
+    // collision count above provides operator visibility.
+    void followupSourceIds;
 
     // ── Step ⑪: priority status update + schedule advance + campaign running ──
     const usedPriorityIds = dedupedQueueRows.filter(q => q.source === 'priority' && q.priority_id).map(q => q.priority_id!);

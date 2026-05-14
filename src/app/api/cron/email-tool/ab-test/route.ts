@@ -34,14 +34,27 @@ interface VariantStat {
   subject_template: string;
   body_template: string;
   is_active: boolean;
+  is_followup: boolean;
   sent: number;
   replied: number;
   reply_rate_pct: number;
+  // Open-tracking pixel data. opened = # rows with at least one
+  // FILTERED open (UA + timing heuristic passed). open_rate_pct =
+  // opened / sent.
+  opened: number;
+  open_rate_pct: number;
   // Wilson 95% CI bounds for the reply rate, as percentages (0–100).
   // null when sent === 0 (no estimate possible).
   ci_low_pct: number | null;
   ci_high_pct: number | null;
   ci_width_pct: number | null;
+}
+
+interface FollowupTotals {
+  /** Followup queue rows whose sent_at is today (PT) — successfully sent. */
+  sent_today: number;
+  /** Followup queue rows in pending status — scheduled but not yet sent. */
+  pending: number;
 }
 
 // Wilson score interval for a binomial proportion at 95% confidence.
@@ -91,15 +104,33 @@ export async function GET(req: NextRequest) {
   }
   const { data: variantRows, error: vErr } = await supabase
     .from('email_template_variants')
-    .select('id, subject_template, body_template')
+    .select('id, subject_template, body_template, is_followup')
     .in('id', variantIds);
   if (vErr) {
     return NextResponse.json({ error: 'variant_lookup_failed', detail: vErr.message }, { status: 500 });
   }
   const variantById = new Map(
-    ((variantRows ?? []) as Array<{ id: string; subject_template: string; body_template: string }>)
+    ((variantRows ?? []) as Array<{ id: string; subject_template: string; body_template: string; is_followup: boolean }>)
       .map(v => [v.id, v])
   );
+
+  // 2a) Open counts per variant. Single query, COUNT(*) WHERE opened_at IS
+  //     NOT NULL grouped by template_variant_id. PostgREST doesn't expose
+  //     GROUP BY directly through the JS client, so we ask for every
+  //     matching row's variant id (one column) and bucket in JS. With the
+  //     partial index idx_queue_opened_per_variant this stays fast.
+  const { data: openedRows, error: openErr } = await supabase
+    .from('email_send_queue')
+    .select('template_variant_id')
+    .in('template_variant_id', variantIds)
+    .not('opened_at', 'is', null);
+  if (openErr) {
+    return NextResponse.json({ error: 'opens_lookup_failed', detail: openErr.message }, { status: 500 });
+  }
+  const openedByVariant = new Map<string, number>();
+  for (const r of (openedRows ?? []) as Array<{ template_variant_id: string }>) {
+    openedByVariant.set(r.template_variant_id, (openedByVariant.get(r.template_variant_id) ?? 0) + 1);
+  }
 
   // 3) Pull founder names. 3 rows total — no need to chunk.
   const { data: foundersData } = await supabase
@@ -116,6 +147,8 @@ export async function GET(req: NextRequest) {
     .map(s => {
       const ci = wilson95(Number(s.sent), Number(s.replied));
       const v = variantById.get(s.variant_id);
+      const sent = Number(s.sent);
+      const opened = openedByVariant.get(s.variant_id) ?? 0;
       return {
         id: s.variant_id,
         founder_id: s.founder_id,
@@ -124,14 +157,42 @@ export async function GET(req: NextRequest) {
         subject_template: v?.subject_template ?? '',
         body_template: v?.body_template ?? '',
         is_active: s.is_active,
-        sent: Number(s.sent),
+        is_followup: v?.is_followup ?? false,
+        sent,
         replied: Number(s.replied),
         reply_rate_pct: Number(s.reply_rate_pct),
+        opened,
+        open_rate_pct: sent > 0 ? Math.round((opened / sent) * 1000) / 10 : 0,
         ci_low_pct: ci ? Math.round(ci.low * 1000) / 10 : null,
         ci_high_pct: ci ? Math.round(ci.high * 1000) / 10 : null,
         ci_width_pct: ci ? Math.round((ci.high - ci.low) * 1000) / 10 : null,
       };
     });
 
-  return NextResponse.json({ variants });
+  // 5) Today's follow-up totals — small banner above the variants table.
+  //    "today" = PT calendar date because that's the campaign's reference
+  //    frame. We use UTC bounds: PT midnight → next PT midnight.
+  const todayPt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  const todayStartIso = new Date(`${todayPt}T00:00:00-08:00`).toISOString();
+  const tomorrowStartIso = new Date(new Date(`${todayPt}T00:00:00-08:00`).getTime() + 24 * 3_600_000).toISOString();
+  const [sentTodayRes, pendingRes] = await Promise.all([
+    supabase
+      .from('email_send_queue')
+      .select('id', { count: 'exact', head: true })
+      .not('parent_queue_id', 'is', null)
+      .eq('status', 'sent')
+      .gte('sent_at', todayStartIso)
+      .lt('sent_at', tomorrowStartIso),
+    supabase
+      .from('email_send_queue')
+      .select('id', { count: 'exact', head: true })
+      .not('parent_queue_id', 'is', null)
+      .eq('status', 'pending'),
+  ]);
+  const followups: FollowupTotals = {
+    sent_today: sentTodayRes.count ?? 0,
+    pending: pendingRes.count ?? 0,
+  };
+
+  return NextResponse.json({ variants, followups });
 }

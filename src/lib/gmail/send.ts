@@ -54,6 +54,15 @@ async function resolveSenderThreadId(
   }
 }
 
+function escapeHtmlReply(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export async function sendReplyInThread({
   teamMemberId,
   threadId,
@@ -62,6 +71,7 @@ export async function sendReplyInThread({
   subject,
   body,
   rfcMessageId,
+  trackingQueueId,
 }: {
   teamMemberId: string;
   /** The sender-local thread id if known. If this was synced from a
@@ -77,6 +87,11 @@ export async function sendReplyInThread({
    *  angle brackets ("<xxx@yyy>"). Used for both In-Reply-To/References
    *  headers and for resolving the sender-local thread id. */
   rfcMessageId?: string;
+  /** When provided, embed an open-tracking pixel in the HTML body pointing
+   *  at /api/cron/email-tool/track/<id>.png. Used by the email-tool
+   *  follow-up flow so bumps are also tracked. Manual one-off replies
+   *  (auto-followup, draft-email) leave this undefined → no pixel. */
+  trackingQueueId?: string;
 }): Promise<string> {
   const { gmail } = await getGmailClientForMember(teamMemberId);
 
@@ -90,15 +105,23 @@ export async function sendReplyInThread({
   // threading signal when the Message-Id chain is missing/broken.
   const replySubject = subject.startsWith('Re:') ? subject : `Re: ${subject}`;
 
-  const emailLines: string[] = [
+  // Build multipart body: text/plain for clients that strip HTML,
+  // text/html for clients that render it (where the pixel lives).
+  const boundary = `=pp${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
+  const pixelTag = trackingQueueId
+    ? `<img src="${(process.env.NEXT_PUBLIC_APP_URL ?? 'https://pmcrminternal.vercel.app').replace(/\/$/, '')}/api/cron/email-tool/track/${trackingQueueId}.png" alt="" width="1" height="1" style="display:none" />`
+    : '';
+  const htmlBody = `<!doctype html><html><body><div style="white-space:pre-wrap;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;color:#111;line-height:1.5">${escapeHtmlReply(body)}</div>${pixelTag}</body></html>`;
+
+  const headers: string[] = [
     `To: ${to}`,
     `Subject: ${replySubject}`,
-    'Content-Type: text/plain; charset=utf-8',
     'MIME-Version: 1.0',
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
   ];
 
   if (cc && cc.length > 0) {
-    emailLines.splice(1, 0, `Cc: ${cc.join(', ')}`);
+    headers.splice(1, 0, `Cc: ${cc.join(', ')}`);
   }
 
   // Threading headers — these are what Gmail actually uses to stitch the
@@ -108,14 +131,29 @@ export async function sendReplyInThread({
     const normalized = rfcMessageId.trim().startsWith('<')
       ? rfcMessageId.trim()
       : `<${rfcMessageId.trim()}>`;
-    emailLines.push(`In-Reply-To: ${normalized}`);
-    emailLines.push(`References: ${normalized}`);
+    headers.push(`In-Reply-To: ${normalized}`);
+    headers.push(`References: ${normalized}`);
   }
 
-  emailLines.push('', body);
-  const raw = emailLines.join('\r\n');
+  const parts = [
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    body,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/html; charset=utf-8',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    htmlBody,
+    '',
+    `--${boundary}--`,
+  ];
 
-  const encoded = Buffer.from(raw)
+  const raw = [...headers, '', ...parts].join('\r\n');
+
+  const encoded = Buffer.from(raw, 'utf-8')
     .toString('base64')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')

@@ -10,15 +10,24 @@ interface VariantStat {
   subject_template: string;
   body_template: string;
   is_active: boolean;
+  is_followup: boolean;
   sent: number;
   replied: number;
   reply_rate_pct: number;
+  opened: number;
+  open_rate_pct: number;
   ci_low_pct: number | null;
   ci_high_pct: number | null;
   ci_width_pct: number | null;
 }
 
-interface ApiResp { variants?: VariantStat[]; error?: string }
+interface FollowupTotals { sent_today: number; pending: number }
+
+interface ApiResp {
+  variants?: VariantStat[];
+  followups?: FollowupTotals;
+  error?: string;
+}
 
 // Auto-refresh interval. 30s lets you watch the test progress live without
 // hammering the RPC (which scans 30d of interactions).
@@ -26,6 +35,7 @@ const POLL_MS = 30_000;
 
 export function AbTestTab() {
   const [variants, setVariants] = useState<VariantStat[] | null>(null);
+  const [followups, setFollowups] = useState<FollowupTotals | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeOnly, setActiveOnly] = useState(true);
@@ -38,6 +48,7 @@ export function AbTestTab() {
       const r = (await fetch(`/api/cron/email-tool/ab-test${q}`).then(r => r.json())) as ApiResp;
       if (r.error) { setError(r.error); return; }
       setVariants(r.variants ?? []);
+      setFollowups(r.followups ?? null);
       setError(null);
     } catch {
       setError('network error');
@@ -90,6 +101,19 @@ export function AbTestTab() {
         </label>
       </header>
 
+      {followups && (
+        <div className="flex gap-4 text-xs">
+          <span className="bg-emerald-50 border border-emerald-200 rounded px-2 py-1">
+            <span className="text-emerald-700 font-medium">Follow-ups sent today:</span>{' '}
+            <span className="font-mono tabular-nums">{followups.sent_today.toLocaleString()}</span>
+          </span>
+          <span className="bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            <span className="text-amber-700 font-medium">Follow-ups pending:</span>{' '}
+            <span className="font-mono tabular-nums">{followups.pending.toLocaleString()}</span>
+          </span>
+        </div>
+      )}
+
       {loading && variants === null && (
         <p className="text-sm text-gray-400">Loading…</p>
       )}
@@ -111,6 +135,8 @@ export function AbTestTab() {
                 <th className="text-left px-3 py-2">Variant</th>
                 <th className="text-left px-3 py-2">Founder</th>
                 <th className="text-right px-3 py-2">Sent</th>
+                <th className="text-right px-3 py-2" title="Filtered open count — Apple MPP pre-fetches and known scanner UAs are excluded.">Opened</th>
+                <th className="text-right px-3 py-2">Open rate</th>
                 <th className="text-right px-3 py-2">Replied</th>
                 <th className="text-right px-3 py-2">Reply rate</th>
                 <th className="text-right px-3 py-2">95% CI</th>
@@ -158,11 +184,16 @@ function Row({
       >
         <td className="px-3 py-2 font-mono text-xs">
           {isWinner && <span className="mr-1" title="Winner (CIs don't overlap)">🏆</span>}
+          {v.is_followup && <span className="mr-1" title="Follow-up bump variant — sent as a reply in the original thread.">🔁</span>}
           {v.label}
           {!v.is_active && <span className="ml-2 text-gray-400">(inactive)</span>}
         </td>
         <td className="px-3 py-2 text-gray-700">{v.founder_name ?? '—'}</td>
         <td className="px-3 py-2 text-right tabular-nums">{v.sent.toLocaleString()}</td>
+        <td className="px-3 py-2 text-right tabular-nums">{v.opened.toLocaleString()}</td>
+        <td className="px-3 py-2 text-right tabular-nums text-blue-700">
+          {v.sent > 0 ? `${v.open_rate_pct.toFixed(1)}%` : '—'}
+        </td>
         <td className="px-3 py-2 text-right tabular-nums">{v.replied.toLocaleString()}</td>
         <td className="px-3 py-2 text-right tabular-nums font-medium">
           {v.sent > 0 ? `${v.reply_rate_pct.toFixed(1)}%` : '—'}
@@ -175,7 +206,7 @@ function Row({
       </tr>
       {isExpanded && (
         <tr className="bg-gray-50 border-t border-gray-100">
-          <td colSpan={6} className="px-3 py-3 text-xs">
+          <td colSpan={8} className="px-3 py-3 text-xs">
             <div className="font-medium text-gray-700 mb-1">Subject</div>
             <div className="font-mono text-gray-600 mb-3 whitespace-pre-wrap">{v.subject_template}</div>
             <div className="font-medium text-gray-700 mb-1">Body</div>
