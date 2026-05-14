@@ -17,7 +17,7 @@ import {
   FOLLOWUP_MIN_AGE_HOURS,
   FOLLOWUP_MAX_AGE_HOURS,
 } from './constants';
-import { computeNextRunAt } from './schedule';
+import { computeNextRunAt, isPtWeekend } from './schedule';
 import type { SendMode } from './types';
 import { log } from './log';
 import { sendCriticalAlert } from './alert';
@@ -215,9 +215,26 @@ export async function runDailyStart(
     // whatever today's priority queue is using. If fewer follow-up
     // candidates are eligible, total daily can drop below dailyTarget
     // — by design, per the user's spec.
+    //
+    // Weekends (Sat/Sun in PT): freshTotalTarget is forced to 0 so the
+    // pool pull is skipped entirely and no priority rows are queued.
+    // Step ⑤a still runs, so the only thing that goes out on Sat/Sun
+    // is up to 50 follow-up bumps per founder. The UI already restricts
+    // priority uploads to Mon–Fri, so cappedPriorityRows is naturally
+    // empty here — the assertion is defensive.
+    const weekendMode = isPtWeekend(now);
     const reservedForFollowups = FOLLOWUP_DAILY_CAP_PER_FOUNDER * activeFounders.length;
-    const freshTotalTarget = Math.max(0, dailyTarget - reservedForFollowups);
+    const freshTotalTarget = weekendMode
+      ? 0
+      : Math.max(0, dailyTarget - reservedForFollowups);
     const regularTarget = Math.max(0, freshTotalTarget - cappedPriorityRows.length);
+    if (weekendMode) {
+      log('info', 'start_weekend_followups_only', {
+        campaign_id: campaignId,
+        active_founders: activeFounders.length,
+        max_followups: reservedForFollowups,
+      });
+    }
     let poolRows: PoolRow[] = [];
     if (regularTarget > 0) {
       const { data: pool } = await supabase.rpc('email_tool_pick_batch', { p_limit: regularTarget });

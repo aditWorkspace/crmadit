@@ -1,5 +1,8 @@
-// Weekday-only fixed schedule. Mon–Fri with a +30min stagger across days,
-// resetting each Monday. Saturday/Sunday: no campaigns. See spec §5.1.
+// Daily fixed schedule. Mon–Fri with a +30min stagger across days,
+// resetting each Monday. Sat/Sun: a smaller followup-only run at 7:30 AM
+// PT (start.ts forces freshTotalTarget = 0 on weekends, so only
+// opener-no-reply bumps go out — up to FOLLOWUP_DAILY_CAP_PER_FOUNDER
+// per founder). See spec §5.1.
 //
 // DST handling: all time arithmetic is done via Intl.DateTimeFormat with
 // timeZone='America/Los_Angeles' so PST/PDT transitions are handled
@@ -7,12 +10,13 @@
 // instants; the Intl APIs do the zone conversion.
 
 export const WEEKDAY_START_TIMES_PT: Record<number, { hour: number; minute: number }> = {
+  0: { hour: 7, minute: 30 },  // Sunday    — 7:30 AM PT (follow-ups only)
   1: { hour: 5, minute: 0 },   // Monday    — 5:00 AM PT
   2: { hour: 5, minute: 30 },  // Tuesday   — 5:30 AM PT
   3: { hour: 6, minute: 0 },   // Wednesday — 6:00 AM PT
   4: { hour: 6, minute: 30 },  // Thursday  — 6:30 AM PT
   5: { hour: 7, minute: 0 },   // Friday    — 7:00 AM PT
-  // 0 = Sunday, 6 = Saturday — no entries → no campaigns
+  6: { hour: 7, minute: 30 },  // Saturday  — 7:30 AM PT (follow-ups only)
 };
 
 const PT_TZ = 'America/Los_Angeles';
@@ -88,7 +92,8 @@ function ptDateAtTime(year: number, month: number, day: number, hour: number, mi
 /**
  * Returns the next campaign start instant after `now`, or null if none in
  * the next 7 days. Walks forward day-by-day in PT, returning the first
- * weekday slot whose start time is strictly greater than `now`.
+ * slot whose start time is strictly greater than `now`. Weekend slots
+ * are included — start.ts decides what to actually queue on those days.
  *
  * @param now - The reference instant (default: current time)
  */
@@ -97,10 +102,16 @@ export function computeNextRunAt(now: Date = new Date()): Date | null {
     const candidate = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
     const dow = ptDayOfWeek(candidate);
     const slot = WEEKDAY_START_TIMES_PT[dow];
-    if (!slot) continue; // skip Sat/Sun
+    if (!slot) continue; // belt-and-suspenders: if a day ever lacks an entry, skip
     const { year, month, day } = ptDateParts(candidate);
     const slotInstant = ptDateAtTime(year, month, day, slot.hour, slot.minute);
     if (slotInstant > now) return slotInstant;
   }
   return null;
+}
+
+/** Returns true if the given UTC instant falls on Saturday or Sunday in PT. */
+export function isPtWeekend(d: Date): boolean {
+  const dow = ptDayOfWeek(d);
+  return dow === 0 || dow === 6;
 }
