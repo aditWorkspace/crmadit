@@ -104,9 +104,20 @@ export async function POST(req: NextRequest) {
   }
 
   // Re-validate availability at booking time.
-  // Require at least 2 confirmed-free members when calendars are reachable.
-  // If a member's token is broken/expired we skip them rather than blocking all bookings
-  // (the real fix is for that member to reconnect in Settings).
+  //
+  // Policy (matches /api/calendar/availability with bookingOnly=true):
+  // Adit is the only REQUIRED-free founder. He's the primary call-taker;
+  // other active founders (currently just Asim) are bonus attendees who
+  // join when free but never gate the booking. The previous "≥2 free"
+  // rule was rejecting valid bookings whenever Asim had ANYTHING on his
+  // calendar at the slot — recipients saw a green slot on the public
+  // page and got a 409 on confirm because the two endpoints disagreed
+  // about what "available" means.
+  //
+  // If Adit isn't connected, or his token is broken, fall back to "any
+  // active founder must be verified free" so the system still works if
+  // a founder rotates in/out (e.g., Srijay's departure 2026-05-04 wired
+  // around in availability/route.ts).
   const results = await Promise.allSettled(
     connectedMembers.map(m => getFreeBusy(m.id, start, end))
   );
@@ -121,25 +132,44 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Free members (used for "who creates the event" and "who got verified
+  // free" — bonus founders are still added as attendees later).
   const freeMembers = connectedMembers.filter((_, i) => {
     const r = results[i];
     return r.status === 'fulfilled' && !overlaps(start, end, r.value.busy);
   });
 
-  // Require 2 free if we can verify 2+ calendars, otherwise require all verified ones to be free
-  const required = Math.min(2, successfulFetches);
-  if (freeMembers.length < required) {
+  // Required check: Adit must be verified free. If Adit isn't a
+  // connected founder at all, treat the first connected founder as the
+  // primary (graceful fallback for future rotations).
+  const aditIdx = connectedMembers.findIndex(m => m.name.toLowerCase() === 'adit');
+  const primaryIdx = aditIdx >= 0 ? aditIdx : 0;
+  const primary = connectedMembers[primaryIdx];
+  const primaryResult = results[primaryIdx];
+  if (primaryResult.status !== 'fulfilled') {
+    return NextResponse.json(
+      { error: 'Calendar unavailable right now — please try again or contact us directly at hello@proxi.ai' },
+      { status: 503 }
+    );
+  }
+  if (overlaps(start, end, primaryResult.value.busy)) {
     return NextResponse.json(
       { error: 'Slot no longer available — please pick another time' },
       { status: 409 }
     );
   }
 
-  // Create the event on Adit's calendar so invites come from him.
-  // Fall back to any other free member if Adit isn't free.
+  // Create the event on the primary founder's calendar. Sort so primary
+  // is first in freeMembers (used as the event organizer below).
   freeMembers.sort((a, b) =>
-    (a.name.toLowerCase() === 'adit' ? -1 : 0) - (b.name.toLowerCase() === 'adit' ? -1 : 0)
+    (a.id === primary.id ? -1 : 0) - (b.id === primary.id ? -1 : 0)
   );
+  // If, somehow, the primary isn't in freeMembers (e.g. their gmail
+  // token broke mid-flight), prepend them so createMeetingEvent runs on
+  // their account anyway — getFreeBusy already confirmed they're free.
+  if (!freeMembers.find(m => m.id === primary.id)) {
+    freeMembers.unshift(primary);
+  }
 
   // Idempotency check: prevent double-click creating duplicate events
   // Key is email + startTime (same person booking same slot = duplicate)
