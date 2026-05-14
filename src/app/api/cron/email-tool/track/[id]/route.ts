@@ -80,12 +80,16 @@ export async function GET(req: NextRequest, ctx: RouteParams) {
   // about which ids are valid.
   if (!UUID_RE.test(id)) return pixelResponse();
 
-  // Fire-and-forget: don't make the recipient wait for the DB write,
-  // and don't fail the GET if the DB happens to be slow. We catch any
-  // throw silently and still return the pixel.
-  void recordOpen(id, req).catch(err => {
+  // Vercel serverless functions terminate pending promises once the
+  // response is sent — so the DB write must complete BEFORE we return.
+  // The ~50–100ms PostgREST round-trip is negligible to the recipient's
+  // email client and we never want to drop an open. Errors are swallowed
+  // so a slow DB doesn't fail the GET; the pixel still ships.
+  try {
+    await recordOpen(id, req);
+  } catch (err) {
     console.error('[email-tool/track] DB write failed', { id, err: (err as Error)?.message });
-  });
+  }
 
   return pixelResponse();
 }
