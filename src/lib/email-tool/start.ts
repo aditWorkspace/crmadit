@@ -33,7 +33,10 @@ import { sendCriticalAlert } from './alert';
 // re-run; we don't keep a set because each test gets its own copy/template
 // regeneration anyway. Coordinated with /api/cron/email-tool/ab-rebalance.
 const AB_TEST_OVERRIDE_PT_DATE: string = '2026-05-15';
-const AB_TEST_PHASE_A_ROWS_PER_FOUNDER = 100;
+// 200 per founder × 2 founders = 400 emails in Phase A. With 4
+// round-robin templates that's exactly 50 per founder per template,
+// 100 per template across both founders — matching the spec.
+const AB_TEST_PHASE_A_ROWS_PER_FOUNDER = 200;
 const AB_TEST_PHASE_B_CUTOFF_PT_HOUR = 12.5; // 12:30 PM PT
 
 type Supa = ReturnType<typeof createAdminClient>;
