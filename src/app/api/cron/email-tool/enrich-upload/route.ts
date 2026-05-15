@@ -28,7 +28,16 @@
 // /api/cron/* prefix is the project's Vercel deployment-protection
 // workaround (matches /csv-filter, /ab-rebalance). Auth is admin
 // session, not CRON_SECRET — recipients aren't hitting this; admins are.
-export const maxDuration = 800;
+//
+// maxDuration = 300 is the Vercel Hobby plan cap. At ~10-15s per
+// bulkemailchecker call + ~3-10s per icypeas roundtrip, this fits
+// roughly 20-30 rows per upload. For bigger lists, the SSE stream
+// will cut off mid-process and the user can re-upload the unprocessed
+// tail (rows already added to email_pool are persisted via the
+// batched insert step, but only AFTER the full loop finishes — so on
+// timeout, NO rows are inserted). Plan upgrade required for larger
+// batches; see plan file for the alternative chunked architecture.
+export const maxDuration = 300;
 export const runtime = 'nodejs';
 
 import { NextRequest } from 'next/server';
