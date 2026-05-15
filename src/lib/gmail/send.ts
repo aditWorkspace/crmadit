@@ -63,6 +63,16 @@ function escapeHtmlReply(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+// Mirror of linkifyDomains in src/lib/email-tool/send.ts. Replies
+// (manual auto-followups, draft-email, A/B follow-up bumps) get the
+// same proxitest.com / bild.ai → <a> treatment so users clicking from
+// the threaded reply chain see real links.
+function linkifyDomainsReply(escapedHtml: string): string {
+  return escapedHtml
+    .replace(/\bproxitest\.com\b/g, '<a href="https://proxitest.com" style="color:#2563eb;text-decoration:underline">proxitest.com</a>')
+    .replace(/\bbild\.ai\b/gi, '<a href="https://bild.ai" style="color:#2563eb;text-decoration:underline">bild.ai</a>');
+}
+
 export async function sendReplyInThread({
   teamMemberId,
   threadId,
@@ -111,7 +121,7 @@ export async function sendReplyInThread({
   const pixelTag = trackingQueueId
     ? `<img src="${(process.env.NEXT_PUBLIC_APP_URL ?? 'https://pmcrminternal.vercel.app').replace(/\/$/, '')}/api/cron/email-tool/track/${trackingQueueId}.png" alt="" width="1" height="1" style="display:none" />`
     : '';
-  const htmlBody = `<!doctype html><html><body><div style="white-space:pre-wrap;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;color:#111;line-height:1.5">${escapeHtmlReply(body)}</div>${pixelTag}</body></html>`;
+  const htmlBody = `<!doctype html><html><body><div style="white-space:pre-wrap;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;color:#111;line-height:1.5">${linkifyDomainsReply(escapeHtmlReply(body))}</div>${pixelTag}</body></html>`;
 
   const headers: string[] = [
     `To: ${to}`,

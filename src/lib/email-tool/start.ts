@@ -22,6 +22,20 @@ import type { SendMode } from './types';
 import { log } from './log';
 import { sendCriticalAlert } from './alert';
 
+// ── One-day adaptive A/B test override ────────────────────────────────────
+// When today's PT date matches AB_TEST_OVERRIDE_PT_DATE, runDailyStart:
+//   - skips step ⑤a (no opener-no-reply follow-ups for this campaign)
+//   - uses the full dailyTarget for fresh-cold (no follow-up reservation)
+//   - pushes rows beyond AB_TEST_PHASE_A_ROWS_PER_FOUNDER per founder out
+//     to send_at ≥ AB_TEST_PHASE_B_CUTOFF_PT_HOUR so the noon rebalance
+//     route has time to UPDATE their template_variant_id before they fire.
+// Empty string disables (no special behavior). Bump the date string to
+// re-run; we don't keep a set because each test gets its own copy/template
+// regeneration anyway. Coordinated with /api/cron/email-tool/ab-rebalance.
+const AB_TEST_OVERRIDE_PT_DATE: string = '2026-05-15';
+const AB_TEST_PHASE_A_ROWS_PER_FOUNDER = 100;
+const AB_TEST_PHASE_B_CUTOFF_PT_HOUR = 12.5; // 12:30 PM PT
+
 type Supa = ReturnType<typeof createAdminClient>;
 
 export interface RunDailyStartOpts {
@@ -222,8 +236,14 @@ export async function runDailyStart(
     // is up to 50 follow-up bumps per founder. The UI already restricts
     // priority uploads to Mon–Fri, so cappedPriorityRows is naturally
     // empty here — the assertion is defensive.
+    const todayPt = formatPtDate(now);
+    const abTestMode = AB_TEST_OVERRIDE_PT_DATE !== '' && todayPt === AB_TEST_OVERRIDE_PT_DATE;
+    const skipFollowupsToday = abTestMode;
+
     const weekendMode = isPtWeekend(now);
-    const reservedForFollowups = FOLLOWUP_DAILY_CAP_PER_FOUNDER * activeFounders.length;
+    const reservedForFollowups = skipFollowupsToday
+      ? 0
+      : FOLLOWUP_DAILY_CAP_PER_FOUNDER * activeFounders.length;
     const freshTotalTarget = weekendMode
       ? 0
       : Math.max(0, dailyTarget - reservedForFollowups);
@@ -233,6 +253,15 @@ export async function runDailyStart(
         campaign_id: campaignId,
         active_founders: activeFounders.length,
         max_followups: reservedForFollowups,
+      });
+    }
+    if (abTestMode) {
+      log('info', 'start_ab_test_mode', {
+        campaign_id: campaignId,
+        date: todayPt,
+        active_founders: activeFounders.length,
+        fresh_total_target: freshTotalTarget,
+        phase_a_per_founder: AB_TEST_PHASE_A_ROWS_PER_FOUNDER,
       });
     }
     let poolRows: PoolRow[] = [];
@@ -285,6 +314,12 @@ export async function runDailyStart(
     }
     const followupQueueRows: FollowupRow[] = [];
     const followupSourceIds: string[] = []; // original queue ids to mark followed_up_at on insert success
+
+    // AB-test mode skips follow-ups entirely for the day so reply
+    // attribution on the 4 test variants isn't muddied by bumps. The
+    // existing block below is a no-op when skipFollowupsToday is true
+    // — followupQueueRows stays empty, step ⑩ inserts only fresh rows.
+    if (!skipFollowupsToday) {
 
     const followupNow = now.getTime();
     const minSentAtIso = new Date(followupNow - FOLLOWUP_MAX_AGE_HOURS * 3_600_000).toISOString();
@@ -373,6 +408,11 @@ export async function runDailyStart(
       total: followupQueueRows.length,
       cap_per_founder: FOLLOWUP_DAILY_CAP_PER_FOUNDER,
     });
+
+    } // end if (!skipFollowupsToday)
+    if (skipFollowupsToday) {
+      log('info', 'start_followups_skipped', { campaign_id: campaignId, reason: 'ab_test_mode' });
+    }
 
     if (cappedPriorityRows.length === 0 && poolRows.length === 0 && followupQueueRows.length === 0) {
       await supabase.from('email_send_campaigns')
@@ -524,8 +564,19 @@ export async function runDailyStart(
       const chunk = dedupedByFounder[fi];
       let cursor = startMs + Math.floor(Math.random() * 10_000); // ≤10s initial offset
       let recipientIdx = 0;
+      // A/B test mode: compute the Phase B cutoff once per founder. Rows
+      // at index >= AB_TEST_PHASE_A_ROWS_PER_FOUNDER get their cursor
+      // jumped to this timestamp on first hit. The noon rebalance route
+      // is expected to rewrite their template_variant_id before they
+      // fire — the 12:30 PM PT cutoff gives 30 min of slack.
+      const phaseBCutoffMs = abTestMode
+        ? ptCutoffMs(now, AB_TEST_PHASE_B_CUTOFF_PT_HOUR)
+        : Number.POSITIVE_INFINITY;
       for (const a of chunk) {
         const variantId = founderVariants[recipientIdx % founderVariants.length];
+        if (abTestMode && recipientIdx === AB_TEST_PHASE_A_ROWS_PER_FOUNDER) {
+          cursor = Math.max(cursor, phaseBCutoffMs);
+        }
         recipientIdx++;
         queueRows.push({
           campaign_id: campaignId,
@@ -689,6 +740,31 @@ function formatPtDate(d: Date): string {
     day: '2-digit',
   });
   return fmt.format(d);
+}
+
+// Returns the UTC epoch-ms for today (in PT) at a given PT hour. `hour`
+// supports fractional values (12.5 = 12:30 PM). DST-correct via Intl's
+// inverse-offset trick: build the time assuming PST, then check what
+// offset Intl actually applies for that instant and correct.
+function ptCutoffMs(now: Date, hour: number): number {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const [y, m, d] = fmt.format(now).split('-').map(Number);
+  const h = Math.floor(hour);
+  const mi = Math.round((hour - h) * 60);
+  // Build a tentative UTC timestamp assuming PST (-08:00).
+  const tentative = new Date(Date.UTC(y, m - 1, d, h + 8, mi));
+  const tzAbbrev = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    timeZoneName: 'short',
+  }).formatToParts(tentative).find(p => p.type === 'timeZoneName')?.value;
+  // If we're actually in PDT (-07:00), the tentative is 60 min ahead.
+  const offsetCorrectionMs = tzAbbrev === 'PDT' ? -60 * 60_000 : 0;
+  return tentative.getTime() + offsetCorrectionMs;
 }
 
 /**

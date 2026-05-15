@@ -141,6 +141,23 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+/**
+ * Wrap bare-domain mentions of our known marketing URLs in <a> tags.
+ * Operates on an already-HTML-escaped string (so we don't double-escape
+ * the href). Plain-text part of the multipart message is untouched —
+ * clients that prefer text/plain see the raw domain, which is fine.
+ *
+ * Domain list is intentionally small (just our two): a general URL
+ * regex would link anything that looks like a domain in the body
+ * (including stuff in quotes or examples), which is more risk than
+ * reward for cold-outreach where every link is scored by spam filters.
+ */
+function linkifyDomains(escapedHtml: string): string {
+  return escapedHtml
+    .replace(/\bproxitest\.com\b/g, '<a href="https://proxitest.com" style="color:#2563eb;text-decoration:underline">proxitest.com</a>')
+    .replace(/\bbild\.ai\b/gi, '<a href="https://bild.ai" style="color:#2563eb;text-decoration:underline">bild.ai</a>');
+}
+
 function buildRawMime(args: BuildMimeArgs): string {
   const localPart = args.fromEmail.split('@')[0];
   const domain = args.fromEmail.split('@')[1] ?? '';
@@ -152,7 +169,7 @@ function buildRawMime(args: BuildMimeArgs): string {
   // readers quiet. `width=1 height=1` is the floor that most clients still
   // fire a GET for (0×0 is commonly skipped).
   const pixelUrl = `${trackingBaseUrl()}/api/cron/email-tool/track/${args.queueId}.png`;
-  const escapedBody = escapeHtml(args.body);
+  const escapedBody = linkifyDomains(escapeHtml(args.body));
   const htmlBody = `<!doctype html><html><body><div style="white-space:pre-wrap;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;color:#111;line-height:1.5">${escapedBody}</div><img src="${pixelUrl}" alt="" width="1" height="1" style="display:none" /></body></html>`;
 
   // Multipart boundary — must not appear anywhere in either part body.
