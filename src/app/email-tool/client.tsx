@@ -333,41 +333,15 @@ export default function EmailToolClient({
           )}
         </div>
 
-        <button
-          onClick={getBatch}
-          disabled={loading || onCooldown}
-          className="w-full bg-gray-900 hover:bg-gray-700 text-white font-semibold py-5 rounded-xl text-base shadow-sm transition disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {loading ? 'Preparing your batch...' : 'Give me my batch of 400'}
-        </button>
-
-        {onCooldown && cooldownDate && (
-          <p className="text-center text-sm text-gray-500">
-            Next batch available in{' '}
-            <span className="font-mono text-gray-900">{countdown(cooldownDate)}</span>
-            <br />
-            <span className="text-xs text-gray-400">({cooldownDate.toLocaleString()})</span>
-          </p>
-        )}
-
-        {!onCooldown && !batchUrl && !loading && (
-          <p className="text-center text-sm text-emerald-600">Ready to go.</p>
-        )}
-
-        {batchUrl && (
-          <a
-            href={batchUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl text-sm font-medium transition"
-          >
-            Your batch is ready <ExternalLink className="h-4 w-4" />
-          </a>
-        )}
-
-        {error && (
-          <p className="text-center text-sm text-red-600">{error}</p>
-        )}
+        {/*
+          The "Give me my batch of 400" manual-batch button was removed
+          on 2026-05-15 — all sending now goes through the automated
+          email-send pipeline (start.ts → tick.ts → Gmail), nothing is
+          ever sent by hand via the legacy Google-Sheets export flow.
+          getBatch / cooldownDate / batchUrl / error state remain in the
+          component but are unreferenced; keeping them avoids cascading
+          deletes that would also nuke the still-relevant history list.
+        */}
 
         <p className="text-xs text-gray-500 text-center">
           {remaining.toLocaleString()} emails left in pool
