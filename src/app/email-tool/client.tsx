@@ -13,6 +13,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Loader2, ExternalLink, Target, Upload } from '@/lib/icons';
+import { EnrichUploadModal } from '@/components/email-tool/enrich-upload-modal';
 
 interface HistoryEntry {
   id: string;
@@ -95,6 +96,12 @@ export default function EmailToolClient({
   } | null>(null);
   const [filterError, setFilterError] = useState<string | null>(null);
   const filterInputRef = useRef<HTMLInputElement>(null);
+
+  // Enrich + upload (admin) — separate flow for CSVs that don't have
+  // emails yet. Streams progress via SSE in a terminal-style modal.
+  const [enrichFile, setEnrichFile] = useState<File | null>(null);
+  const [enrichPutAtTop, setEnrichPutAtTop] = useState<boolean>(true);
+  const enrichInputRef = useRef<HTMLInputElement>(null);
 
   // Tick the clock so the cooldown countdown updates live without a
   // page reload, and the button re-enables the moment cooldown expires.
@@ -434,6 +441,41 @@ export default function EmailToolClient({
           </div>
         )}
 
+        {isAdmin && (
+          <div className="border-t border-gray-100 pt-4 flex flex-col gap-2">
+            <p className="text-[11px] uppercase tracking-wider text-gray-400 flex items-center gap-1">
+              <Upload className="h-3 w-3" /> Enrich + upload (admin)
+            </p>
+            <p className="text-xs text-gray-500">
+              CSV with <strong>Company/Website + First Name</strong> (Email column optional).
+              We&apos;ll guess <code className="text-[10px]">firstname@companydomain</code>,
+              verify cheaply via bulkemailchecker, fall back to icypeas for misses,
+              and add survivors to the pool. Live progress streams in a terminal-style window.
+            </p>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-700 pl-1">
+              <input
+                type="checkbox"
+                checked={enrichPutAtTop}
+                onChange={e => setEnrichPutAtTop(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium text-gray-800">Put at top of pool.</span>{' '}
+                These will be the next emails sent.
+              </span>
+            </label>
+            <input
+              ref={enrichInputRef}
+              type="file"
+              accept=".csv,text/csv,text/plain"
+              onChange={e => {
+                const f = e.target.files?.[0];
+                if (f) setEnrichFile(f);
+              }}
+              className="text-xs text-gray-500 file:mr-3 file:px-3 file:py-2 file:rounded-md file:border-0 file:bg-gray-100 file:text-gray-800 file:cursor-pointer hover:file:bg-gray-200"
+            />
+          </div>
+        )}
+
         {history.length > 0 && (
           <div className="border-t border-gray-100 pt-4 flex flex-col gap-2">
             <p className="text-[11px] uppercase tracking-wider text-gray-400">
@@ -476,6 +518,20 @@ export default function EmailToolClient({
           </div>
         )}
       </div>
+      {enrichFile && (
+        <EnrichUploadModal
+          file={enrichFile}
+          mode={enrichPutAtTop ? 'pool_top' : 'pool_bottom'}
+          onClose={() => {
+            setEnrichFile(null);
+            if (enrichInputRef.current) enrichInputRef.current.value = '';
+          }}
+          onComplete={() => {
+            // Pool grew — refresh the visible remaining count.
+            // Cheap to do via a re-fetch; skip if pool number is stale.
+          }}
+        />
+      )}
     </div>
   );
 }
