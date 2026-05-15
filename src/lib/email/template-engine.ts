@@ -3,6 +3,8 @@
  * Replaces {{variable_name}} placeholders with values from the context.
  */
 
+import { BOOKING_URL } from '@/lib/constants';
+
 export interface TemplateContext {
   contact_name?: string;
   contact_first_name?: string;
@@ -35,7 +37,7 @@ export function buildTemplateContext(opts: {
     sender_first_name: opts.senderName?.split(' ')[0] ?? '',
     sender_email: opts.senderEmail ?? '',
     product_url: PRODUCT_URL,
-    meeting_link: `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://proxi.ai'}/book`,
+    meeting_link: BOOKING_URL,
     original_subject: opts.originalSubject ?? '',
   };
 }

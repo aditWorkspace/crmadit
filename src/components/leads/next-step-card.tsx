@@ -1,6 +1,7 @@
 'use client';
 
 import { Lead, LeadStage } from '@/types';
+import { BOOKING_URL } from '@/lib/constants';
 import {
   MessageSquareReply,
   Link2,
@@ -40,9 +41,7 @@ function getNextStep(lead: Lead): NextStepConfig | null {
       description: `Share your calendar link to get ${lead.contact_name} on a call.`,
       icon: <Link2 className="h-4 w-4" />,
       action: 'copy',
-      copyText: process.env.NEXT_PUBLIC_APP_URL
-        ? `${process.env.NEXT_PUBLIC_APP_URL}/book`
-        : 'https://proxi.ai/book',
+      copyText: BOOKING_URL,
       buttonLabel: 'Copy Booking Link',
     },
     scheduled: {

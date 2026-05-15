@@ -71,9 +71,15 @@ export const JUDGE_MODEL = 'deepseek/deepseek-r1';
 export const FAST_LOOP_MIN_MINUTES = 30;
 export const FAST_LOOP_MAX_MINUTES = 120;
 
-// Public booking page. Auto-responder interpolates this into positive_book
-// replies, optionally with ?email=<contact_email> pre-fill.
-export const BOOKING_URL = 'https://pmcrminternal.vercel.app/book';
+// Public booking link. Auto-responder interpolates this into positive_book
+// replies; the next-step card "Copy Booking Link" button copies this; the
+// internal /calendar admin view links here as the shareable URL.
+// Switched from the in-house /book page to cal.com on 2026-05-15 per
+// product call — cal.com handles availability + email confirmations +
+// rescheduling natively and the in-house page accumulated edge cases.
+// The /book page route + /api/calendar/book API still exist as dead code
+// (legacy in-flight reschedule links may still hit them).
+export const BOOKING_URL = 'https://cal.com/adit-mittal/30min';
 
 // Stages where auto-emails are suppressed (call is happening or just done)
 export const CALLS_STAGES: LeadStage[] = ['scheduled', 'call_completed', 'feedback_call', 'active_user'];

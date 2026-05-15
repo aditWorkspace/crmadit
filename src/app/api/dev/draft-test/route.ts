@@ -144,16 +144,17 @@ Draft a short professional follow-up reply.`,
 
       const scrubbed = draft.replaceAll('—', ', ').replaceAll('–', ', ').replace(/\s+,/g, ',').trim();
 
+      const hasBookingLink = scrubbed.includes('cal.com/adit-mittal/30min');
       return {
         id: tc.id,
         description: tc.description,
         draft: scrubbed,
-        hasBookingLink: scrubbed.includes('pmcrminternal.vercel.app/book'),
+        hasBookingLink,
         hasEmDash: scrubbed.includes('—') || scrubbed.includes('–'),
         hasCalendly: scrubbed.includes('calendly.com'),
         hasProxiPitch: /proxi\s+(is|does|builds|helps|offers|provides)/i.test(scrubbed) || scrubbed.includes('our product'),
         expectBookingLink: tc.expectBookingLink,
-        bookingLinkMatch: tc.expectBookingLink === scrubbed.includes('pmcrminternal.vercel.app/book'),
+        bookingLinkMatch: tc.expectBookingLink === hasBookingLink,
         latency_ms: Date.now() - start,
       };
     })

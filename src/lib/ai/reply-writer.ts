@@ -8,8 +8,7 @@
 import { callAI } from './openrouter';
 import { WRITER_MODEL } from '@/lib/constants';
 import type { ClassifierResult } from './reply-classifier';
-
-const BOOKING_URL = 'https://pmcrminternal.vercel.app/book';
+import { BOOKING_URL } from '@/lib/constants';
 
 export interface WriterInput {
   contactName: string;

@@ -10,6 +10,7 @@ import { ChevronLeft, ChevronRight, RefreshCw, Loader2, ExternalLink, CalendarDa
 import { BlockTimeModal } from '@/components/calendar/block-time-modal';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { BOOKING_URL } from '@/lib/constants';
 
 interface Slot {
   start: string;
@@ -129,7 +130,7 @@ export default function CalendarPage() {
             Block time
           </button>
           <a
-            href="/book"
+            href={BOOKING_URL}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 transition-colors"
