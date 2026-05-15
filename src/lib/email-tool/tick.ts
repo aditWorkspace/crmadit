@@ -19,6 +19,7 @@ import type { SendMode } from './types';
 import { detectAndAbortOrphans } from './orphan-recovery';
 import { runDailyStart } from './start';
 import { WEEKDAY_START_TIMES_PT } from './schedule';
+import { looksLikeMatch } from './name-email-match';
 
 type Supa = ReturnType<typeof createAdminClient>;
 
@@ -218,6 +219,33 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
         .update({ status: 'failed', last_error: 'variant_not_found' })
         .eq('id', row.id);
       stats.failed++;
+      continue;
+    }
+
+    // Name-email mismatch guard (last line of defense).
+    //
+    // The csv-filter route validates this at upload time, but rows
+    // already in the pool from the 2026-05-15 CSV-tear incident may
+    // still have first_name/company shifted vs recipient_email. User
+    // explicitly: "I would rather not send the email than send with
+    // wrong info." If first_name doesn't plausibly belong to the
+    // email's local-part, skip and never call Gmail.
+    // Note: queue rows only carry recipient_name (the first_name from
+    // the pool — never a full name). The helper handles `null` fullName
+    // by skipping last-name-based checks.
+    const matchCheck = looksLikeMatch(row.recipient_name, null, row.recipient_email);
+    if (!matchCheck.ok) {
+      await supabase.from('email_send_queue')
+        .update({ status: 'skipped', last_error: `name_email_mismatch:${matchCheck.reason}` })
+        .eq('id', row.id);
+      log('warn', 'tick_skipped_name_mismatch', {
+        queue_row_id: row.id,
+        recipient_email: row.recipient_email,
+        recipient_name: row.recipient_name,
+        recipient_company: row.recipient_company,
+        reason: matchCheck.reason,
+      });
+      stats.skipped++;
       continue;
     }
 

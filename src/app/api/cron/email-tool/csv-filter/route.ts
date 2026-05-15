@@ -27,6 +27,7 @@ export const maxDuration = 120;
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/session';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { looksLikeMatch } from '@/lib/email-tool/name-email-match';
 
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 // PostgREST URL length cap is ~8KB on Supabase's gateway. With avg
@@ -48,34 +49,68 @@ interface PoolRow {
   first_name: string | null;
 }
 
-// Minimal CSV parser. Handles quoted fields with embedded commas and
-// doubled-quote escapes. Doesn't handle multi-line quoted fields (the
-// outer split('\n') would break those) — fine for our use case where
-// quoting is only used to escape commas inside company names.
-function parseCsvLine(line: string): string[] {
-  const out: string[] = [];
+// Single-pass streaming CSV parser. Honors RFC 4180 quoting INCLUDING
+// multi-line quoted fields — a literal newline inside `"..."` stays
+// inside the cell instead of tearing the row in two.
+//
+// Built in response to the 2026-05-15 incident: previous code split on
+// \r?\n first then parsed each line independently, so a pitchbook-style
+// row with a multi-line Company description would split into two
+// "lines", and downstream rows would read the wrong column indices
+// (off-by-N alignment between email and first_name/company).
+function parseCsvText(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
   let cur = '';
   let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
+  let cellStarted = false; // tracks whether we've consumed any non-quote chars in the current cell
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
     if (inQuotes) {
       if (c === '"') {
-        if (line[i + 1] === '"') { cur += '"'; i++; }
-        else inQuotes = false;
+        if (text[i + 1] === '"') { cur += '"'; i++; }   // escaped quote ""
+        else inQuotes = false;                          // closing quote
       } else {
         cur += c;
       }
-    } else if (c === ',') {
-      out.push(cur);
-      cur = '';
-    } else if (c === '"' && cur === '') {
-      inQuotes = true;
     } else {
-      cur += c;
+      if (c === ',') {
+        row.push(cur);
+        cur = '';
+        cellStarted = false;
+      } else if (c === '\r') {
+        // ignore — row ends on \n; \r\n becomes single \n boundary
+      } else if (c === '\n') {
+        row.push(cur);
+        cur = '';
+        cellStarted = false;
+        if (row.some(f => f !== '')) rows.push(row);
+        row = [];
+      } else if (c === '"' && !cellStarted) {
+        inQuotes = true;
+        cellStarted = true;
+      } else {
+        cur += c;
+        cellStarted = true;
+      }
     }
   }
-  out.push(cur);
-  return out.map(s => s.trim());
+  // EOF — flush partial cell/row if any content present.
+  if (cur !== '' || row.length > 0) {
+    row.push(cur);
+    if (row.some(f => f !== '')) rows.push(row);
+  }
+  return rows.map(r => r.map(f => f.trim()));
+}
+
+// Helper for rendering rows back to a CSV-safe line — used to build
+// the response CSV. Wraps any field that contains a comma, quote, or
+// newline in quotes and escapes embedded quotes per RFC 4180.
+function csvField(s: string): string {
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function csvLine(cols: string[]): string {
+  return cols.map(csvField).join(',');
 }
 
 // Determine which column index maps to which pool field, based on the
@@ -135,35 +170,49 @@ export async function POST(req: NextRequest) {
     : 'blacklist';
 
   const text = await file.text();
-  const rawLines = text.split(/\r?\n/);
-  while (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
-  if (rawLines.length === 0) {
+  const allRows = parseCsvText(text);
+  if (allRows.length === 0) {
     return NextResponse.json({ ok: false, reason: 'empty_csv' }, { status: 400 });
   }
 
-  // Header detection: if the first line has no email-looking string,
-  // treat it as a header. Pass through verbatim in the response CSV.
-  const firstLine = rawLines[0];
-  const firstLineHasEmail = EMAIL_RE.test(firstLine);
+  // Header detection: if any field in the first row matches the email
+  // regex, the first row IS data (no header); otherwise treat it as a
+  // header. Reset EMAIL_RE between tests because of the /g flag.
+  const firstRowHasEmail = allRows[0].some(f => { EMAIL_RE.lastIndex = 0; return EMAIL_RE.test(f); });
   EMAIL_RE.lastIndex = 0;
-  const headerLine = firstLineHasEmail ? null : firstLine;
-  const dataLines = firstLineHasEmail ? rawLines : rawLines.slice(1);
-  const headerCols = headerLine ? parseCsvLine(headerLine) : null;
+  const headerCols = firstRowHasEmail ? null : allRows[0];
+  const dataRows = firstRowHasEmail ? allRows : allRows.slice(1);
   const colMap = inferColumnMap(headerCols);
 
-  type Row = { line: string; cols: string[]; email: string };
+  type Row = { cols: string[]; email: string };
   const rows: Row[] = [];
   let skippedNoEmail = 0;
-  for (const line of dataLines) {
-    // Skip totally blank lines (don't count them toward "no email" — they're
-    // just whitespace artifacts).
-    if (line.trim() === '') continue;
-    const m = line.match(EMAIL_RE);
-    if (!m || m.length === 0) {
+  let skippedNameMismatch = 0;
+  for (const cols of dataRows) {
+    // Pull email from the mapped column. We no longer regex-hunt across
+    // the whole row — the column is authoritative now that the parser
+    // is RFC-4180 correct. If the cell isn't an email-shaped string,
+    // count as no-email and skip.
+    const emailCell = (cols[colMap.email] ?? '').trim();
+    EMAIL_RE.lastIndex = 0;
+    if (!emailCell || !EMAIL_RE.test(emailCell)) {
+      EMAIL_RE.lastIndex = 0;
       skippedNoEmail++;
       continue;
     }
-    rows.push({ line, cols: parseCsvLine(line), email: m[0].toLowerCase() });
+    EMAIL_RE.lastIndex = 0;
+    const email = emailCell.toLowerCase();
+    // Name-email match guard. User explicitly: "I would rather not
+    // send the email than send with wrong info." See
+    // src/lib/email-tool/name-email-match.ts for the heuristic.
+    const firstName = colMap.first_name != null ? cols[colMap.first_name] ?? null : null;
+    const fullName = colMap.full_name != null ? cols[colMap.full_name] ?? null : null;
+    const match = looksLikeMatch(firstName, fullName, email);
+    if (!match.ok) {
+      skippedNameMismatch++;
+      continue;
+    }
+    rows.push({ cols, email });
   }
 
   const inputRows = rows.length;
@@ -365,8 +414,8 @@ export async function POST(req: NextRequest) {
   // blacklist mode this is "the rows you should send manually." For
   // pool modes it's "the rows we just added to the pool."
   const outLines: string[] = [];
-  if (headerLine !== null) outLines.push(headerLine);
-  for (const r of survivingRows) outLines.push(r.line);
+  if (headerCols !== null) outLines.push(csvLine(headerCols));
+  for (const r of survivingRows) outLines.push(csvLine(r.cols));
   const outCsv = outLines.join('\n') + '\n';
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -381,13 +430,14 @@ export async function POST(req: NextRequest) {
       'X-Input-Rows': String(inputRows),
       'X-Output-Rows': String(survivingRows.length),
       'X-Skipped-No-Email': String(skippedNoEmail),
+      'X-Skipped-Name-Mismatch': String(skippedNameMismatch),
       'X-Already-Blacklisted': String(alreadyBlacklisted.size),
       'X-Newly-Blacklisted': String(newlyBlacklisted),
       'X-Pool-Inserted': String(poolInserted),
       'X-Already-In-Pool': String(alreadyInPool),
       'X-Pool-Removed': '0',
       'Access-Control-Expose-Headers':
-        'X-Mode, X-Input-Rows, X-Output-Rows, X-Skipped-No-Email, X-Already-Blacklisted, X-Newly-Blacklisted, X-Pool-Inserted, X-Already-In-Pool, X-Pool-Removed, Content-Disposition',
+        'X-Mode, X-Input-Rows, X-Output-Rows, X-Skipped-No-Email, X-Skipped-Name-Mismatch, X-Already-Blacklisted, X-Newly-Blacklisted, X-Pool-Inserted, X-Already-In-Pool, X-Pool-Removed, Content-Disposition',
     },
   });
 }

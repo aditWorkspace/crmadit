@@ -22,17 +22,19 @@ import type { SendMode } from './types';
 import { log } from './log';
 import { sendCriticalAlert } from './alert';
 
-// ── One-day adaptive A/B test override ────────────────────────────────────
-// When today's PT date matches AB_TEST_OVERRIDE_PT_DATE, runDailyStart:
-//   - skips step ⑤a (no opener-no-reply follow-ups for this campaign)
+// ── Adaptive A/B test override ────────────────────────────────────────────
+// When today's PT date is in AB_TEST_OVERRIDE_PT_DATES, runDailyStart:
+//   - skips step ⑤a (no opener-no-reply follow-ups for the campaign)
 //   - uses the full dailyTarget for fresh-cold (no follow-up reservation)
+//   - OVERRIDES weekend mode — Sat/Sun in the set still pull and queue
+//     800 rows instead of the usual zero-fresh weekend behavior
 //   - pushes rows beyond AB_TEST_PHASE_A_ROWS_PER_FOUNDER per founder out
 //     to send_at ≥ AB_TEST_PHASE_B_CUTOFF_PT_HOUR so the noon rebalance
 //     route has time to UPDATE their template_variant_id before they fire.
-// Empty string disables (no special behavior). Bump the date string to
-// re-run; we don't keep a set because each test gets its own copy/template
-// regeneration anyway. Coordinated with /api/cron/email-tool/ab-rebalance.
-const AB_TEST_OVERRIDE_PT_DATE: string = '2026-05-15';
+// Empty set disables. After the dates pass, weekly cadence resumes
+// normally (Sat/Sun fall back to weekend follow-up-only flow). Mirrored
+// in /api/cron/email-tool/ab-rebalance/route.ts — change both together.
+const AB_TEST_OVERRIDE_PT_DATES = new Set<string>(['2026-05-15', '2026-05-16']);
 // 200 per founder × 2 founders = 400 emails in Phase A. With 4
 // round-robin templates that's exactly 50 per founder per template,
 // 100 per template across both founders — matching the spec.
@@ -240,18 +242,22 @@ export async function runDailyStart(
     // priority uploads to Mon–Fri, so cappedPriorityRows is naturally
     // empty here — the assertion is defensive.
     const todayPt = formatPtDate(now);
-    const abTestMode = AB_TEST_OVERRIDE_PT_DATE !== '' && todayPt === AB_TEST_OVERRIDE_PT_DATE;
+    const abTestMode = AB_TEST_OVERRIDE_PT_DATES.has(todayPt);
     const skipFollowupsToday = abTestMode;
 
     const weekendMode = isPtWeekend(now);
     const reservedForFollowups = skipFollowupsToday
       ? 0
       : FOLLOWUP_DAILY_CAP_PER_FOUNDER * activeFounders.length;
-    const freshTotalTarget = weekendMode
-      ? 0
-      : Math.max(0, dailyTarget - reservedForFollowups);
+    // AB-test mode overrides weekend mode: test days in the set still
+    // queue full fresh-cold volume even when they fall on Sat/Sun.
+    const freshTotalTarget = abTestMode
+      ? dailyTarget
+      : (weekendMode
+          ? 0
+          : Math.max(0, dailyTarget - reservedForFollowups));
     const regularTarget = Math.max(0, freshTotalTarget - cappedPriorityRows.length);
-    if (weekendMode) {
+    if (weekendMode && !abTestMode) {
       log('info', 'start_weekend_followups_only', {
         campaign_id: campaignId,
         active_founders: activeFounders.length,
@@ -262,6 +268,7 @@ export async function runDailyStart(
       log('info', 'start_ab_test_mode', {
         campaign_id: campaignId,
         date: todayPt,
+        weekend_override: weekendMode,
         active_founders: activeFounders.length,
         fresh_total_target: freshTotalTarget,
         phase_a_per_founder: AB_TEST_PHASE_A_ROWS_PER_FOUNDER,

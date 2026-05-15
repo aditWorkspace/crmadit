@@ -87,6 +87,7 @@ export default function EmailToolClient({
     inputRows: number;
     outputRows: number;
     skippedNoEmail: number;
+    skippedNameMismatch: number;
     alreadyBlacklisted: number;
     newlyBlacklisted: number;
     poolInserted: number;
@@ -165,6 +166,7 @@ export default function EmailToolClient({
       const inputRows = Number(res.headers.get('X-Input-Rows') ?? '0');
       const outputRows = Number(res.headers.get('X-Output-Rows') ?? '0');
       const skippedNoEmail = Number(res.headers.get('X-Skipped-No-Email') ?? '0');
+      const skippedNameMismatch = Number(res.headers.get('X-Skipped-Name-Mismatch') ?? '0');
       const alreadyBlacklisted = Number(res.headers.get('X-Already-Blacklisted') ?? '0');
       const newlyBlacklisted = Number(res.headers.get('X-Newly-Blacklisted') ?? '0');
       const poolInserted = Number(res.headers.get('X-Pool-Inserted') ?? '0');
@@ -190,6 +192,7 @@ export default function EmailToolClient({
         inputRows,
         outputRows,
         skippedNoEmail,
+        skippedNameMismatch,
         alreadyBlacklisted,
         newlyBlacklisted,
         poolInserted,
@@ -418,8 +421,9 @@ export default function EmailToolClient({
             {filtering && <p className="text-xs text-gray-400 inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Filtering…</p>}
             {filterResult && (
               <p className="text-xs text-emerald-700">
-                Uploaded {(filterResult.inputRows + filterResult.skippedNoEmail).toLocaleString()} rows ·{' '}
+                Uploaded {(filterResult.inputRows + filterResult.skippedNoEmail + filterResult.skippedNameMismatch).toLocaleString()} rows ·{' '}
                 {filterResult.skippedNoEmail.toLocaleString()} skipped (no email) ·{' '}
+                {filterResult.skippedNameMismatch.toLocaleString()} skipped (name/email mismatch) ·{' '}
                 {filterResult.alreadyBlacklisted.toLocaleString()} already blacklisted ·{' '}
                 {filterResult.alreadyInPool.toLocaleString()} already in pool ·{' '}
                 {filterResult.poolInserted.toLocaleString()} added to pool{' '}

@@ -1,8 +1,8 @@
 // POST /api/cron/email-tool/ab-rebalance — one-day adaptive A/B test
 // rebalance pass. Cron-job.org hits this hourly starting at 12 PM PT
 // on the test date. The route:
-//   1. Gates on today's PT date matching AB_TEST_OVERRIDE_PT_DATE
-//      (which lives in start.ts). On any other date → 204 no-op.
+//   1. Gates on today's PT date being in AB_TEST_OVERRIDE_PT_DATES
+//      (mirrored from start.ts). On any other date → 200 no-op.
 //   2. Finds today's campaign via idempotency_key = todayPt.
 //   3. If the campaign already has ab_rebalance_done_at set → 200 no-op.
 //   4. Counts replies per template family for Phase A rows (send_at <
@@ -27,10 +27,11 @@ export const maxDuration = 60;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { log } from '@/lib/email-tool/log';
 
 // MUST stay in sync with src/lib/email-tool/start.ts. If you change
 // one, change the other.
-const AB_TEST_OVERRIDE_PT_DATE = '2026-05-15';
+const AB_TEST_OVERRIDE_PT_DATES = new Set<string>(['2026-05-15', '2026-05-16']);
 const AB_TEST_PHASE_B_CUTOFF_PT_HOUR = 12.0; // 12:00 PM PT — the data cutoff
 
 function formatPtDate(d: Date): string {
@@ -71,9 +72,14 @@ export async function POST(req: NextRequest) {
   const now = new Date();
   const todayPt = formatPtDate(now);
 
-  if (todayPt !== AB_TEST_OVERRIDE_PT_DATE) {
+  if (!AB_TEST_OVERRIDE_PT_DATES.has(todayPt)) {
     return NextResponse.json(
-      { ok: true, note: 'no_op_wrong_date', today_pt: todayPt, override_pt: AB_TEST_OVERRIDE_PT_DATE },
+      {
+        ok: true,
+        note: 'no_op_wrong_date',
+        today_pt: todayPt,
+        override_pt: Array.from(AB_TEST_OVERRIDE_PT_DATES),
+      },
       { status: 200 }
     );
   }
@@ -102,10 +108,10 @@ export async function POST(req: NextRequest) {
 
   // Phase A rows: send_at < 12 PM PT, status='sent'. We only count
   // *sent* rows because rows still in 'pending' haven't even attempted
-  // delivery — they don't have a reply signal yet.
+  // delivery — they don't have an open or reply signal yet.
   const { data: phaseARows, error: aErr } = await supabase
     .from('email_send_queue')
-    .select('template_variant_id, status, replied_at')
+    .select('template_variant_id, status, replied_at, opened_at')
     .eq('campaign_id', campaign.id)
     .lt('send_at', cutoffIso)
     .eq('status', 'sent');
@@ -113,13 +119,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'phase_a_lookup_failed', detail: aErr.message }, { status: 500 });
   }
 
-  // Per-variant tallies.
+  // Per-variant tallies: sent / replied / opened.
   const sentByVariant = new Map<string, number>();
   const repliedByVariant = new Map<string, number>();
-  for (const r of (phaseARows ?? []) as Array<{ template_variant_id: string; replied_at: string | null }>) {
+  const openedByVariant = new Map<string, number>();
+  for (const r of (phaseARows ?? []) as Array<{ template_variant_id: string; replied_at: string | null; opened_at: string | null }>) {
     sentByVariant.set(r.template_variant_id, (sentByVariant.get(r.template_variant_id) ?? 0) + 1);
     if (r.replied_at) {
       repliedByVariant.set(r.template_variant_id, (repliedByVariant.get(r.template_variant_id) ?? 0) + 1);
+    }
+    if (r.opened_at) {
+      openedByVariant.set(r.template_variant_id, (openedByVariant.get(r.template_variant_id) ?? 0) + 1);
     }
   }
 
@@ -140,19 +150,20 @@ export async function POST(req: NextRequest) {
   const variants = ((variantRows ?? []) as VRow[]).filter(v => v.is_active && !v.is_followup);
 
   // Family key = subject_template (siblings across founders share
-  // identical subject + body). Aggregate sent + replied per family.
-  type FamilyAgg = { subject: string; variantIds: string[]; sent: number; replied: number };
+  // identical subject + body). Aggregate sent + replied + opened per family.
+  type FamilyAgg = { subject: string; variantIds: string[]; sent: number; replied: number; opened: number };
   const familiesBySubject = new Map<string, FamilyAgg>();
   for (const v of variants) {
     const key = v.subject_template;
     let agg = familiesBySubject.get(key);
     if (!agg) {
-      agg = { subject: key, variantIds: [], sent: 0, replied: 0 };
+      agg = { subject: key, variantIds: [], sent: 0, replied: 0, opened: 0 };
       familiesBySubject.set(key, agg);
     }
     agg.variantIds.push(v.id);
     agg.sent += sentByVariant.get(v.id) ?? 0;
     agg.replied += repliedByVariant.get(v.id) ?? 0;
+    agg.opened += openedByVariant.get(v.id) ?? 0;
   }
   const families = Array.from(familiesBySubject.values());
 
@@ -163,16 +174,60 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Rank: replied DESC, then reply-rate DESC, then subject ASC (stable
-  // alphabetic tie-break).
+  // Insufficient-data fallback: if Phase A hasn't drained enough yet
+  // (e.g., the cron fired too early or sends are slow), the open
+  // metric is noisy. Refuse to rebalance and let Phase B drain with
+  // all 4 variants. Threshold: 80 sent per family (80% of the
+  // expected 100/family Phase A volume). Calling code retries hourly
+  // until 10 PM PT, so a slow drain still gets a chance later.
+  const minSentPerFamily = Math.min(...families.map(f => f.sent));
+  const INSUFFICIENT_DATA_THRESHOLD = 80;
+  if (minSentPerFamily < INSUFFICIENT_DATA_THRESHOLD) {
+    log('warn', 'ab_rebalance_insufficient_data', {
+      campaign_id: campaign.id,
+      min_sent_per_family: minSentPerFamily,
+      threshold: INSUFFICIENT_DATA_THRESHOLD,
+      per_family: families.map(f => ({ subject: f.subject, sent: f.sent })),
+    });
+    return NextResponse.json({
+      ok: true,
+      note: 'insufficient_data',
+      detail: `at least one family has only ${minSentPerFamily} sent (< ${INSUFFICIENT_DATA_THRESHOLD}); not rebalancing — will retry next hour`,
+      families_evaluated: families.map(f => ({
+        subject: f.subject,
+        sent: f.sent,
+        opened: f.opened,
+        replied: f.replied,
+      })),
+    });
+  }
+
+  // Rank by OPEN RATE (opens/sent) — the user explicitly switched the
+  // metric after Friday's run, where 0 replies at noon caused the old
+  // "replied DESC" ranking to fall through to alphabetical. Opens
+  // accumulate within minutes of send; replies take hours. Tertiary
+  // tie-break is reply-rate so opens-tied families fall back to the
+  // stronger signal, then subject ASC for determinism.
   families.sort((a, b) => {
-    if (b.replied !== a.replied) return b.replied - a.replied;
-    const rateA = a.sent > 0 ? a.replied / a.sent : 0;
-    const rateB = b.sent > 0 ? b.replied / b.sent : 0;
-    if (rateB !== rateA) return rateB - rateA;
+    const openRateA = a.sent > 0 ? a.opened / a.sent : 0;
+    const openRateB = b.sent > 0 ? b.opened / b.sent : 0;
+    if (openRateB !== openRateA) return openRateB - openRateA;
+    const replyRateA = a.sent > 0 ? a.replied / a.sent : 0;
+    const replyRateB = b.sent > 0 ? b.replied / b.sent : 0;
+    if (replyRateB !== replyRateA) return replyRateB - replyRateA;
     return a.subject.localeCompare(b.subject);
   });
   const winners = families.slice(0, 2);
+  log('info', 'ab_rebalance_picked', {
+    campaign_id: campaign.id,
+    winners: winners.map(w => ({
+      subject: w.subject,
+      sent: w.sent,
+      opened: w.opened,
+      replied: w.replied,
+      open_rate_pct: w.sent > 0 ? Math.round((w.opened / w.sent) * 1000) / 10 : 0,
+    })),
+  });
 
   // Find pending Phase B rows per founder. Round-robin alternate
   // between the 2 winning variants belonging to THAT founder.
@@ -238,7 +293,9 @@ export async function POST(req: NextRequest) {
     families_evaluated: families.map(f => ({
       subject: f.subject,
       sent: f.sent,
+      opened: f.opened,
       replied: f.replied,
+      open_rate_pct: f.sent > 0 ? Math.round((f.opened / f.sent) * 1000) / 10 : 0,
       reply_rate_pct: f.sent > 0 ? Math.round((f.replied / f.sent) * 1000) / 10 : 0,
     })),
     winners: winners.map(w => w.subject),
