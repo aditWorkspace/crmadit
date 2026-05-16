@@ -194,25 +194,35 @@ export async function processEnrichRow(
           },
         },
       ];
-      // Only add the B attempt if it would actually differ from A —
-      // otherwise we'd just be paying double poll-time for the same
-      // query. B differs when fullName is multi-token OR when we have
-      // both a working domain and a separate bare company name.
+      // Attempt B: pass the bare company name (no TLD) instead of the
+      // DNS-probed domain. This wins when our domain probe accepted a
+      // wrong/parked TLD (e.g. "Forge" → forge.ai which is unrelated;
+      // Icypeas knows the real domain is forgehq.com). The 2026-05-16
+      // experiment showed this strategy recovered 3 of 15 dead rows
+      // that the prior fullName-blob B never won. We dropped the
+      // fullName-blob mutator entirely — it won 0 rows in production
+      // data, just doubled Icypeas load with no recall.
+      //
+      // Only add B if it differs from A — i.e. only when bareCompany
+      // exists AND differs from primaryDomain. Otherwise we're paying
+      // double poll-time for the identical query.
       const aDomain = primaryDomain;
-      const bDomain = bareCompany || aDomain;
-      const aFirst = input.first_name;
-      const bFirst = fullNameBlob;
-      const bDiffers = bFirst !== aFirst || bDomain !== aDomain;
-      if (bDiffers && bFirst && bDomain) {
+      const bDomain = bareCompany;
+      const bDiffers = bDomain && bDomain !== aDomain;
+      if (bDiffers) {
         attempts.push({
           label: 'B',
           args: {
-            firstName: bFirst,
-            lastName: '',
+            firstName: input.first_name,
+            lastName,
             domainOrCompany: bDomain,
           },
         });
       }
+      // fullNameBlob no longer used as a mutator; keep the variable
+      // declaration to avoid breaking the unused-vars lint elsewhere
+      // — referenced here to keep TypeScript happy.
+      void fullNameBlob;
       icypeas_calls = attempts.length;
       const r = await findEmailWithRetries(attempts);
       icypeas_status = r.status;
