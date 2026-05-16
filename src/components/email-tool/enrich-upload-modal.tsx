@@ -155,10 +155,14 @@ function rowToLogLines(r: JobRow): LogLine[] {
   // FOUND@A wins. Fixed 2026-05-16.
   const SUCCESS_PREFIXES = ['DEBITED', 'FOUND'];
   if (r.icypeas_status) {
-    const parts = r.icypeas_status.split('/');
+    // Tier-3 multi-TLD deep search appends "|C1:STATUS@tld/STATUS@tld/..."
+    // to the base "STATUS@A/STATUS@B" string. Split that off for separate
+    // rendering so the deep-search attempt log lines stay readable.
+    const [baseStatus, c1Tail] = r.icypeas_status.split('|C1:');
+    const parts = baseStatus.split('/');
     const isMultiAttempt = parts.length > 1 && parts.every(p => p.includes('@'));
     if (isMultiAttempt) {
-      const anyHit = parts.some(p =>
+      const anyBaseHit = parts.some(p =>
         SUCCESS_PREFIXES.some(s => p.startsWith(s)) && !p.startsWith('NOT_'),
       );
       for (const p of parts) {
@@ -170,6 +174,31 @@ function rowToLogLines(r: JobRow): LogLine[] {
           tone: isHit ? 'magenta' : 'yellow',
         });
       }
+      // Render C1 multi-TLD deep search results if present.
+      if (c1Tail) {
+        const c1Parts = c1Tail.split('/');
+        const c1Hit = c1Parts.find(p => {
+          const status = p.split('@')[0];
+          return SUCCESS_PREFIXES.some(s => status.startsWith(s)) && !status.startsWith('NOT_');
+        });
+        lines.push({
+          row_index: idx,
+          text: `${tag}  icypeas C1 deep-search: tried ${c1Parts.length} TLDs`,
+          tone: 'cyan',
+        });
+        if (c1Hit) {
+          const [status, tld] = c1Hit.split('@');
+          lines.push({
+            row_index: idx,
+            text: `${tag}  icypeas C1 ✓ ${status}@${tld}  ${r.final_email ?? '?'}`,
+            tone: 'magenta',
+          });
+        }
+      }
+      const anyHit = anyBaseHit || (c1Tail ? c1Tail.split('/').some(p => {
+        const status = p.split('@')[0];
+        return SUCCESS_PREFIXES.some(s => status.startsWith(s)) && !status.startsWith('NOT_');
+      }) : false);
       // Only render the aggregate "all NOT_FOUND" line when the row
       // really did fail. Suppress it when r.status='kept' to avoid
       // contradicting the kept→email line that follows.

@@ -21,10 +21,10 @@
 // status AND the aggregate job-level counters atomically.
 
 import { verifyEmail } from '@/lib/external/bulkemailchecker';
-import { findEmailWithRetries, type RetryAttempt } from '@/lib/external/icypeas';
+import { findEmail, findEmailWithRetries, type RetryAttempt } from '@/lib/external/icypeas';
 import { guessEmails } from './email-guesses';
 import { looksLikeMatch } from './name-email-match';
-import { probeDomainForCompany } from './domain-probe';
+import { probeDomainForCompany, probeAllValidDomains } from './domain-probe';
 import type { createAdminClient } from '@/lib/supabase/admin';
 
 type Supa = ReturnType<typeof createAdminClient>;
@@ -233,6 +233,54 @@ export async function processEnrichRow(
       const debitedCount = (r.status.match(/DEBITED/g) ?? []).length;
       cost_usd += 0.01 * debitedCount;
       if (r.email) accepted = r.email.toLowerCase();
+
+      // ── Tier 3: multi-TLD deep search (only on A+B miss) ────────────
+      // If both A and B returned NOT_FOUND, try Icypeas with EACH MX-valid
+      // TLD in parallel. This recovers cases where our DNS probe accepted
+      // the wrong TLD (e.g. parked million.com instead of million.dev,
+      // where the YC company actually lives). The 2026-05-16 experiment
+      // showed this recovers 4 of 15 dead rows that A+B both missed —
+      // ~27% more recall on the hardest bucket.
+      //
+      // Cost is tier-gated: ONLY fires when A+B both failed, so the most
+      // common rows (where A wins ~50% of the time) pay zero extra. On
+      // genuinely-hard rows we fire up to N parallel Icypeas calls (one
+      // per MX-valid TLD, capped at 8). NOT_FOUND is free; DEBITED_NOT_FOUND
+      // charges per Icypeas billing assumption, so expected extra spend
+      // is ~$25-50 per 4k-row job (~half fall-through × ~$0.05 each).
+      if (!accepted && input.company) {
+        const allDomains = await probeAllValidDomains(input.company);
+        // Filter out the domain(s) we already tried in A. Cap at 8 to
+        // bound rate-limit risk on Icypeas Solo tier (docs: 10 req/s).
+        const triedDomains = new Set([primaryDomain.toLowerCase(), bareCompany.toLowerCase()]);
+        const c1Domains = allDomains
+          .filter(d => !triedDomains.has(d.toLowerCase()))
+          .slice(0, 8);
+        if (c1Domains.length > 0) {
+          const c1Results = await Promise.allSettled(
+            c1Domains.map(d => findEmail({
+              firstName: input.first_name!,
+              lastName,
+              domainOrCompany: d,
+            })),
+          );
+          const c1Hit = c1Results
+            .map((s, i) => s.status === 'fulfilled' ? { d: c1Domains[i], email: s.value.email, status: s.value.status } : { d: c1Domains[i], email: null, status: `error:${((s.reason as Error).message ?? '').slice(0, 30)}` })
+            .find(x => x.email);
+          // Append C1 sub-results to icypeas_status for diagnostics.
+          // Format: "C1:DEBITED@dev/NOT_FOUND@io/..." appended after A/B.
+          const c1StatusStr = c1Results.map((s, i) => {
+            const tld = c1Domains[i].split('.').slice(-1)[0];
+            if (s.status === 'fulfilled') return `${s.value.status}@${tld}`;
+            return `error@${tld}`;
+          }).join('/');
+          icypeas_status = `${icypeas_status}|C1:${c1StatusStr}`;
+          icypeas_calls += c1Domains.length;
+          const c1Debited = (c1StatusStr.match(/DEBITED/g) ?? []).length;
+          cost_usd += 0.01 * c1Debited;
+          if (c1Hit?.email) accepted = c1Hit.email.toLowerCase();
+        }
+      }
     } catch (err) {
       icypeas_status = `error:${(err as Error).message?.slice(0, 100)}`;
     }
