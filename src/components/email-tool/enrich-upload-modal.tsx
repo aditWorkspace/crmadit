@@ -70,29 +70,114 @@ const TONE_CLASS: Record<Tone, string> = {
 
 interface LogLine { row_index: number; text: string; tone: Tone }
 
-function rowToLogLine(r: JobRow): LogLine {
+/**
+ * Render a processed job row as multiple terminal log lines —
+ * mirrors the original SSE flow (parse / guess / bec / icypeas / final)
+ * so the user can see WHAT happened, not just the outcome. Inferred
+ * from the persisted row fields (`candidates_tried`, `bec_passes`,
+ * `bec_fails`, `icypeas_status`, `final_email`, `status`, `drop_reason`).
+ */
+function rowToLogLines(r: JobRow): LogLine[] {
+  const idx = r.row_index;
+  const tag = `row ${idx + 1}`;
   const cands = r.candidates_tried ?? [];
-  const tried = cands.length > 0 ? ` (tried ${cands.length})` : '';
+  const lines: LogLine[] = [];
+
+  // Parse line — what we extracted from the CSV.
+  const parseBits: string[] = [];
+  if (r.first_name) parseBits.push(r.first_name);
+  if (r.company) parseBits.push(`@ ${r.company}`);
+  if (r.domain && r.domain !== r.company) parseBits.push(`(${r.domain})`);
+  lines.push({
+    row_index: idx,
+    text: `${tag}  parse  ${parseBits.join(' ') || '?'}`,
+    tone: 'gray',
+  });
+
+  // Candidates line — what BEC tried (or just the given email).
+  if (r.given_email && cands.length > 0 && cands[0] === r.given_email) {
+    lines.push({
+      row_index: idx,
+      text: `${tag}  given email  ${r.given_email}`,
+      tone: 'cyan',
+    });
+    if (cands.length > 1) {
+      lines.push({
+        row_index: idx,
+        text: `${tag}  + fallbacks: ${cands.slice(1).join(', ')}`,
+        tone: 'cyan',
+      });
+    }
+  } else if (cands.length > 0) {
+    lines.push({
+      row_index: idx,
+      text: `${tag}  guessing  ${cands.join(', ')}`,
+      tone: 'cyan',
+    });
+  }
+
+  // BEC outcome line — pass/fail counts.
+  if (r.bec_passes + r.bec_fails > 0) {
+    if (r.bec_passes > 0) {
+      lines.push({
+        row_index: idx,
+        text: `${tag}  bec ✓ ${r.bec_passes} passed  ${r.bec_fails > 0 ? `(${r.bec_fails} fails first)` : ''}`,
+        tone: 'green',
+      });
+    } else {
+      lines.push({
+        row_index: idx,
+        text: `${tag}  bec ✗ ${r.bec_fails} failed  → falling back to icypeas`,
+        tone: 'yellow',
+      });
+    }
+  }
+
+  // Icypeas line — submitted + result.
+  if (r.icypeas_status) {
+    if (r.icypeas_status === 'DEBITED') {
+      lines.push({
+        row_index: idx,
+        text: `${tag}  icypeas ✓ DEBITED  ${r.final_email ?? '?'}`,
+        tone: 'magenta',
+      });
+    } else if (r.icypeas_status === 'NOT_FOUND' || r.icypeas_status === 'DEBITED_NOT_FOUND') {
+      lines.push({
+        row_index: idx,
+        text: `${tag}  icypeas ${r.icypeas_status}  no email`,
+        tone: 'red',
+      });
+    } else {
+      lines.push({
+        row_index: idx,
+        text: `${tag}  icypeas ${r.icypeas_status}`,
+        tone: 'magenta',
+      });
+    }
+  }
+
+  // Final outcome line.
   if (r.status === 'kept') {
-    return {
-      row_index: r.row_index,
-      text: `row ${r.row_index + 1}  kept  ${r.final_email}${tried}  bec=${r.bec_passes}p/${r.bec_fails}f  icy=${r.icypeas_status ?? '-'}`,
-      tone: r.bec_passes > 0 ? 'green' : 'magenta',
-    };
-  }
-  if (r.status === 'name_mismatch') {
-    return {
-      row_index: r.row_index,
-      text: `row ${r.row_index + 1}  dropped (name mismatch)  ${r.final_email}  ${r.drop_reason ?? ''}`,
+    lines.push({
+      row_index: idx,
+      text: `${tag}  kept  → ${r.final_email}`,
+      tone: 'green',
+    });
+  } else if (r.status === 'name_mismatch') {
+    lines.push({
+      row_index: idx,
+      text: `${tag}  dropped (name mismatch)  ${r.final_email ?? ''}  ${r.drop_reason ?? ''}`,
       tone: 'red',
-    };
+    });
+  } else {
+    lines.push({
+      row_index: idx,
+      text: `${tag}  dropped  ${r.drop_reason ?? 'unknown'}`,
+      tone: 'red',
+    });
   }
-  // dropped
-  return {
-    row_index: r.row_index,
-    text: `row ${r.row_index + 1}  dropped  ${r.drop_reason ?? 'unknown'}  bec=${r.bec_passes}p/${r.bec_fails}f  icy=${r.icypeas_status ?? '-'}`,
-    tone: 'red',
-  };
+
+  return lines;
 }
 
 export function EnrichUploadModal(props: Props) {
@@ -143,7 +228,7 @@ export function EnrichUploadModal(props: Props) {
       for (const r of rows) {
         if (seenRowsRef.current.has(r.row_index)) continue;
         seenRowsRef.current.add(r.row_index);
-        newLines.push(rowToLogLine(r));
+        newLines.push(...rowToLogLines(r));
       }
       if (newLines.length > 0) {
         setLines(prev => [...prev, ...newLines]);

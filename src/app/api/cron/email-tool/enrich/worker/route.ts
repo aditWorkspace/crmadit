@@ -168,20 +168,27 @@ export async function POST(req: NextRequest) {
     aggregateCost += result.cost_usd;
     if (result.status === 'kept') aggregateKept++;
     else aggregateDropped++;
-  }
 
-  // Push aggregates onto the job row (additive).
-  await supabase
-    .from('enrich_jobs')
-    .update({
-      processed: job.processed + processedThisTick,
-      kept: job.kept + aggregateKept,
-      dropped: job.dropped + aggregateDropped,
-      bec_calls: job.bec_calls + aggregateBec,
-      icypeas_calls: job.icypeas_calls + aggregateIcy,
-      cost_usd: Number(job.cost_usd) + aggregateCost,
-    })
-    .eq('id', job.id);
+    // Per-row aggregate flush so the modal's 3-second poll sees
+    // processed/kept/dropped/cost ticking up in real time. Without
+    // this, all the per-row writes pile up and the job aggregate
+    // only updates once-per-tick at the bottom of the loop, leaving
+    // the UI counters frozen at 0/N for minutes at a time.
+    //
+    // Cost: 1 extra UPDATE per row (~30ms) on top of the row write.
+    // Worth it for the live feedback.
+    await supabase
+      .from('enrich_jobs')
+      .update({
+        processed: job.processed + processedThisTick,
+        kept: job.kept + aggregateKept,
+        dropped: job.dropped + aggregateDropped,
+        bec_calls: job.bec_calls + aggregateBec,
+        icypeas_calls: job.icypeas_calls + aggregateIcy,
+        cost_usd: Number(job.cost_usd) + aggregateCost,
+      })
+      .eq('id', job.id);
+  }
 
   // ── 3) If all rows are done, flush kept rows to email_pool ──────────
   const { count: pendingLeft } = await supabase
