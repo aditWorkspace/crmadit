@@ -4,6 +4,7 @@
 // DB writes based on the outcome. See spec §6 step ⑤ + §11.6 send modes.
 
 import { renderTemplate } from './render-template';
+import { sanitizeCompanyForSend } from './company-name';
 import type { CampaignGmailClient } from '@/lib/gmail/client';
 import type { SendMode } from './types';
 
@@ -60,7 +61,12 @@ export async function sendCampaignEmail(
       subject_template: input.variant.subject_template,
       body_template: input.variant.body_template,
       first_name: input.queueRow.recipient_name,
-      company: input.queueRow.recipient_company,
+      // Last-mile guard against URL-shaped company values reaching the
+      // template engine. Added after the 2026-05-16 outage where
+      // "pm workflow at https://elementary-data.com/" went out as the
+      // subject. Returns 'your team' as a generic fallback if the value
+      // is unrecoverable garbage.
+      company: sanitizeCompanyForSend(input.queueRow.recipient_company),
       founder_name: firstName(input.founder.name),
     });
   } catch (err) {
@@ -170,7 +176,13 @@ function buildRawMime(args: BuildMimeArgs): string {
   // fire a GET for (0×0 is commonly skipped).
   const pixelUrl = `${trackingBaseUrl()}/api/cron/email-tool/track/${args.queueId}.png`;
   const escapedBody = linkifyDomains(escapeHtml(args.body));
-  const htmlBody = `<!doctype html><html><body><div style="white-space:pre-wrap;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;color:#111;line-height:1.5">${escapedBody}</div><img src="${pixelUrl}" alt="" width="1" height="1" style="display:none" /></body></html>`;
+  // No font-family / font-size — Gmail (and most clients) substitute
+  // their default compose font when none is specified, which is what
+  // recipients are used to seeing from a hand-written email. The
+  // smaller / off-feel rendering before was caused by the explicit
+  // -apple-system stack overriding Gmail's default Arial-equivalent.
+  // Keep only white-space:pre-wrap so manual line breaks survive.
+  const htmlBody = `<!doctype html><html><body><div style="white-space:pre-wrap">${escapedBody}</div><img src="${pixelUrl}" alt="" width="1" height="1" style="display:none" /></body></html>`;
 
   // Multipart boundary — must not appear anywhere in either part body.
   // We use a long random hex string so collisions are effectively impossible.

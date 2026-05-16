@@ -22,6 +22,7 @@ export const runtime = 'nodejs';
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { processEnrichRow } from '@/lib/email-tool/enrich-engine';
+import { prettifyCompanyName } from '@/lib/email-tool/company-name';
 
 const BUDGET_MS = 280_000;
 const LOCK_DURATION_MS = 5 * 60_000;
@@ -323,10 +324,14 @@ async function flushJobToPool(
       startSequence = max + 1;
     }
 
+    // Defense in depth: prettify company at pool-insert time, even
+    // though /enrich/create now does this up-front. Any older
+    // enrich_job_rows from before the 2026-05-16 fix that flush into
+    // the pool here will still get cleaned ("https://x.com/" → "X").
     const inserts = survivors.map((s, idx) => ({
       sequence: startSequence + idx,
       email: s.final_email,
-      company: s.company,
+      company: prettifyCompanyName(s.company),
       full_name: s.full_name,
       first_name: s.first_name,
     }));

@@ -16,6 +16,7 @@ import { getSessionFromRequest } from '@/lib/session';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { parseCsvText, inferEnrichColMap } from '@/lib/email-tool/csv-parse';
 import { extractDomain } from '@/lib/email-tool/domain-extract';
+import { prettifyCompanyName } from '@/lib/email-tool/company-name';
 
 const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
 const ROW_INSERT_CHUNK = 500;
@@ -93,12 +94,17 @@ export async function POST(req: NextRequest) {
     const firstName = (row[fxFirstName] ?? '').trim();
     const fullName = fxFullName != null ? (row[fxFullName] ?? '').trim() : '';
     const givenEmail = fxEmail != null ? (row[fxEmail] ?? '').trim() : '';
+    // Always extract domain from the raw value first (works whether the
+    // CSV column was a URL, a "name.com" string, or a plain name with no
+    // dots — extractDomain returns null in the last case). Then prettify
+    // the company NAME for template substitution. URLs like
+    // "https://elementary-data.com/" → "Elementary Data".
     return {
       job_id,
       row_index: i,
       first_name: firstName || null,
       full_name: fullName || null,
-      company: companyRaw || null,
+      company: prettifyCompanyName(companyRaw),
       domain: extractDomain(companyRaw),
       given_email: givenEmail && EMAIL_RE.test(givenEmail) ? givenEmail.toLowerCase() : null,
       status: 'pending',
