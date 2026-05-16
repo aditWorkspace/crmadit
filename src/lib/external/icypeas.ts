@@ -155,3 +155,66 @@ export async function findEmail(args: FindEmailArgs): Promise<FindEmailResult> {
 
   return { email: null, status: 'POLL_TIMEOUT', searchId };
 }
+
+// ── Multi-attempt retry helper ────────────────────────────────────────────
+// Per Icypeas pricing: NOT_FOUND is free, only DEBITED charges. So firing
+// multiple searches with mutated params per row is free as long as we
+// stop accepting the result after the first DEBITED. Used 2026-05-16 to
+// recover the ~20% of YC-CSV rows that get NOT_FOUND with one specific
+// param shape but DEBITED with a different one (e.g. firstName "Aditya
+// (JP) Jayaprakash" parses worse as separate tokens than as one blob).
+//
+// Attempts fire in parallel for wall-clock parity with a single call.
+// Each is fully independent — they share no state, they each submit
+// their own search ID, and they each poll for their own terminal status.
+
+export interface RetryAttempt {
+  /** Short label used for diagnostics, e.g. "A" or "fullname_blob". */
+  label: string;
+  args: FindEmailArgs;
+}
+
+export interface FindEmailRetriesResult {
+  /** The first DEBITED attempt's email, or null if none returned one. */
+  email: string | null;
+  /** Per-attempt status, joined with "/", e.g. "NOT_FOUND@A/DEBITED@B". */
+  status: string;
+  /** Label of the winning attempt (the one whose email we accepted), or null. */
+  winning_label: string | null;
+}
+
+/**
+ * Race multiple Icypeas searches in parallel. Returns the first one that
+ * resolves to a non-null email (i.e. DEBITED with results). Other
+ * attempts' results are recorded in the status string for diagnostics
+ * but not used. Always waits for all attempts to settle so the diagnostic
+ * status is complete — Icypeas charges only on DEBITED so letting losers
+ * finish is free.
+ */
+export async function findEmailWithRetries(attempts: RetryAttempt[]): Promise<FindEmailRetriesResult> {
+  if (attempts.length === 0) {
+    return { email: null, status: 'NO_ATTEMPTS', winning_label: null };
+  }
+  const settled = await Promise.allSettled(attempts.map(a => findEmail(a.args)));
+  const perAttempt: Array<{ label: string; status: string; email: string | null }> = [];
+  for (let i = 0; i < attempts.length; i++) {
+    const a = attempts[i];
+    const r = settled[i];
+    if (r.status === 'fulfilled') {
+      perAttempt.push({ label: a.label, status: r.value.status, email: r.value.email });
+    } else {
+      const msg = ((r.reason as Error).message ?? String(r.reason)).slice(0, 60);
+      perAttempt.push({ label: a.label, status: `error:${msg}`, email: null });
+    }
+  }
+  // Prefer the first attempt (in input order) that returned an email —
+  // attempts are listed in confidence order by the caller, so attempt A
+  // wins ties.
+  const winner = perAttempt.find(p => p.email);
+  const statusStr = perAttempt.map(p => `${p.status}@${p.label}`).join('/');
+  return {
+    email: winner?.email ?? null,
+    status: statusStr,
+    winning_label: winner?.label ?? null,
+  };
+}

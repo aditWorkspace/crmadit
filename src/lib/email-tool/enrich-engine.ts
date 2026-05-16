@@ -21,7 +21,7 @@
 // status AND the aggregate job-level counters atomically.
 
 import { verifyEmail } from '@/lib/external/bulkemailchecker';
-import { findEmail } from '@/lib/external/icypeas';
+import { findEmailWithRetries, type RetryAttempt } from '@/lib/external/icypeas';
 import { guessEmails } from './email-guesses';
 import { looksLikeMatch } from './name-email-match';
 import { probeDomainForCompany } from './domain-probe';
@@ -125,17 +125,54 @@ export async function processEnrichRow(input: EnrichRowInput): Promise<EnrichOut
     try {
       const tokens = (input.full_name ?? '').split(/\s+/).filter(Boolean);
       const lastName = tokens.length >= 2 ? tokens.slice(1).join(' ') : undefined;
-      // Prefer the probe-discovered working domain over a raw company
-      // name — Icypeas resolves domains faster + more reliably than
-      // company-name lookups.
-      const r = await findEmail({
-        firstName: input.first_name,
-        lastName,
-        domainOrCompany: workingDomain || (input.company ?? ''),
-      });
-      icypeas_calls = 1;
+      const fullNameBlob = (input.full_name ?? input.first_name).trim();
+      const bareCompany = (input.company ?? '').trim();
+      const primaryDomain = workingDomain || bareCompany;
+      // Run two Icypeas searches in parallel. NOT_FOUND is free so the
+      // only cost is the wall-clock of the slower attempt, which races
+      // the faster one. The B-mutator (full name as one blob + bare
+      // company name) recovers rows where naive first/last tokenization
+      // confuses Icypeas — names with parentheticals, suffixes, double
+      // surnames, etc. See plan docs (gleaming-inventing-glacier.md)
+      // for the rationale.
+      const attempts: RetryAttempt[] = [
+        {
+          label: 'A',
+          args: {
+            firstName: input.first_name,
+            lastName,
+            domainOrCompany: primaryDomain,
+          },
+        },
+      ];
+      // Only add the B attempt if it would actually differ from A —
+      // otherwise we'd just be paying double poll-time for the same
+      // query. B differs when fullName is multi-token OR when we have
+      // both a working domain and a separate bare company name.
+      const aDomain = primaryDomain;
+      const bDomain = bareCompany || aDomain;
+      const aFirst = input.first_name;
+      const bFirst = fullNameBlob;
+      const bDiffers = bFirst !== aFirst || bDomain !== aDomain;
+      if (bDiffers && bFirst && bDomain) {
+        attempts.push({
+          label: 'B',
+          args: {
+            firstName: bFirst,
+            lastName: '',
+            domainOrCompany: bDomain,
+          },
+        });
+      }
+      icypeas_calls = attempts.length;
+      const r = await findEmailWithRetries(attempts);
       icypeas_status = r.status;
-      if (r.status === 'DEBITED') cost_usd += 0.01;
+      // r.status is like "DEBITED@A/NOT_FOUND@B" — charge per DEBITED.
+      // We don't double-count cost because the same person resolves to
+      // the same Icypeas record across the two attempts in practice,
+      // but be safe and count each DEBITED in the status string.
+      const debitedCount = (r.status.match(/DEBITED/g) ?? []).length;
+      cost_usd += 0.01 * debitedCount;
       if (r.email) accepted = r.email.toLowerCase();
     } catch (err) {
       icypeas_status = `error:${(err as Error).message?.slice(0, 100)}`;

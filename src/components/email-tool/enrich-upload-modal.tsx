@@ -133,9 +133,32 @@ function rowToLogLines(r: JobRow): LogLine[] {
     }
   }
 
-  // Icypeas line — submitted + result.
+  // Icypeas line — submitted + result. The icypeas_status may now be a
+  // multi-attempt composite like "NOT_FOUND@A/DEBITED@B" since the
+  // 2026-05-16 parallel-retry fix. Render each attempt as its own
+  // sub-line so the user can see which mutator strategy actually won.
   if (r.icypeas_status) {
-    if (r.icypeas_status === 'DEBITED') {
+    const parts = r.icypeas_status.split('/');
+    const isMultiAttempt = parts.length > 1 && parts.every(p => p.includes('@'));
+    if (isMultiAttempt) {
+      const anyDebited = parts.some(p => p.startsWith('DEBITED'));
+      for (const p of parts) {
+        const [status, label] = p.split('@');
+        const isDebited = status === 'DEBITED';
+        lines.push({
+          row_index: idx,
+          text: `${tag}  icypeas ${label}: ${status}${isDebited ? `  ${r.final_email ?? '?'}` : ''}`,
+          tone: isDebited ? 'magenta' : 'yellow',
+        });
+      }
+      if (!anyDebited) {
+        lines.push({
+          row_index: idx,
+          text: `${tag}  icypeas all attempts NOT_FOUND  no email`,
+          tone: 'red',
+        });
+      }
+    } else if (r.icypeas_status === 'DEBITED') {
       lines.push({
         row_index: idx,
         text: `${tag}  icypeas ✓ DEBITED  ${r.final_email ?? '?'}`,
