@@ -94,6 +94,16 @@ function rowToLogLines(r: JobRow): LogLine[] {
     tone: 'gray',
   });
 
+  // Pre-dedupe skip — short-circuited before any external API call.
+  if (r.icypeas_status === 'skipped_dedupe' && r.drop_reason === 'already_known_lead') {
+    lines.push({
+      row_index: idx,
+      text: `${tag}  already in pool  → ${r.final_email ?? '?'}  (skipped — saved BEC + Icypeas)`,
+      tone: 'gray',
+    });
+    return lines;
+  }
+
   // Candidates line — what BEC tried (or just the given email).
   if (r.given_email && cands.length > 0 && cands[0] === r.given_email) {
     lines.push({

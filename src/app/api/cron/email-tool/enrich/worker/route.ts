@@ -133,14 +133,17 @@ export async function POST(req: NextRequest) {
     if (!nextRow) break; // no more pending rows for this job
 
     const row = nextRow as JobRow;
-    const result = await processEnrichRow({
-      row_index: row.row_index,
-      first_name: row.first_name,
-      full_name: row.full_name,
-      company: row.company,
-      domain: row.domain,
-      given_email: row.given_email,
-    });
+    const result = await processEnrichRow(
+      {
+        row_index: row.row_index,
+        first_name: row.first_name,
+        full_name: row.full_name,
+        company: row.company,
+        domain: row.domain,
+        given_email: row.given_email,
+      },
+      supabase, // pass admin client so the engine can do its pre-Icypeas dedupe
+    );
 
     // Map outcome → row status.
     let rowStatus: string;

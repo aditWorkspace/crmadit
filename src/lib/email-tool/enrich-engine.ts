@@ -25,6 +25,9 @@ import { findEmailWithRetries, type RetryAttempt } from '@/lib/external/icypeas'
 import { guessEmails } from './email-guesses';
 import { looksLikeMatch } from './name-email-match';
 import { probeDomainForCompany } from './domain-probe';
+import type { createAdminClient } from '@/lib/supabase/admin';
+
+type Supa = ReturnType<typeof createAdminClient>;
 
 export interface EnrichRowInput {
   row_index: number;
@@ -52,7 +55,53 @@ export interface EnrichOutcome {
 
 const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
 
-export async function processEnrichRow(input: EnrichRowInput): Promise<EnrichOutcome> {
+export async function processEnrichRow(
+  input: EnrichRowInput,
+  supabase?: Supa,
+): Promise<EnrichOutcome> {
+  // ── Pre-enrichment dedupe ────────────────────────────────────────────────
+  // If a lead with this (first_name, company) is already in email_pool —
+  // either pending or already sent — skip the entire enrichment pipeline.
+  // The lead is already known: re-running BEC + Icypeas just burns API
+  // credits with no upside (flushJobToPool would dedupe at insert time
+  // anyway). Saves ~$0.005-$0.015 per skipped row.
+  //
+  // Match strategy: case-insensitive equality on first_name + company.
+  // This catches the 2026-05-16 case where re-uploading yc_companies_final.csv
+  // would re-process all 4149 rows and spend ~$0.66 on Icypeas calls for
+  // rows that turned out to already be in email_pool / email_blacklist.
+  //
+  // Caveats:
+  //  - Doesn't match across name variants ("Mike" vs "Michael", accents)
+  //  - Doesn't match across company-name variants ("Acme" vs "Acme Inc")
+  //  - Doesn't dedupe against email_blacklist directly (no name/company
+  //    columns there). But blacklisted leads also remain in email_pool
+  //    with sequence below the pointer, so the email_pool join catches
+  //    them too.
+  if (supabase && input.first_name && input.company) {
+    const { data: existing } = await supabase
+      .from('email_pool')
+      .select('email')
+      .ilike('first_name', input.first_name)
+      .ilike('company', input.company)
+      .limit(1);
+    if (existing && existing.length > 0) {
+      const knownEmail = (existing[0] as { email: string }).email;
+      return {
+        status: 'dropped',
+        final_email: knownEmail,
+        candidates_tried: [],
+        bec_calls: 0,
+        bec_passes: 0,
+        bec_fails: 0,
+        icypeas_calls: 0,
+        icypeas_status: 'skipped_dedupe',
+        cost_usd: 0,
+        drop_reason: 'already_known_lead',
+      };
+    }
+  }
+
   const candidates: string[] = [];
   // If CSV had a given_email and it's well-formed, try it first — user-
   // supplied beats anything we guess. We still verify it (BEC catches
