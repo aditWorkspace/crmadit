@@ -118,15 +118,17 @@ export async function POST(req: NextRequest) {
 
   const cutoffIso = new Date(ptCutoffMs(now, AB_TEST_PHASE_B_CUTOFF_PT_HOUR)).toISOString();
 
-  // Phase A rows: send_at < 12 PM PT, status='sent'. We only count
-  // *sent* rows because rows still in 'pending' haven't even attempted
-  // delivery — they don't have an open or reply signal yet.
+  // Phase A rows: send_at < cutoff PT, status='sent', AND yc_batch is
+  // NOT NULL — the A/B test only applies to YC-audience leads. General-
+  // audience leads send the single product-prioritization variant per
+  // founder and don't participate in rebalance.
   const { data: phaseARows, error: aErr } = await supabase
     .from('email_send_queue')
     .select('template_variant_id, status, replied_at, opened_at')
     .eq('campaign_id', campaign.id)
     .lt('send_at', cutoffIso)
-    .eq('status', 'sent');
+    .eq('status', 'sent')
+    .not('yc_batch', 'is', null);
   if (aErr) {
     return NextResponse.json({ error: 'phase_a_lookup_failed', detail: aErr.message }, { status: 500 });
   }
@@ -146,11 +148,11 @@ export async function POST(req: NextRequest) {
   }
 
   // Variant metadata for family grouping. Only consider active fresh
-  // variants — followups (is_followup=true) are excluded from the
-  // test rotation anyway and won't appear in Phase A rows.
+  // YC-audience variants — followups and general (product-prioritization)
+  // variants are excluded from the test rotation.
   const { data: variantRows, error: vErr } = await supabase
     .from('email_template_variants')
-    .select('id, founder_id, subject_template, label, is_active, is_followup');
+    .select('id, founder_id, subject_template, label, is_active, is_followup, audience');
   if (vErr) {
     return NextResponse.json({ error: 'variant_lookup_failed', detail: vErr.message }, { status: 500 });
   }
@@ -158,8 +160,9 @@ export async function POST(req: NextRequest) {
     id: string; founder_id: string;
     subject_template: string; label: string;
     is_active: boolean; is_followup: boolean;
+    audience: string;
   }
-  const variants = ((variantRows ?? []) as VRow[]).filter(v => v.is_active && !v.is_followup);
+  const variants = ((variantRows ?? []) as VRow[]).filter(v => v.is_active && !v.is_followup && v.audience === 'yc');
 
   // Family key = subject_template (siblings across founders share
   // identical subject + body). Aggregate sent + replied + opened per family.
@@ -265,8 +268,9 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    // Pull pending Phase B rows in send_at order. We rewrite their
-    // template_variant_id to the two winners alternating.
+    // Pull pending Phase B rows in send_at order. Restrict to YC-batch
+    // rows (yc_batch IS NOT NULL) so we don't accidentally rewrite a
+    // general-audience row's template_variant_id.
     const { data: pendingRows, error: pErr } = await supabase
       .from('email_send_queue')
       .select('id, send_at')
@@ -274,6 +278,7 @@ export async function POST(req: NextRequest) {
       .eq('account_id', founder.id)
       .eq('status', 'pending')
       .gte('send_at', cutoffIso)
+      .not('yc_batch', 'is', null)
       .order('send_at', { ascending: true });
     if (pErr) {
       return NextResponse.json(

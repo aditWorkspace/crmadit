@@ -102,6 +102,7 @@ interface PoolRow {
   first_name: string | null;
   company: string | null;
   sequence: number;
+  yc_batch: string | null;
 }
 
 interface PriorityRow {
@@ -125,6 +126,10 @@ interface AssignedItem {
   first_name: string | null;
   company: string | null;
   priority_id: string | null;
+  /** YC batch (e.g. "W24") if the source row had one. Routes to YC A/B
+   *  templates at variant-pick time; null = use general product-
+   *  prioritization template instead. */
+  yc_batch: string | null;
 }
 
 export async function runDailyStart(
@@ -312,6 +317,25 @@ export async function runDailyStart(
     if (regularTarget > 0) {
       const { data: pool } = await supabase.rpc('email_tool_pick_batch', { p_limit: regularTarget });
       poolRows = (pool ?? []) as PoolRow[];
+      // The picker RPC doesn't return yc_batch (it was added in
+      // migration 035 — the RPC signature is frozen). Hydrate by id so
+      // queue rows know which template family to use. If no rows were
+      // picked, skip the round-trip.
+      if (poolRows.length > 0) {
+        const ids = poolRows.map(r => r.id);
+        const ycMap = new Map<string, string | null>();
+        for (let off = 0; off < ids.length; off += 500) {
+          const slice = ids.slice(off, off + 500);
+          const { data: ycRows } = await supabase
+            .from('email_pool')
+            .select('id, yc_batch')
+            .in('id', slice);
+          for (const r of (ycRows ?? []) as Array<{ id: string; yc_batch: string | null }>) {
+            ycMap.set(r.id, r.yc_batch);
+          }
+        }
+        poolRows = poolRows.map(r => ({ ...r, yc_batch: ycMap.get(r.id) ?? null }));
+      }
       if (poolRows.length > 0) {
         const maxSeq = poolRows.reduce((m, r) => Math.max(m, r.sequence), -1);
         const pickedEmails = poolRows.map(r => r.email.toLowerCase());
@@ -480,6 +504,7 @@ export async function runDailyStart(
       company: string | null;
       override_owner: string | null;
       priority_id: string | null;
+      yc_batch: string | null;
     }> = [
       ...cappedPriorityRows.map(p => ({
         source: 'priority' as const,
@@ -488,6 +513,10 @@ export async function runDailyStart(
         company: p.company,
         override_owner: p.override_owner,
         priority_id: p.id,
+        // Priority queue doesn't track yc_batch (priority rows are manually
+        // curated and typically YC anyway). Default null = general; user
+        // can revisit if they upload priority CSVs with batch metadata.
+        yc_batch: null,
       })),
       ...poolRows.map(p => ({
         source: 'pool' as const,
@@ -496,6 +525,7 @@ export async function runDailyStart(
         company: p.company,
         override_owner: null,
         priority_id: null,
+        yc_batch: p.yc_batch,
       })),
     ];
 
@@ -521,6 +551,7 @@ export async function runDailyStart(
         first_name: item.first_name,
         company: item.company,
         priority_id: item.priority_id,
+        yc_batch: item.yc_batch,
       });
     }
 
@@ -559,33 +590,55 @@ export async function runDailyStart(
         .in('id', deferredPriorityIds);
     }
 
-    // ── Step ⑧: variant pick per recipient (strict round-robin per founder)
-    // Round-robin gives an exact-equal split across a founder's active
-    // variants — required for A/B tests where we want N samples per arm.
-    // Sort by id so the rotation order is deterministic across runs;
-    // recipient order within a founder's chunk is already shuffled
-    // upstream (round-robin starts at index 0 each day, so the FIRST
-    // recipient lands on variant[0] consistently, but the recipient
-    // itself rotates day-to-day).
-    // Exclude is_followup variants from the fresh-cold rotation — those
-    // are reserved for the follow-up flow (step ⑤a) and are looked up
-    // by founder_id + is_followup=true there. Mixing them into the
-    // round-robin here would send "bumping in case it got lost" copy
-    // to fresh leads.
+    // ── Step ⑧: variant pick per recipient (audience-split round-robin) ──
+    // Variants split into two audiences (migration 035):
+    //   audience='yc'      → the 4-template A/B rotation. Used for any
+    //                        recipient whose assigned.yc_batch is non-null.
+    //   audience='general' → a single product-prioritization template
+    //                        per founder. Used for recipients without a
+    //                        yc_batch. No A/B rotation, no rebalance.
+    // Followups (is_followup=true) are excluded from BOTH — they belong
+    // to the step ⑤a follow-up loop and would otherwise leak "bumping
+    // in case it got lost" copy onto fresh leads.
     const { data: variantsData } = await supabase
       .from('email_template_variants')
-      .select('id, founder_id')
+      .select('id, founder_id, audience')
       .eq('is_active', true)
       .eq('is_followup', false)
       .order('id', { ascending: true });
-    const variantsByFounder = new Map<string, string[]>();
-    for (const v of (variantsData ?? []) as Array<{ id: string; founder_id: string }>) {
-      const list = variantsByFounder.get(v.founder_id) ?? [];
-      list.push(v.id);
-      variantsByFounder.set(v.founder_id, list);
+    const ycVariantsByFounder = new Map<string, string[]>();
+    const generalVariantByFounder = new Map<string, string>();
+    for (const v of (variantsData ?? []) as Array<{ id: string; founder_id: string; audience: string }>) {
+      if (v.audience === 'general') {
+        // Multiple general variants per founder are unsupported by design
+        // (no A/B test for the general audience). First-by-id wins; we
+        // keep the order deterministic via the ORDER BY above.
+        if (!generalVariantByFounder.has(v.founder_id)) {
+          generalVariantByFounder.set(v.founder_id, v.id);
+        }
+      } else {
+        const list = ycVariantsByFounder.get(v.founder_id) ?? [];
+        list.push(v.id);
+        ycVariantsByFounder.set(v.founder_id, list);
+      }
     }
 
-    // ── Step ⑨: slot scheduling per founder (independent jitter cursors) ─
+    // ── Step ⑨: slot scheduling per founder (audience-aware) ─────────────
+    // Three send-order zones per founder when abTestMode is on:
+    //   Zone 1: first AB_TEST_PHASE_A_ROWS_PER_FOUNDER YC rows (Phase A)
+    //           — round-robin across the 4 YC variants. Sent 7:30-8:03am.
+    //   Zone 2: all general rows — single product-prioritization variant.
+    //           Sent right after Phase A (8:03am-onward), interleaved
+    //           with Phase B is fine; they're a separate template family
+    //           and don't participate in the A/B rebalance.
+    //   Zone 3: remaining YC rows (Phase B) — single winning variant
+    //           after rebalance. Cursor jumps to phaseBCutoffMs (9:00am
+    //           PT) so the 8:30am rebalance has time to UPDATE these
+    //           rows' template_variant_id.
+    // We reorder the chunk to Phase-A-YC | general | Phase-B-YC so the
+    // cursor doesn't push general rows into the Phase B time window
+    // unnecessarily. When abTestMode is off or there aren't enough YC
+    // rows for A/B, the order collapses to YC | general with no jump.
     const queueRows: Array<{
       campaign_id: string;
       account_id: string;
@@ -596,32 +649,73 @@ export async function runDailyStart(
       send_at: string;
       source: 'pool' | 'priority';
       priority_id: string | null;
+      yc_batch: string | null;
     }> = [];
     const startMs = now.getTime();
     for (let fi = 0; fi < activeFounders.length; fi++) {
       const founder = activeFounders[fi];
-      const founderVariants = variantsByFounder.get(founder.id) ?? [];
-      if (founderVariants.length === 0) {
+      const ycVariants = ycVariantsByFounder.get(founder.id) ?? [];
+      const generalVariant = generalVariantByFounder.get(founder.id) ?? null;
+      if (ycVariants.length === 0 && !generalVariant) {
         log('warn', 'start_founder_no_active_variants', { founder_id: founder.id });
         continue; // skip this founder's chunk entirely
       }
       const chunk = dedupedByFounder[fi];
+
+      // Split + reorder.
+      const ycRows = chunk.filter(r => r.yc_batch != null);
+      const generalRows = chunk.filter(r => r.yc_batch == null);
+      let orderedChunk: typeof chunk;
+      if (abTestMode && ycRows.length > AB_TEST_PHASE_A_ROWS_PER_FOUNDER) {
+        const phaseA = ycRows.slice(0, AB_TEST_PHASE_A_ROWS_PER_FOUNDER);
+        const phaseB = ycRows.slice(AB_TEST_PHASE_A_ROWS_PER_FOUNDER);
+        orderedChunk = [...phaseA, ...generalRows, ...phaseB];
+      } else {
+        orderedChunk = [...ycRows, ...generalRows];
+      }
+
       let cursor = startMs + Math.floor(Math.random() * 10_000); // ≤10s initial offset
-      let recipientIdx = 0;
-      // A/B test mode: compute the Phase B cutoff once per founder. Rows
-      // at index >= AB_TEST_PHASE_A_ROWS_PER_FOUNDER get their cursor
-      // jumped to this timestamp on first hit. The noon rebalance route
-      // is expected to rewrite their template_variant_id before they
-      // fire — the 12:30 PM PT cutoff gives 30 min of slack.
+      let ycIdx = 0;
+      let phaseBJumpDone = false;
       const phaseBCutoffMs = abTestMode
         ? ptCutoffMs(now, AB_TEST_PHASE_B_CUTOFF_PT_HOUR)
         : Number.POSITIVE_INFINITY;
-      for (const a of chunk) {
-        const variantId = founderVariants[recipientIdx % founderVariants.length];
-        if (abTestMode && recipientIdx === AB_TEST_PHASE_A_ROWS_PER_FOUNDER) {
-          cursor = Math.max(cursor, phaseBCutoffMs);
+      for (const a of orderedChunk) {
+        let variantId: string;
+        if (a.yc_batch != null) {
+          // YC row → A/B template rotation.
+          // Phase B cursor jump must happen BEFORE we read the variant
+          // for the 201st (or PHASE_A_ROWS_PER_FOUNDER+1-th) YC row.
+          if (abTestMode && !phaseBJumpDone && ycIdx === AB_TEST_PHASE_A_ROWS_PER_FOUNDER) {
+            cursor = Math.max(cursor, phaseBCutoffMs);
+            phaseBJumpDone = true;
+          }
+          if (ycVariants.length > 0) {
+            variantId = ycVariants[ycIdx % ycVariants.length];
+          } else if (generalVariant) {
+            // Defensive: shouldn't happen, but if a founder has no YC
+            // variants we fall back to general so the row still sends.
+            variantId = generalVariant;
+          } else {
+            // Unreachable given the early-continue above, but TS demands
+            // exhaustiveness.
+            continue;
+          }
+          ycIdx++;
+        } else {
+          // General row → single product-prioritization variant.
+          if (generalVariant) {
+            variantId = generalVariant;
+          } else if (ycVariants.length > 0) {
+            // Fallback: no general variant defined for this founder.
+            // Rotate through YC variants so the row still goes out —
+            // surfaces the "missing general variant" condition without
+            // dropping the lead silently.
+            variantId = ycVariants[ycIdx % ycVariants.length];
+          } else {
+            continue;
+          }
         }
-        recipientIdx++;
         queueRows.push({
           campaign_id: campaignId,
           account_id: founder.id,
@@ -632,6 +726,7 @@ export async function runDailyStart(
           send_at: new Date(cursor).toISOString(),
           source: a.source,
           priority_id: a.priority_id,
+          yc_batch: a.yc_batch,
         });
         const range = SAFETY_LIMITS.INTER_SEND_JITTER_MAX_SECONDS - SAFETY_LIMITS.INTER_SEND_JITTER_MIN_SECONDS;
         const jitterSec = SAFETY_LIMITS.INTER_SEND_JITTER_MIN_SECONDS + Math.random() * range;

@@ -56,6 +56,13 @@ export interface EnrichColMap {
   full_name: number | null;
   company: number | null;
   email: number | null;
+  /**
+   * Optional YC batch column (e.g. "W24", "S23"). When present and a row
+   * has a non-empty value, that row is routed to YC A/B templates at
+   * send time. Rows without a value use the general product-prioritization
+   * template instead. See migration 035 for the pool/queue schema.
+   */
+  yc_batch: number | null;
 }
 
 function norm(h: string): string {
@@ -75,10 +82,14 @@ export function inferEnrichColMap(header: string[]): EnrichColMap {
   const fullIdx = findIdx(/^name$/, /^contact$/, /^fullname$/, /^contactname$/, /^contactperson$/);
   const companyIdx = findIdx(/^company$/, /^companyname$/, /^organization$/, /^org$/, /^website$/, /^url$/, /^domain$/, /^companywebsite$/);
   const emailIdx = findIdx(/^email$/, /^emailaddress$/, /^workemail$/);
+  // YC batch ("W24", "S23", "F24" etc.). Common header spellings; "batch"
+  // alone is the broadest catch-all.
+  const ycBatchIdx = findIdx(/^ycbatch$/, /^batch$/, /^ycround$/, /^cohort$/);
   return {
     first_name: firstIdx,
     full_name: fullIdx,
     company: companyIdx,
     email: emailIdx,
+    yc_batch: ycBatchIdx,
   };
 }

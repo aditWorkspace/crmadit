@@ -54,6 +54,7 @@ export async function POST(req: NextRequest) {
   const fxFirstName = colMap?.first_name ?? 1;
   const fxFullName = colMap?.full_name ?? null;
   const fxEmail = colMap?.email ?? null;
+  const fxYcBatch = colMap?.yc_batch ?? null;
 
   if (fxCompany == null || fxFirstName == null) {
     return NextResponse.json({
@@ -94,6 +95,7 @@ export async function POST(req: NextRequest) {
     const firstName = (row[fxFirstName] ?? '').trim();
     const fullName = fxFullName != null ? (row[fxFullName] ?? '').trim() : '';
     const givenEmail = fxEmail != null ? (row[fxEmail] ?? '').trim() : '';
+    const ycBatchRaw = fxYcBatch != null ? (row[fxYcBatch] ?? '').trim() : '';
     // Always extract domain from the raw value first (works whether the
     // CSV column was a URL, a "name.com" string, or a plain name with no
     // dots — extractDomain returns null in the last case). Then prettify
@@ -107,6 +109,10 @@ export async function POST(req: NextRequest) {
       company: prettifyCompanyName(companyRaw),
       domain: extractDomain(companyRaw),
       given_email: givenEmail && EMAIL_RE.test(givenEmail) ? givenEmail.toLowerCase() : null,
+      // yc_batch routes the row to the YC A/B templates instead of the
+      // general product-prioritization template at send time. Empty
+      // string means non-YC — stored as null.
+      yc_batch: ycBatchRaw || null,
       status: 'pending',
     };
   });

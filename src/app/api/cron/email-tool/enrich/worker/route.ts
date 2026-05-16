@@ -268,7 +268,7 @@ async function flushJobToPool(
   // Pull all kept rows for this job.
   const { data: keptRows, error: keptErr } = await supabase
     .from('enrich_job_rows')
-    .select('first_name, full_name, company, final_email')
+    .select('first_name, full_name, company, final_email, yc_batch')
     .eq('job_id', jobId)
     .eq('status', 'kept');
   if (keptErr) return { inserted: 0, already_in_pool: 0, already_blacklisted: 0, pool_size_after: null, error: `kept_lookup:${keptErr.message}` };
@@ -278,6 +278,7 @@ async function flushJobToPool(
     full_name: string | null;
     company: string | null;
     final_email: string;
+    yc_batch: string | null;
   }>;
   if (rows.length === 0) {
     const { data: fresh } = await supabase.rpc('email_tool_fresh_remaining');
@@ -334,6 +335,7 @@ async function flushJobToPool(
       company: prettifyCompanyName(s.company),
       full_name: s.full_name,
       first_name: s.first_name,
+      yc_batch: s.yc_batch,
     }));
 
     for (let i = 0; i < inserts.length; i += POOL_INSERT_CHUNK) {
