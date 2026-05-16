@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
       idempotency_key: idempotencyKey,
       scheduled_for: new Date().toISOString(),
       started_at: new Date().toISOString(),
-      status: 'processing',
+      status: 'running',
       send_mode: 'production',
       warmup_day: 99, // sentinel for "test"
       total_picked: rows.length,
