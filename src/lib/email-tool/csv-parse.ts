@@ -78,8 +78,12 @@ export function inferEnrichColMap(header: string[]): EnrichColMap {
     return null;
   };
   const firstIdx = findIdx(/^firstname$/, /^first$/, /^fname$/, /^givenname$/);
-  // "name" or "contact" or "fullname" — but NOT "first name" (caught above).
-  const fullIdx = findIdx(/^name$/, /^contact$/, /^fullname$/, /^contactname$/, /^contactperson$/);
+  // "name", "contact", "fullname", "founder", "founders" — full-name
+  // columns. NOT "first name" (caught above by firstIdx). "founder" was
+  // added 2026-05-16 after a YC CSV upload tried winter2024@<company>
+  // because "founder" went unrecognized and the legacy `?? 1` fallback
+  // in the create route read the yc_batch column as the first name.
+  const fullIdx = findIdx(/^name$/, /^contact$/, /^fullname$/, /^contactname$/, /^contactperson$/, /^founder$/, /^founders$/, /^foundername$/, /^ceo$/);
   const companyIdx = findIdx(/^company$/, /^companyname$/, /^organization$/, /^org$/, /^website$/, /^url$/, /^domain$/, /^companywebsite$/);
   const emailIdx = findIdx(/^email$/, /^emailaddress$/, /^workemail$/);
   // YC batch ("W24", "S23", "F24" etc.). Common header spellings; "batch"

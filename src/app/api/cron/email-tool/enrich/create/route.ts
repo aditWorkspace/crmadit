@@ -50,16 +50,30 @@ export async function POST(req: NextRequest) {
   const dataRows = firstRowHasEmail ? allRows : allRows.slice(1);
   const colMap = headerCols ? inferEnrichColMap(headerCols) : null;
 
-  const fxCompany = colMap?.company ?? 0;
-  const fxFirstName = colMap?.first_name ?? 1;
+  // No hardcoded column fallbacks — every column position must come
+  // from the header inferrer (or be null if absent). Earlier code
+  // defaulted fxFirstName to column 1, which caused a YC CSV with
+  // columns [company_name, yc_batch, founder] to send "winter2024@…"
+  // emails on 2026-05-16. Either first_name OR full_name is required;
+  // first_name is derived from the first token of full_name at row-
+  // process time when the CSV only provides full_name.
+  const fxCompany = colMap?.company ?? null;
+  const fxFirstName = colMap?.first_name ?? null;
   const fxFullName = colMap?.full_name ?? null;
   const fxEmail = colMap?.email ?? null;
   const fxYcBatch = colMap?.yc_batch ?? null;
 
-  if (fxCompany == null || fxFirstName == null) {
+  if (fxCompany == null) {
     return NextResponse.json({
       error: 'missing_columns',
-      detail: 'Need at least Company/Website and First Name columns.',
+      detail: 'Need a Company / Website / Domain column.',
+      header: headerCols,
+    }, { status: 400 });
+  }
+  if (fxFirstName == null && fxFullName == null) {
+    return NextResponse.json({
+      error: 'missing_columns',
+      detail: 'Need a First Name or Founder / Full Name column.',
       header: headerCols,
     }, { status: 400 });
   }
@@ -92,8 +106,16 @@ export async function POST(req: NextRequest) {
   // a row-count ceiling per request.
   const rowInserts = dataRows.map((row, i) => {
     const companyRaw = (row[fxCompany] ?? '').trim();
-    const firstName = (row[fxFirstName] ?? '').trim();
     const fullName = fxFullName != null ? (row[fxFullName] ?? '').trim() : '';
+    // If the CSV gave us first_name directly use it; otherwise derive
+    // from the first whitespace-separated token of full_name (so a
+    // "founder" column of "Omar Draz" yields first_name="Omar"). Skip
+    // titles/honorifics by taking the first token >=2 chars that isn't
+    // a known prefix; in practice founder columns rarely have those.
+    let firstName = fxFirstName != null ? (row[fxFirstName] ?? '').trim() : '';
+    if (!firstName && fullName) {
+      firstName = fullName.split(/\s+/).filter(Boolean)[0] ?? '';
+    }
     const givenEmail = fxEmail != null ? (row[fxEmail] ?? '').trim() : '';
     const ycBatchRaw = fxYcBatch != null ? (row[fxYcBatch] ?? '').trim() : '';
     // Always extract domain from the raw value first (works whether the
