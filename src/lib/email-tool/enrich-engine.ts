@@ -24,6 +24,7 @@ import { verifyEmail } from '@/lib/external/bulkemailchecker';
 import { findEmail } from '@/lib/external/icypeas';
 import { guessEmails } from './email-guesses';
 import { looksLikeMatch } from './name-email-match';
+import { probeDomainForCompany } from './domain-probe';
 
 export interface EnrichRowInput {
   row_index: number;
@@ -59,11 +60,27 @@ export async function processEnrichRow(input: EnrichRowInput): Promise<EnrichOut
   if (input.given_email && EMAIL_RE.test(input.given_email)) {
     candidates.push(input.given_email.toLowerCase());
   }
-  if (input.domain) {
+
+  // Resolve a working domain. Three sources tried in order:
+  //   1. domain extracted from the CSV's company/url field (best)
+  //   2. DNS MX probe of <company>.{com,ai,io,co,…} (free, ~1s)
+  //   3. fall through to Icypeas with the company name (~$0.01)
+  //
+  // The DNS probe was added 2026-05-16 after observing that ~25% of YC
+  // CSV rows were dropping to Icypeas NOT_FOUND because no domain was
+  // available — many of those companies (e.g. "Indemni", "GetCrux") do
+  // have real domains, just at .ai / .io / .so TLDs. Probing first
+  // lets us reuse the cheaper BEC pattern guesser instead.
+  let workingDomain: string | null = input.domain;
+  if (!workingDomain && input.company) {
+    workingDomain = await probeDomainForCompany(input.company);
+  }
+
+  if (workingDomain) {
     for (const g of guessEmails({
       firstName: input.first_name,
       fullName: input.full_name,
-      domain: input.domain,
+      domain: workingDomain,
     })) {
       if (!candidates.includes(g)) candidates.push(g);
     }
@@ -94,7 +111,7 @@ export async function processEnrichRow(input: EnrichRowInput): Promise<EnrichOut
   let icypeas_calls = 0;
   let icypeas_status: string | null = null;
   if (!accepted) {
-    if (!input.first_name || (!input.domain && !input.company)) {
+    if (!input.first_name || (!workingDomain && !input.company)) {
       return {
         status: 'dropped',
         final_email: null,
@@ -108,10 +125,13 @@ export async function processEnrichRow(input: EnrichRowInput): Promise<EnrichOut
     try {
       const tokens = (input.full_name ?? '').split(/\s+/).filter(Boolean);
       const lastName = tokens.length >= 2 ? tokens.slice(1).join(' ') : undefined;
+      // Prefer the probe-discovered working domain over a raw company
+      // name — Icypeas resolves domains faster + more reliably than
+      // company-name lookups.
       const r = await findEmail({
         firstName: input.first_name,
         lastName,
-        domainOrCompany: input.domain || (input.company ?? ''),
+        domainOrCompany: workingDomain || (input.company ?? ''),
       });
       icypeas_calls = 1;
       icypeas_status = r.status;

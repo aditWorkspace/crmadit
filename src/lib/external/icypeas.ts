@@ -11,9 +11,14 @@
 //     Body: { id: <search_id> }
 //     Response: { success, items: [{ results: { emails: [{ email, ... }] }, status, ... }] }
 //
-// Status lifecycle:
-//   NONE → SCRAPING → DEBITED (found) | NOT_FOUND | other terminal
-//   Roughly 1-5s end-to-end at low load. We poll every 1.5s up to 30s.
+// Status lifecycle (observed empirically + from docs):
+//   NONE → SCHEDULED → SCRAPING → DEBITED (found) | NOT_FOUND | other terminal
+//   Roughly 1-5s end-to-end at low load. Under burst load icypeas queues
+//   searches and they sit in SCHEDULED for 10-30s before moving to
+//   SCRAPING. We must keep polling through SCHEDULED — treating it as
+//   terminal (the bug fixed on 2026-05-16) caused ~44% of dropped rows
+//   in the YC enrich run to be false-negatives. Poll budget is 90s,
+//   plenty for queue-then-scrape under heavy load.
 //
 // Pricing: ~$0.01 per `DEBITED` result. NOT_FOUND is free per docs;
 // treat as "no email found, drop the row".
@@ -28,8 +33,16 @@ const ENDPOINT_SEARCH = 'https://app.icypeas.com/api/email-search';
 const ENDPOINT_READ = 'https://app.icypeas.com/api/bulk-single-searchs/read';
 
 const POLL_INTERVAL_MS = 1_500;
-const POLL_TIMEOUT_MS = 30_000;
+const POLL_TIMEOUT_MS = 90_000;
 const REQUEST_TIMEOUT_MS = 15_000;
+// Statuses that mean "icypeas hasn't reached a verdict yet — keep polling".
+// SCHEDULED was added 2026-05-16 after observing it terminate searches
+// before icypeas had even started scraping. The wait list is intentionally
+// permissive so any new in-progress state added by icypeas in the future
+// doesn't silently drop rows.
+const IN_PROGRESS_STATUSES = new Set([
+  'NONE', 'SCHEDULED', 'QUEUED', 'PENDING', 'WAITING', 'SCRAPING', 'IN_PROGRESS',
+]);
 
 export interface FindEmailArgs {
   firstName: string;
@@ -132,7 +145,7 @@ export async function findEmail(args: FindEmailArgs): Promise<FindEmailResult> {
     const item = readData.items?.[0];
     if (!item) continue;
     const status = item.status;
-    if (status === 'NONE' || status === 'SCRAPING' || status === 'IN_PROGRESS') {
+    if (IN_PROGRESS_STATUSES.has(status)) {
       continue; // not done yet
     }
     // Terminal.
