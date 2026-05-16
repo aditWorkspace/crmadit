@@ -16,7 +16,6 @@
 // last-mile check.
 
 const URL_PROTOCOL_RE = /^https?:\/\//i;
-const TLD_TAIL_RE = /\.(com|io|ai|co|tech|app|net|org|dev|xyz|inc|so|run|sh|me|gg|tv|us|uk|eu|de|fr|in|jp|cn|br|biz|info|llc|cloud|finance|systems|works|studio|agency|store|shop|design|tools)(\.[a-z]{2})?$/i;
 const HAS_TLD_RE = /\.[a-z]{2,}(\.[a-z]{2})?$/i;
 
 function titleCaseToken(t: string): string {
@@ -29,6 +28,18 @@ function titleCaseToken(t: string): string {
  * Best-effort pretty company name. Returns null only for unrecoverable
  * input (empty / whitespace). Callers that want hard-drop semantics
  * should also check looksLikeUrl() and decide independently.
+ *
+ * Strategy: for URL-shaped inputs, take the FIRST dot-separated label
+ * after stripping protocol, path, and the www. subdomain — that's where
+ * the company name lives in 99% of real-world inputs:
+ *   https://elementary-data.com/    → "elementary-data" → "Elementary Data"
+ *   https://www.manara.tech/        → "manara.tech"     → "manara" → "Manara"
+ *   joseph@expressbuilding.ph (host: expressbuilding.ph) → "expressbuilding"
+ *   verde.agr.br                    → "verde"           (not "agr" or "br")
+ *
+ * The previous take-last-label logic produced "PH" / "AGR" / "BR" for
+ * country-code TLDs we hadn't enumerated. First-label is robust to any
+ * TLD without an explicit allow-list.
  */
 export function prettifyCompanyName(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -44,11 +55,9 @@ export function prettifyCompanyName(raw: string | null | undefined): string | nu
   v = v.split(/[/?#]/, 1)[0];
   // Strip leading www.
   v = v.replace(/^www\./i, '');
-  // Strip common TLD tail (handles .com.au, .co.uk via the optional group)
-  v = v.replace(TLD_TAIL_RE, '');
-  // Drop any remaining subdomain — keep the rightmost label.
+  // Take the FIRST dot-separated label — that's the company.
   const parts = v.split('.');
-  v = parts[parts.length - 1] || parts[0] || '';
+  v = parts[0] || '';
 
   // Hyphen / underscore → space. TitleCase each token.
   const tokens = v.split(/[-_]+/).filter(Boolean).map(titleCaseToken);

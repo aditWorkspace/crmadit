@@ -87,42 +87,86 @@ export async function GET(req: NextRequest) {
 
   const supabase = createAdminClient();
 
-  // 1) RPC for sent/replied counts. Pre-filters auto-replies/bounces by
-  //    construction: the RPC counts leads.first_reply_at, which the Gmail
-  //    sync only populates for real human replies.
-  const { data: statsData, error: statsErr } = await supabase.rpc('email_send_variant_stats_30d');
-  if (statsErr) {
-    return NextResponse.json({ error: 'rpc_failed', detail: statsErr.message }, { status: 500 });
+  // 1) Sent + replied counts per variant. Counts from email_send_queue
+  //    (the canonical source for cold campaign sends), NOT interactions.
+  //    The legacy email_send_variant_stats_30d() RPC sourced from
+  //    interactions, which is empty for cold sends — that's why the
+  //    SENT column on the A/B Test tab was stuck at 0 even after
+  //    hundreds of sends had gone out. Migration 034 fixes the RPC
+  //    too, but doing the count inline here avoids needing a DB
+  //    migration deployed first.
+  //
+  //    Replies: queue.replied_at is stamped by the Gmail sync only on
+  //    genuine human replies (autoresponders / bounces are filtered
+  //    upstream before they reach this column).
+  //
+  //    Window: 30 days. Status filter: 'sent'. We don't filter active-
+  //    only here — that filter applies after the variant join, so a
+  //    paused variant that was sent yesterday still shows its history.
+  const since30dIso = new Date(Date.now() - 30 * 24 * 3_600_000).toISOString();
+  const { data: sentRows, error: sentErr } = await supabase
+    .from('email_send_queue')
+    .select('template_variant_id, replied_at')
+    .eq('status', 'sent')
+    .gte('sent_at', since30dIso)
+    .not('template_variant_id', 'is', null);
+  if (sentErr) {
+    return NextResponse.json({ error: 'sent_lookup_failed', detail: sentErr.message }, { status: 500 });
   }
-  const stats = (statsData ?? []) as RpcRow[];
+  const sentByVariant = new Map<string, { sent: number; replied: number }>();
+  for (const r of (sentRows ?? []) as Array<{ template_variant_id: string; replied_at: string | null }>) {
+    const cur = sentByVariant.get(r.template_variant_id) ?? { sent: 0, replied: 0 };
+    cur.sent++;
+    if (r.replied_at) cur.replied++;
+    sentByVariant.set(r.template_variant_id, cur);
+  }
 
-  // 2) Pull variants for label/subject/body. Filter clients-side because
-  //    the RPC already returns the variant_id we need to join on.
+  // 2) Variant metadata. Include every active variant in the list,
+  //    plus any inactive variant that has historical sends in the
+  //    30-day window — so paused variants don't disappear from the
+  //    history view.
+  const sentVariantIds = Array.from(sentByVariant.keys());
+  const { data: variantRows, error: vErr } = await supabase
+    .from('email_template_variants')
+    .select('id, founder_id, label, subject_template, body_template, is_active, is_followup');
+  if (vErr) {
+    return NextResponse.json({ error: 'variant_lookup_failed', detail: vErr.message }, { status: 500 });
+  }
+  type VariantRow = { id: string; founder_id: string; label: string; subject_template: string; body_template: string; is_active: boolean; is_followup: boolean };
+  const allVariants = (variantRows ?? []) as VariantRow[];
+  // Build the "stats" array we previously got from the RPC, now derived
+  // from the inline sent-count map. Include every variant; sent defaults
+  // to 0 for variants with no recent sends.
+  const stats: RpcRow[] = allVariants.map(v => {
+    const c = sentByVariant.get(v.id) ?? { sent: 0, replied: 0 };
+    const reply_rate_pct = c.sent > 0 ? Math.round((c.replied / c.sent) * 10000) / 100 : 0;
+    return {
+      variant_id: v.id,
+      founder_id: v.founder_id,
+      label: v.label,
+      is_active: v.is_active,
+      sent: c.sent,
+      replied: c.replied,
+      reply_rate_pct,
+    };
+  }).sort((a, b) => b.reply_rate_pct - a.reply_rate_pct || b.sent - a.sent);
+
   const variantIds = stats.map(s => s.variant_id);
   if (variantIds.length === 0) {
     return NextResponse.json({ variants: [] });
   }
-  const { data: variantRows, error: vErr } = await supabase
-    .from('email_template_variants')
-    .select('id, subject_template, body_template, is_followup')
-    .in('id', variantIds);
-  if (vErr) {
-    return NextResponse.json({ error: 'variant_lookup_failed', detail: vErr.message }, { status: 500 });
-  }
-  const variantById = new Map(
-    ((variantRows ?? []) as Array<{ id: string; subject_template: string; body_template: string; is_followup: boolean }>)
-      .map(v => [v.id, v])
-  );
+  const variantById = new Map(allVariants.map(v => [v.id, v]));
 
   // 2a) Open counts per variant. Single query, COUNT(*) WHERE opened_at IS
   //     NOT NULL grouped by template_variant_id. PostgREST doesn't expose
   //     GROUP BY directly through the JS client, so we ask for every
-  //     matching row's variant id (one column) and bucket in JS. With the
-  //     partial index idx_queue_opened_per_variant this stays fast.
+  //     matching row's variant id (one column) and bucket in JS. Also
+  //     scope to the same 30-day window for consistency with sent.
   const { data: openedRows, error: openErr } = await supabase
     .from('email_send_queue')
     .select('template_variant_id')
     .in('template_variant_id', variantIds)
+    .gte('sent_at', since30dIso)
     .not('opened_at', 'is', null);
   if (openErr) {
     return NextResponse.json({ error: 'opens_lookup_failed', detail: openErr.message }, { status: 500 });
@@ -131,6 +175,7 @@ export async function GET(req: NextRequest) {
   for (const r of (openedRows ?? []) as Array<{ template_variant_id: string }>) {
     openedByVariant.set(r.template_variant_id, (openedByVariant.get(r.template_variant_id) ?? 0) + 1);
   }
+  void sentVariantIds; // referenced for future tightening
 
   // 3) Pull founder names. 3 rows total — no need to chunk.
   const { data: foundersData } = await supabase
