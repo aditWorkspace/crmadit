@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Loader2, ExternalLink, Target, Upload } from '@/lib/icons';
 import { EnrichUploadModal } from '@/components/email-tool/enrich-upload-modal';
+import { RecentUploads } from '@/components/email-tool/recent-uploads';
 
 interface HistoryEntry {
   id: string;
@@ -97,9 +98,12 @@ export default function EmailToolClient({
   const [filterError, setFilterError] = useState<string | null>(null);
   const filterInputRef = useRef<HTMLInputElement>(null);
 
-  // Enrich + upload (admin) — separate flow for CSVs that don't have
-  // emails yet. Streams progress via SSE in a terminal-style modal.
+  // Enrich + upload (admin). Background-job flow: POST /enrich/create
+  // queues the job, worker cron processes rows, modal polls /status.
+  // The modal can be opened with either a fresh `file` (new upload) or
+  // a `jobId` (re-open from RecentUploads history).
   const [enrichFile, setEnrichFile] = useState<File | null>(null);
+  const [enrichJobId, setEnrichJobId] = useState<string | null>(null);
   const [enrichPutAtTop, setEnrichPutAtTop] = useState<boolean>(true);
   const enrichInputRef = useRef<HTMLInputElement>(null);
 
@@ -461,46 +465,15 @@ export default function EmailToolClient({
           </div>
         )}
 
-        {history.length > 0 && (
-          <div className="border-t border-gray-100 pt-4 flex flex-col gap-2">
-            <p className="text-[11px] uppercase tracking-wider text-gray-400">
-              {isAdmin ? 'All batches (team view)' : 'Your past batches'}
-            </p>
-            <ul className="flex flex-col divide-y divide-gray-100 max-h-72 overflow-y-auto">
-              {history.map(h => (
-                <li key={h.id} className="flex justify-between items-center py-2 text-sm">
-                  <div className="flex flex-col">
-                    <span className="text-gray-700">{h.title ?? formatEntryDate(h.created_at)}</span>
-                    <span className="text-xs text-gray-400">
-                      {formatEntryDate(h.created_at)}
-                      {isAdmin && h.created_by ? <> · by {h.created_by}</> : null}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    {canReverse(h) && (
-                      <button
-                        onClick={() => reverseBatch(h)}
-                        disabled={reversingId === h.id}
-                        className="text-red-600 hover:text-red-800 text-xs disabled:opacity-40"
-                        title="Undo this batch: removes the 400 emails from blacklist, restores the pool pointer, deletes the history row, clears cooldown. Only works on the most recent batch and within 24h."
-                      >
-                        {reversingId === h.id ? 'reversing…' : 'reverse'}
-                      </button>
-                    )}
-                    <a
-                      href={h.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:text-blue-800 inline-flex items-center gap-1 text-xs"
-                    >
-                      open <ExternalLink className="h-3 w-3" />
-                    </a>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            {reverseError && <p className="text-xs text-red-600">Reverse failed: {reverseError}</p>}
-          </div>
+        {/*
+          Legacy "All batches (team view)" list (Google-Sheets manual
+          export history) replaced 2026-05-15 by RecentUploads, which
+          surfaces the new background enrich-upload jobs with per-job
+          metrics and pool-size deltas. The email_batch_history table
+          is kept intact for audit; just not rendered here anymore.
+        */}
+        {isAdmin && (
+          <RecentUploads onOpenJob={(id) => setEnrichJobId(id)} />
         )}
       </div>
       {enrichFile && (
@@ -511,10 +484,12 @@ export default function EmailToolClient({
             setEnrichFile(null);
             if (enrichInputRef.current) enrichInputRef.current.value = '';
           }}
-          onComplete={() => {
-            // Pool grew — refresh the visible remaining count.
-            // Cheap to do via a re-fetch; skip if pool number is stale.
-          }}
+        />
+      )}
+      {enrichJobId && !enrichFile && (
+        <EnrichUploadModal
+          jobId={enrichJobId}
+          onClose={() => setEnrichJobId(null)}
         />
       )}
     </div>
