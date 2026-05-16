@@ -31,7 +31,7 @@ import { log } from '@/lib/email-tool/log';
 
 // MUST stay in sync with src/lib/email-tool/start.ts. If you change
 // one, change the other.
-const AB_TEST_OVERRIDE_PT_DATES = new Set<string>(['2026-05-15', '2026-05-16']);
+const AB_TEST_OVERRIDE_PT_DATES = new Set<string>([]);
 const AB_TEST_PHASE_B_CUTOFF_PT_HOUR = 12.0; // 12:00 PM PT — the data cutoff
 
 function formatPtDate(d: Date): string {

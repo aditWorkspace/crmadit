@@ -27,14 +27,27 @@ import { sendCriticalAlert } from './alert';
 //   - skips step ⑤a (no opener-no-reply follow-ups for the campaign)
 //   - uses the full dailyTarget for fresh-cold (no follow-up reservation)
 //   - OVERRIDES weekend mode — Sat/Sun in the set still pull and queue
-//     800 rows instead of the usual zero-fresh weekend behavior
+//     full-target rows instead of the usual zero-fresh weekend behavior
 //   - pushes rows beyond AB_TEST_PHASE_A_ROWS_PER_FOUNDER per founder out
 //     to send_at ≥ AB_TEST_PHASE_B_CUTOFF_PT_HOUR so the noon rebalance
 //     route has time to UPDATE their template_variant_id before they fire.
 // Empty set disables. After the dates pass, weekly cadence resumes
 // normally (Sat/Sun fall back to weekend follow-up-only flow). Mirrored
 // in /api/cron/email-tool/ab-rebalance/route.ts — change both together.
-const AB_TEST_OVERRIDE_PT_DATES = new Set<string>(['2026-05-15', '2026-05-16']);
+const AB_TEST_OVERRIDE_PT_DATES = new Set<string>([]);
+
+// ── Weekend full-volume override ──────────────────────────────────────────
+// When today's PT date is in FULL_VOLUME_PT_DATES, the weekend lock that
+// normally forces freshTotalTarget = 0 on Sat/Sun is lifted. UNLIKE the
+// A/B test override above, follow-ups are still reserved (50 per founder)
+// and the round-robin variant rotation is not applied — this is just the
+// normal weekday flow scheduled on a weekend date. Used to push through
+// a 7-day stretch including weekend (5/16, 5/17 — Sat/Sun of week of
+// 2026-05-15) without zeroing the weekend's fresh-cold sends.
+const FULL_VOLUME_PT_DATES = new Set<string>([
+  '2026-05-16', // Sat
+  '2026-05-17', // Sun
+]);
 // 200 per founder × 2 founders = 400 emails in Phase A. With 4
 // round-robin templates that's exactly 50 per founder per template,
 // 100 per template across both founders — matching the spec.
@@ -245,7 +258,9 @@ export async function runDailyStart(
     const abTestMode = AB_TEST_OVERRIDE_PT_DATES.has(todayPt);
     const skipFollowupsToday = abTestMode;
 
-    const weekendMode = isPtWeekend(now);
+    // Weekend mode forces freshTotalTarget = 0 unless today is in the
+    // FULL_VOLUME_PT_DATES override set (then weekend acts like a weekday).
+    const weekendMode = isPtWeekend(now) && !FULL_VOLUME_PT_DATES.has(todayPt);
     const reservedForFollowups = skipFollowupsToday
       ? 0
       : FOLLOWUP_DAILY_CAP_PER_FOUNDER * activeFounders.length;

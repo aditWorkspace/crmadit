@@ -2,11 +2,15 @@
 // Admin UI cannot change these; raising any value requires a code commit
 // + PR review. See spec §2 + §4.3 for rationale on each value.
 export const SAFETY_LIMITS = {
-  // Automated cold-send target per account per day.
-  AUTOMATED_DAILY_TARGET_PER_ACCOUNT: 400,
+  // Automated cold-send target per account per day. This is the *total*
+  // slot count: ~400 of these are fresh-cold sends and 50 are reserved
+  // for opener-no-reply follow-ups (see FOLLOWUP_DAILY_CAP_PER_FOUNDER in
+  // src/lib/email-tool/constants.ts). Bumped 400 → 450 on 2026-05-15 to
+  // give 400 fresh + 50 follow-ups per account.
+  AUTOMATED_DAILY_TARGET_PER_ACCOUNT: 450,
 
   // Absolute ceiling — system never schedules more than this even if a
-  // misconfigured target exceeds it. The 99-send buffer above 400 reserves
+  // misconfigured target exceeds it. The 49-send buffer above 450 reserves
   // headroom for the founder's manual sends, auto-replies, and CRM
   // follow-ups that share the same Gmail account.
   ABSOLUTE_DAILY_CAP_PER_ACCOUNT: 499,
@@ -16,7 +20,7 @@ export const SAFETY_LIMITS = {
 
   // Inter-send jitter range — closely mirrors YAMM's pacing.
   // Random uniform draw within these bounds per send.
-  // Avg ~10s -> 6 sends/min/account -> ~67min per 400-send campaign.
+  // Avg ~10s -> 6 sends/min/account -> ~75min per 450-send campaign.
   INTER_SEND_JITTER_MIN_SECONDS: 5,
   INTER_SEND_JITTER_MAX_SECONDS: 15,
 
@@ -25,8 +29,8 @@ export const SAFETY_LIMITS = {
   MIN_INTER_SEND_GAP_SECONDS_HARD_FLOOR: 5,
   MAX_INTER_SEND_GAP_SECONDS_HARD_CEILING: 30,
 
-  // Sanity check on the campaign window — 6/min x 400 = ~67min, so 2h is
-  // generous. Trip means slot scheduling logic is buggy.
+  // Sanity check on the campaign window — 6/min x 450 = ~75min, so 2h is
+  // still generous. Trip means slot scheduling logic is buggy.
   MAX_CAMPAIGN_DURATION_HOURS: 2,
 
   // No more than 1 send to any recipient_domain per founder per day.
