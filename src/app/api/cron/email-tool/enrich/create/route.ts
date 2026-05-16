@@ -152,5 +152,24 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ job_id, total_rows: dataRows.length, mode });
+  // Echo the inferred column map back so the UI / caller can verify
+  // the parser interpreted the CSV correctly before the background
+  // worker burns Icypeas credits. fxColumn = -1 if column not found.
+  // Also include the column header names from the file so a glance
+  // confirms: "company=col 0 (company_name), full_name=col 2 (founder)".
+  const headers = (headerCols ?? []) as string[];
+  return NextResponse.json({
+    job_id,
+    total_rows: dataRows.length,
+    mode,
+    inferred_columns: {
+      company:     { index: fxCompany,   header: headers[fxCompany] ?? null },
+      first_name:  { index: fxFirstName, header: fxFirstName != null ? (headers[fxFirstName] ?? null) : null },
+      full_name:   { index: fxFullName,  header: fxFullName  != null ? (headers[fxFullName]  ?? null) : null },
+      email:       { index: fxEmail,     header: fxEmail     != null ? (headers[fxEmail]     ?? null) : null },
+      yc_batch:    { index: fxYcBatch,   header: fxYcBatch   != null ? (headers[fxYcBatch]   ?? null) : null },
+    },
+    headers,
+    derived_first_name_from_full_name: fxFirstName == null && fxFullName != null,
+  });
 }

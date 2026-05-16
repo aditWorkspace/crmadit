@@ -77,18 +77,28 @@ export function inferEnrichColMap(header: string[]): EnrichColMap {
     }
     return null;
   };
-  const firstIdx = findIdx(/^firstname$/, /^first$/, /^fname$/, /^givenname$/);
-  // "name", "contact", "fullname", "founder", "founders" — full-name
-  // columns. NOT "first name" (caught above by firstIdx). "founder" was
-  // added 2026-05-16 after a YC CSV upload tried winter2024@<company>
-  // because "founder" went unrecognized and the legacy `?? 1` fallback
-  // in the create route read the yc_batch column as the first name.
-  const fullIdx = findIdx(/^name$/, /^contact$/, /^fullname$/, /^contactname$/, /^contactperson$/, /^founder$/, /^founders$/, /^foundername$/, /^ceo$/);
-  const companyIdx = findIdx(/^company$/, /^companyname$/, /^organization$/, /^org$/, /^website$/, /^url$/, /^domain$/, /^companywebsite$/);
-  const emailIdx = findIdx(/^email$/, /^emailaddress$/, /^workemail$/);
-  // YC batch ("W24", "S23", "F24" etc.). Common header spellings; "batch"
-  // alone is the broadest catch-all.
-  const ycBatchIdx = findIdx(/^ycbatch$/, /^batch$/, /^ycround$/, /^cohort$/);
+  const firstIdx = findIdx(/^firstname$/, /^first$/, /^fname$/, /^givenname$/, /^given$/);
+  // Full-name / founder column. Broad set so common founder CSV exports
+  // (Linear, Crunchbase, YC scraper outputs) all match. NOT "first name"
+  // — that's caught above by firstIdx. "founder" was added 2026-05-16
+  // after a YC CSV (company_name, yc_batch, founder) sent
+  // "winter2024@<company>" because "founder" went unrecognized.
+  const fullIdx = findIdx(
+    /^name$/, /^contact$/, /^fullname$/, /^contactname$/, /^contactperson$/,
+    /^founder$/, /^founders$/, /^foundername$/, /^foundernames$/,
+    /^ceo$/, /^ceoname$/, /^leader$/, /^owner$/, /^person$/,
+  );
+  const companyIdx = findIdx(
+    /^company$/, /^companyname$/, /^organization$/, /^org$/,
+    /^website$/, /^url$/, /^domain$/, /^companywebsite$/, /^companyurl$/, /^companydomain$/,
+    /^startup$/, /^startupname$/, /^biz$/, /^business$/, /^businessname$/,
+  );
+  const emailIdx = findIdx(/^email$/, /^emailaddress$/, /^workemail$/, /^emailaddr$/);
+  // YC batch ("W24", "S23", "F24", "Winter 2024", "Fall 2025" etc.).
+  // "batch" alone is the broadest catch-all. Don't include "year" /
+  // "season" because those could be column headers in unrelated CSV
+  // shapes (e.g. financial data) — we want false-positive caution.
+  const ycBatchIdx = findIdx(/^ycbatch$/, /^batch$/, /^ycround$/, /^cohort$/, /^ycclass$/, /^class$/);
   return {
     first_name: firstIdx,
     full_name: fullIdx,

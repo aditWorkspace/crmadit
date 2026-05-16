@@ -180,6 +180,15 @@ function rowToLogLines(r: JobRow): LogLine[] {
   return lines;
 }
 
+interface InferredColumn { index: number | null; header: string | null }
+interface InferredColumns {
+  company: InferredColumn;
+  first_name: InferredColumn;
+  full_name: InferredColumn;
+  email: InferredColumn;
+  yc_batch: InferredColumn;
+}
+
 export function EnrichUploadModal(props: Props) {
   const { onClose, onComplete } = props;
   const [jobId, setJobId] = useState<string | null>(props.jobId ?? null);
@@ -187,6 +196,8 @@ export function EnrichUploadModal(props: Props) {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [autoscroll, setAutoscroll] = useState(true);
+  const [inferred, setInferred] = useState<InferredColumns | null>(null);
+  const [derivedFirstName, setDerivedFirstName] = useState(false);
   const seenRowsRef = useRef<Set<number>>(new Set());
   const logBoxRef = useRef<HTMLDivElement | null>(null);
 
@@ -208,6 +219,10 @@ export function EnrichUploadModal(props: Props) {
             return;
           }
           setJobId(data.job_id);
+          if (data.inferred_columns) {
+            setInferred(data.inferred_columns as InferredColumns);
+            setDerivedFirstName(Boolean(data.derived_first_name_from_full_name));
+          }
         } catch (err) {
           setError(`network: ${(err as Error).message}`);
         }
@@ -293,6 +308,28 @@ export function EnrichUploadModal(props: Props) {
             {isDone ? 'close' : 'leave running'}
           </button>
         </header>
+        {inferred && (
+          <div className="bg-gray-800 border-b border-gray-700 px-4 py-2 text-xs font-mono text-gray-300">
+            <span className="text-gray-500">parsed CSV →</span>{' '}
+            <span className="text-emerald-300">company</span>={inferred.company.header ?? <span className="text-red-400">missing!</span>}{' · '}
+            {inferred.first_name.header ? (
+              <><span className="text-emerald-300">first_name</span>={inferred.first_name.header}{' · '}</>
+            ) : null}
+            {inferred.full_name.header ? (
+              <><span className="text-emerald-300">{derivedFirstName ? 'first_name (derived from)' : 'full_name'}</span>={inferred.full_name.header}{' · '}</>
+            ) : null}
+            {inferred.yc_batch.header ? (
+              <><span className="text-emerald-300">yc_batch</span>={inferred.yc_batch.header}{' · '}</>
+            ) : (
+              <><span className="text-gray-500">no yc_batch column → general template</span>{' · '}</>
+            )}
+            {inferred.email.header ? (
+              <><span className="text-emerald-300">email</span>={inferred.email.header}</>
+            ) : (
+              <span className="text-gray-500">no email column → all rows go through finder</span>
+            )}
+          </div>
+        )}
         <div
           ref={logBoxRef}
           onScroll={() => {
