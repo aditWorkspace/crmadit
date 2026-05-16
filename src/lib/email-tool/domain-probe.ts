@@ -11,11 +11,18 @@
 
 import { resolveMx } from 'node:dns/promises';
 
-// TLDs tried in priority order. The first three (.com / .ai / .io)
-// cover the vast majority of YC startups; .co / .so / .app / .tech
-// catch the rest. We deliberately keep this short — every entry costs
-// one DNS round trip per row when used.
-const PROBE_TLDS = ['com', 'ai', 'io', 'co', 'so', 'app', 'tech'] as const;
+// TLDs tried in priority order. First few catch >80% of cases on a
+// single try; the long tail (.dev / .xyz / etc) was added 2026-05-16
+// after observing that YC companies like "Million" use .dev domains
+// that our 7-TLD list missed. DNS is essentially free (parallel
+// lookups, ~50ms each), so a longer list mostly costs initialization
+// time and pays for itself any time a row otherwise would have fallen
+// to a $0.01 Icypeas call.
+const PROBE_TLDS = [
+  'com', 'ai', 'io', 'co', 'so', 'app', 'tech',  // existing common
+  'dev', 'xyz', 'gg', 'one', 'fm', 'org', 'ml',  // YC-common newer TLDs
+  'sh', 'run', 'page', 'ventures', 'fund', 'cloud', // edge cases
+] as const;
 
 // Companies whose names contain non-alphanumeric junk shouldn't be
 // probed — they'd produce invalid domain strings. Strip to lowercase
@@ -40,11 +47,23 @@ async function hasMx(domain: string): Promise<boolean> {
  * Probe common TLDs in parallel for a given company name. Returns the
  * first TLD with valid MX records (highest priority winning ties), or
  * null if none of the probed domains have mail. Bounded to ~1s total
- * via Promise.all across 7 DNS lookups.
+ * via Promise.all across the probe list.
  */
 export async function probeDomainForCompany(company: string | null | undefined): Promise<string | null> {
+  const domains = await probeAllValidDomains(company);
+  return domains[0] ?? null;
+}
+
+/**
+ * Like probeDomainForCompany but returns ALL TLDs with valid MX records,
+ * not just the first. Used by the icypeas-experiment + multi-TLD
+ * strategy to give Icypeas multiple shots at finding the email even
+ * when our domain extraction would have settled on a wrong/parked TLD.
+ * Returned domains preserve PROBE_TLDS priority order.
+ */
+export async function probeAllValidDomains(company: string | null | undefined): Promise<string[]> {
   const base = normalizeCompanyForDomain(company);
-  if (!base) return null;
+  if (!base) return [];
 
   const probes = PROBE_TLDS.map(async tld => {
     const candidate = `${base}.${tld}`;
@@ -53,11 +72,10 @@ export async function probeDomainForCompany(company: string | null | undefined):
   });
 
   const results = await Promise.all(probes);
-  // Honor PROBE_TLDS order (first match wins) rather than racing — gives
-  // a stable, deterministic outcome.
+  const validInPriorityOrder: string[] = [];
   for (const tld of PROBE_TLDS) {
     const hit = results.find(r => r.tld === tld && r.ok);
-    if (hit) return hit.candidate;
+    if (hit) validInPriorityOrder.push(hit.candidate);
   }
-  return null;
+  return validInPriorityOrder;
 }

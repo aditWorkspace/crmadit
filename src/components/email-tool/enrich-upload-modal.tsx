@@ -147,21 +147,33 @@ function rowToLogLines(r: JobRow): LogLine[] {
   // multi-attempt composite like "NOT_FOUND@A/DEBITED@B" since the
   // 2026-05-16 parallel-retry fix. Render each attempt as its own
   // sub-line so the user can see which mutator strategy actually won.
+  //
+  // SUCCESS_PREFIXES covers both `DEBITED` (charged, new find) and
+  // `FOUND` (cached, no charge) — both return an email. Earlier code
+  // only checked for `DEBITED`, which caused a misleading
+  // "all attempts NOT_FOUND" line above the kept→email line for any
+  // FOUND@A wins. Fixed 2026-05-16.
+  const SUCCESS_PREFIXES = ['DEBITED', 'FOUND'];
   if (r.icypeas_status) {
     const parts = r.icypeas_status.split('/');
     const isMultiAttempt = parts.length > 1 && parts.every(p => p.includes('@'));
     if (isMultiAttempt) {
-      const anyDebited = parts.some(p => p.startsWith('DEBITED'));
+      const anyHit = parts.some(p =>
+        SUCCESS_PREFIXES.some(s => p.startsWith(s)) && !p.startsWith('NOT_'),
+      );
       for (const p of parts) {
         const [status, label] = p.split('@');
-        const isDebited = status === 'DEBITED';
+        const isHit = SUCCESS_PREFIXES.some(s => status.startsWith(s)) && !status.startsWith('NOT_');
         lines.push({
           row_index: idx,
-          text: `${tag}  icypeas ${label}: ${status}${isDebited ? `  ${r.final_email ?? '?'}` : ''}`,
-          tone: isDebited ? 'magenta' : 'yellow',
+          text: `${tag}  icypeas ${label}: ${status}${isHit ? `  ${r.final_email ?? '?'}` : ''}`,
+          tone: isHit ? 'magenta' : 'yellow',
         });
       }
-      if (!anyDebited) {
+      // Only render the aggregate "all NOT_FOUND" line when the row
+      // really did fail. Suppress it when r.status='kept' to avoid
+      // contradicting the kept→email line that follows.
+      if (!anyHit && r.status !== 'kept') {
         lines.push({
           row_index: idx,
           text: `${tag}  icypeas all attempts NOT_FOUND  no email`,
