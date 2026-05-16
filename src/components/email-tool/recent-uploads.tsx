@@ -3,8 +3,10 @@
 // Replaces the legacy "All batches (team view)" list on /email-tool.
 // Shows recent enrich_jobs with file name, status, counters, and
 // pool size delta. Clicking opens the live modal for that job.
+// Queued/running jobs get an "abort" link that hits /enrich/abort.
 
 import { useCallback, useEffect, useState } from 'react';
+import { toast } from 'sonner';
 
 interface JobSummary {
   id: string;
@@ -52,6 +54,7 @@ const POLL_MS = 10_000;
 export function RecentUploads({ onOpenJob }: Props) {
   const [jobs, setJobs] = useState<JobSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [abortingId, setAbortingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -64,6 +67,30 @@ export function RecentUploads({ onOpenJob }: Props) {
       setError('network error');
     }
   }, []);
+
+  const abortJob = useCallback(async (jobId: string) => {
+    if (!window.confirm('Abort this enrichment job? Pending rows will be marked dropped.')) return;
+    setAbortingId(jobId);
+    try {
+      const res = await fetch('/api/cron/email-tool/enrich/abort', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        toast.error(`Abort failed: ${data.error ?? `http ${res.status}`}`);
+      } else {
+        toast.success('Job aborted');
+        // Refresh list immediately rather than waiting for poll
+        await load();
+      }
+    } catch (err) {
+      toast.error(`Abort failed: ${(err as Error).message}`);
+    } finally {
+      setAbortingId(null);
+    }
+  }, [load]);
 
   useEffect(() => {
     load();
@@ -90,9 +117,20 @@ export function RecentUploads({ onOpenJob }: Props) {
             <li key={j.id} className="py-2 flex flex-col gap-1 cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded" onClick={() => onOpenJob(j.id)}>
               <div className="flex items-center justify-between text-sm">
                 <span className="font-medium text-gray-800 truncate">{j.file_name ?? 'unnamed'}</span>
-                <span className={`text-[10px] font-semibold uppercase tracking-wider border rounded px-1.5 py-0.5 ${badge.color}`}>
-                  {badge.label}
-                </span>
+                <div className="flex items-center gap-2">
+                  {(j.status === 'queued' || j.status === 'processing') && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); abortJob(j.id); }}
+                      disabled={abortingId === j.id}
+                      className="text-[10px] font-semibold uppercase tracking-wider border rounded px-1.5 py-0.5 text-red-700 bg-red-50 border-red-200 hover:bg-red-100 disabled:opacity-50"
+                    >
+                      {abortingId === j.id ? 'aborting…' : 'abort'}
+                    </button>
+                  )}
+                  <span className={`text-[10px] font-semibold uppercase tracking-wider border rounded px-1.5 py-0.5 ${badge.color}`}>
+                    {badge.label}
+                  </span>
+                </div>
               </div>
               <div className="text-xs text-gray-500 flex flex-wrap gap-x-3 gap-y-0.5">
                 <span>{fmtTime(j.created_at)}</span>

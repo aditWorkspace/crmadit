@@ -105,9 +105,22 @@ export async function POST(req: NextRequest) {
   let aggregateCost = 0;
   let aggregateKept = 0;
   let aggregateDropped = 0;
+  let abortedMidTick = false;
   // We use plain async/await sequential loop because BEC is single-thread.
   // Each iteration: pull next pending row, run engine, write result.
   while (Date.now() - startMs < BUDGET_MS) {
+    // Abort check: cheap status re-read before each row. If the user
+    // clicked "abort" via /enrich/abort, we stop within one row.
+    const { data: live } = await supabase
+      .from('enrich_jobs')
+      .select('status')
+      .eq('id', job.id)
+      .maybeSingle();
+    if (live?.status === 'aborted') {
+      abortedMidTick = true;
+      break;
+    }
+
     const { data: nextRow } = await supabase
       .from('enrich_job_rows')
       .select('id, job_id, row_index, first_name, full_name, company, domain, given_email')
@@ -202,7 +215,21 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // ── 4) Partial: release lock so next tick can re-claim ─────────────
+  // ── 4) Aborted mid-tick: release lock, leave status='aborted' ──────
+  if (abortedMidTick) {
+    await supabase
+      .from('enrich_jobs')
+      .update({ worker_locked_until: null })
+      .eq('id', job.id);
+    return NextResponse.json({
+      ok: true,
+      job_id: job.id,
+      processed_this_tick: processedThisTick,
+      aborted: true,
+    });
+  }
+
+  // ── 5) Partial: release lock so next tick can re-claim ─────────────
   await supabase
     .from('enrich_jobs')
     .update({ worker_locked_until: null })
