@@ -57,3 +57,43 @@ export async function GET(req: NextRequest) {
     limit,
   });
 }
+
+// PATCH /api/cron/email-tool/pool-preview — inline edits from the pool
+// preview UI. Updates a single email_pool row by id with whichever of
+// {first_name, company, email} the client sends. Validates types but
+// not content — this is a trusted admin-only console.
+//
+// Body: { id: string, first_name?: string|null, company?: string|null, email?: string }
+export async function PATCH(req: NextRequest) {
+  const session = await getSessionFromRequest(req);
+  if (!session) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  if (!session.is_admin) return NextResponse.json({ error: 'admin only' }, { status: 403 });
+
+  let body: { id?: string; first_name?: string | null; company?: string | null; email?: string };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    return NextResponse.json({ error: 'bad_json' }, { status: 400 });
+  }
+  if (!body.id) return NextResponse.json({ error: 'id_required' }, { status: 400 });
+
+  const patch: Record<string, string | null> = {};
+  if ('first_name' in body) patch.first_name = body.first_name ?? null;
+  if ('company' in body) patch.company = body.company ?? null;
+  if ('email' in body && typeof body.email === 'string') {
+    patch.email = body.email.toLowerCase().trim();
+  }
+  if (Object.keys(patch).length === 0) {
+    return NextResponse.json({ error: 'no_fields' }, { status: 400 });
+  }
+
+  const supabase = createAdminClient();
+  const { error: upErr } = await supabase
+    .from('email_pool')
+    .update(patch)
+    .eq('id', body.id);
+  if (upErr) {
+    return NextResponse.json({ error: 'update_failed', detail: upErr.message }, { status: 500 });
+  }
+  return NextResponse.json({ ok: true, id: body.id, patched: patch });
+}
