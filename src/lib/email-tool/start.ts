@@ -24,35 +24,48 @@ import { sendCriticalAlert } from './alert';
 
 // ── Adaptive A/B test override ────────────────────────────────────────────
 // When today's PT date is in AB_TEST_OVERRIDE_PT_DATES, runDailyStart:
-//   - skips step ⑤a (no opener-no-reply follow-ups for the campaign)
-//   - uses the full dailyTarget for fresh-cold (no follow-up reservation)
 //   - OVERRIDES weekend mode — Sat/Sun in the set still pull and queue
 //     full-target rows instead of the usual zero-fresh weekend behavior
 //   - pushes rows beyond AB_TEST_PHASE_A_ROWS_PER_FOUNDER per founder out
-//     to send_at ≥ AB_TEST_PHASE_B_CUTOFF_PT_HOUR so the noon rebalance
+//     to send_at ≥ AB_TEST_PHASE_B_CUTOFF_PT_HOUR so the morning rebalance
 //     route has time to UPDATE their template_variant_id before they fire.
-// Empty set disables. After the dates pass, weekly cadence resumes
-// normally (Sat/Sun fall back to weekend follow-up-only flow). Mirrored
-// in /api/cron/email-tool/ab-rebalance/route.ts — change both together.
-const AB_TEST_OVERRIDE_PT_DATES = new Set<string>([]);
+//   - STILL reserves 50 follow-up slots per founder (unlike the original
+//     A/B override which skipped follow-ups entirely). With AUTOMATED_
+//     DAILY_TARGET_PER_ACCOUNT=450, that's 400 fresh + 50 follow-ups per
+//     founder; the 400 fresh splits into 200 Phase A + 200 Phase B.
+// Empty set disables. Mirrored in /api/cron/email-tool/ab-rebalance/
+// route.ts — change both together.
+const AB_TEST_OVERRIDE_PT_DATES = new Set<string>([
+  '2026-05-17', // Sun
+  '2026-05-18', // Mon
+  '2026-05-19', // Tue
+  '2026-05-20', // Wed
+  '2026-05-21', // Thu
+  '2026-05-22', // Fri
+]);
 
 // ── Weekend full-volume override ──────────────────────────────────────────
 // When today's PT date is in FULL_VOLUME_PT_DATES, the weekend lock that
 // normally forces freshTotalTarget = 0 on Sat/Sun is lifted. UNLIKE the
-// A/B test override above, follow-ups are still reserved (50 per founder)
-// and the round-robin variant rotation is not applied — this is just the
-// normal weekday flow scheduled on a weekend date. Used to push through
-// a 7-day stretch including weekend (5/16, 5/17 — Sat/Sun of week of
-// 2026-05-15) without zeroing the weekend's fresh-cold sends.
-const FULL_VOLUME_PT_DATES = new Set<string>([
-  '2026-05-16', // Sat
-  '2026-05-17', // Sun
-]);
+// A/B test override above, the round-robin variant rotation is not
+// applied — this is just the normal weekday flow scheduled on a weekend
+// date. Sundays in the 2026-05-17..05-22 push are covered by the AB
+// override above (which also bypasses weekend mode), so this set is
+// empty for now. Leaving the constant in place for future weekend pushes.
+const FULL_VOLUME_PT_DATES = new Set<string>([]);
 // 200 per founder × 2 founders = 400 emails in Phase A. With 4
 // round-robin templates that's exactly 50 per founder per template,
 // 100 per template across both founders — matching the spec.
 const AB_TEST_PHASE_A_ROWS_PER_FOUNDER = 200;
-const AB_TEST_PHASE_B_CUTOFF_PT_HOUR = 12.5; // 12:30 PM PT
+// Phase B start time. Phase A queues at the 7:30am PT campaign start
+// and finishes ~8:03am PT (200 × ~10s jitter). Data cutoff for the
+// rebalance route is 8:30am PT — that gives 1 hour of open data for
+// the earliest sends and ~27 min for the latest. Phase B starts at
+// 9:00am PT, giving the rebalance cron (8:30/45/55am) a 30-min window
+// to update template_variant_id on pending Phase B rows. Total wait
+// between Phase A end and Phase B start ≈ 57 min — matches the user's
+// "1 hour test" intent.
+const AB_TEST_PHASE_B_CUTOFF_PT_HOUR = 9.0; // 9:00 AM PT
 
 type Supa = ReturnType<typeof createAdminClient>;
 
@@ -256,21 +269,27 @@ export async function runDailyStart(
     // empty here — the assertion is defensive.
     const todayPt = formatPtDate(now);
     const abTestMode = AB_TEST_OVERRIDE_PT_DATES.has(todayPt);
-    const skipFollowupsToday = abTestMode;
+    // Follow-ups are reserved on every send day going forward. The old
+    // AB-mode-skips-followups coupling is gone — the user wants 400 fresh
+    // + 50 follow-ups per founder regardless of A/B test mode.
+    const skipFollowupsToday = false;
 
-    // Weekend mode forces freshTotalTarget = 0 unless today is in the
-    // FULL_VOLUME_PT_DATES override set (then weekend acts like a weekday).
-    const weekendMode = isPtWeekend(now) && !FULL_VOLUME_PT_DATES.has(todayPt);
+    // Weekend mode forces freshTotalTarget = 0 unless today is either in
+    // FULL_VOLUME_PT_DATES (explicit weekend push) or in AB_TEST_OVERRIDE_
+    // PT_DATES (A/B test days override weekend mode by design).
+    const weekendMode = isPtWeekend(now)
+      && !FULL_VOLUME_PT_DATES.has(todayPt)
+      && !abTestMode;
     const reservedForFollowups = skipFollowupsToday
       ? 0
       : FOLLOWUP_DAILY_CAP_PER_FOUNDER * activeFounders.length;
-    // AB-test mode overrides weekend mode: test days in the set still
-    // queue full fresh-cold volume even when they fall on Sat/Sun.
-    const freshTotalTarget = abTestMode
-      ? dailyTarget
-      : (weekendMode
-          ? 0
-          : Math.max(0, dailyTarget - reservedForFollowups));
+    // freshTotalTarget = dailyTarget − reservedForFollowups in all non-
+    // weekend modes (including AB-test mode now). With dailyTarget=900
+    // (450/founder × 2) and reserved=100, that's 800 fresh = 400/founder
+    // = 200 Phase A + 200 Phase B per founder.
+    const freshTotalTarget = weekendMode
+      ? 0
+      : Math.max(0, dailyTarget - reservedForFollowups);
     const regularTarget = Math.max(0, freshTotalTarget - cappedPriorityRows.length);
     if (weekendMode && !abTestMode) {
       log('info', 'start_weekend_followups_only', {

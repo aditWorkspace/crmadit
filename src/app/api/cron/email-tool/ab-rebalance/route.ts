@@ -1,22 +1,24 @@
 // POST /api/cron/email-tool/ab-rebalance — one-day adaptive A/B test
-// rebalance pass. Cron-job.org hits this hourly starting at 12 PM PT
-// on the test date. The route:
+// rebalance pass. Cron-job.org hits this at 8:30/8:45/8:55am PT on each
+// test date (three attempts before Phase B starts at 9:00am PT). The
+// route:
 //   1. Gates on today's PT date being in AB_TEST_OVERRIDE_PT_DATES
 //      (mirrored from start.ts). On any other date → 200 no-op.
 //   2. Finds today's campaign via idempotency_key = todayPt.
 //   3. If the campaign already has ab_rebalance_done_at set → 200 no-op.
-//   4. Counts replies per template family for Phase A rows (send_at <
-//      12:00 PM PT cutoff, status='sent'). A "family" is the unique
+//   4. Counts opens per template family for Phase A rows (send_at <
+//      8:30 AM PT cutoff, status='sent'). A "family" is the unique
 //      subject_template — Adit's and Asim's siblings share content so
 //      we sum their counts.
-//   5. Picks the top 2 families by replied count, tie-break by reply
-//      rate, then subject alphabetical.
-//   6. For each founder: looks up the variant IDs of the 2 winning
-//      families that belong to that founder, then UPDATEs pending
-//      Phase B rows (send_at >= cutoff, status='pending') alternating
-//      between the two — preserving per-founder split.
+//   5. Picks the SINGLE top family by open rate, tie-break by reply
+//      rate, then subject alphabetical. (Previously top-2 with round-
+//      robin — user switched to top-1 on 2026-05-16 for higher signal
+//      with the 1-hour open window.)
+//   6. For each founder: looks up the variant ID of the winning family
+//      that belongs to that founder, then UPDATEs all pending Phase B
+//      rows (send_at >= cutoff, status='pending') to use that variant.
 //   7. Stamps email_send_campaigns.ab_rebalance_done_at so subsequent
-//      hourly hits 200-no-op.
+//      retries (8:45, 8:55) 200-no-op.
 //
 // Auth: CRON_SECRET Bearer (matches /api/cron/email-tool/tick).
 //
@@ -31,8 +33,18 @@ import { log } from '@/lib/email-tool/log';
 
 // MUST stay in sync with src/lib/email-tool/start.ts. If you change
 // one, change the other.
-const AB_TEST_OVERRIDE_PT_DATES = new Set<string>([]);
-const AB_TEST_PHASE_B_CUTOFF_PT_HOUR = 12.0; // 12:00 PM PT — the data cutoff
+const AB_TEST_OVERRIDE_PT_DATES = new Set<string>([
+  '2026-05-17', // Sun
+  '2026-05-18', // Mon
+  '2026-05-19', // Tue
+  '2026-05-20', // Wed
+  '2026-05-21', // Thu
+  '2026-05-22', // Fri
+]);
+// Data cutoff for Phase A signals (8:30 AM PT). Phase B in start.ts
+// starts at 9:00 AM PT — the 30-min gap gives this route time to
+// rebalance pending Phase B rows before they fire.
+const AB_TEST_PHASE_B_CUTOFF_PT_HOUR = 8.5; // 8:30 AM PT — the data cutoff
 
 function formatPtDate(d: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -178,8 +190,9 @@ export async function POST(req: NextRequest) {
   // (e.g., the cron fired too early or sends are slow), the open
   // metric is noisy. Refuse to rebalance and let Phase B drain with
   // all 4 variants. Threshold: 80 sent per family (80% of the
-  // expected 100/family Phase A volume). Calling code retries hourly
-  // until 10 PM PT, so a slow drain still gets a chance later.
+  // expected 100/family Phase A volume). The cron retries at 8:45 and
+  // 8:55 AM PT, so a slow drain still gets two more chances before
+  // Phase B starts at 9:00 AM PT.
   const minSentPerFamily = Math.min(...families.map(f => f.sent));
   const INSUFFICIENT_DATA_THRESHOLD = 80;
   if (minSentPerFamily < INSUFFICIENT_DATA_THRESHOLD) {
@@ -217,7 +230,7 @@ export async function POST(req: NextRequest) {
     if (replyRateB !== replyRateA) return replyRateB - replyRateA;
     return a.subject.localeCompare(b.subject);
   });
-  const winners = families.slice(0, 2);
+  const winners = families.slice(0, 1);
   log('info', 'ab_rebalance_picked', {
     campaign_id: campaign.id,
     winners: winners.map(w => ({
@@ -229,8 +242,8 @@ export async function POST(req: NextRequest) {
     })),
   });
 
-  // Find pending Phase B rows per founder. Round-robin alternate
-  // between the 2 winning variants belonging to THAT founder.
+  // Find pending Phase B rows per founder. Rewrite each row's
+  // template_variant_id to the single winning variant for THAT founder.
   const updated: Record<string, number> = {};
   const { data: founderRows } = await supabase
     .from('team_members')
@@ -239,15 +252,15 @@ export async function POST(req: NextRequest) {
   const activeFounders = (founderRows ?? []) as Array<{ id: string; name: string }>;
 
   for (const founder of activeFounders) {
-    // The two winning variants for THIS founder. Each family has one
-    // variant per founder (siblings). Find them by intersecting
+    // The winning variant for THIS founder. Each family has one
+    // variant per founder (siblings). Find it by intersecting
     // family.variantIds with variants whose founder_id matches.
     const winnerVariantIds = winners.map(w =>
       variants.find(v => v.founder_id === founder.id && w.variantIds.includes(v.id))?.id
     ).filter((id): id is string => !!id);
-    if (winnerVariantIds.length < 2) {
-      // Missing one of the founder's winning variants (unexpected,
-      // would imply schema mismatch). Skip this founder's rebalance.
+    if (winnerVariantIds.length < 1) {
+      // Missing the founder's winning variant (unexpected, would imply
+      // schema mismatch). Skip this founder's rebalance.
       updated[founder.name] = 0;
       continue;
     }
