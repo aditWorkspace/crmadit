@@ -56,6 +56,12 @@ interface JobRow {
 }
 
 const POLL_MS = 3_000;
+// Cap on how many log lines are kept in memory + rendered. Each
+// processed row produces 3-6 lines, so 1500 ≈ last 300 rows. Beyond
+// this the DOM tree gets too heavy and autoscroll stops tracking the
+// bottom (the symptom that made the UI look stuck at row 1000 on
+// long jobs). The job continues; only the display rotates.
+const MAX_VISIBLE_LINES = 1500;
 
 type Tone = 'cyan' | 'green' | 'yellow' | 'magenta' | 'red' | 'gray' | 'white';
 const TONE_CLASS: Record<Tone, string> = {
@@ -320,7 +326,20 @@ export function EnrichUploadModal(props: Props) {
         newLines.push(...rowToLogLines(r));
       }
       if (newLines.length > 0) {
-        setLines(prev => [...prev, ...newLines]);
+        // Cap the in-memory log to the last MAX_VISIBLE_LINES entries.
+        // Each processed row produces ~3-6 log lines, so 1500 lines ≈
+        // last 300 rows of history. Beyond that the DOM tree gets heavy
+        // enough that the terminal scroll lags or autoscroll stops
+        // tracking the bottom, which was making the UI look "stuck"
+        // around the 1000-row mark on long-running jobs (2026-05-17 fix).
+        // The job itself is unaffected — this is purely display.
+        setLines(prev => {
+          const combined = prev.concat(newLines);
+          if (combined.length > MAX_VISIBLE_LINES) {
+            return combined.slice(combined.length - MAX_VISIBLE_LINES);
+          }
+          return combined;
+        });
       }
     } catch (err) {
       setError(`poll: ${(err as Error).message}`);
@@ -416,6 +435,12 @@ export function EnrichUploadModal(props: Props) {
         >
           {lines.length === 0 && (
             <div className="text-gray-500">$ {job ? 'waiting for worker tick…' : 'queueing job…'}</div>
+          )}
+          {lines.length >= MAX_VISIBLE_LINES && (
+            <div className="text-gray-600 italic mb-1">
+              ⋯ older rows truncated — showing last ~{MAX_VISIBLE_LINES} log lines (job is unaffected,
+              full history in DB)
+            </div>
           )}
           {lines.map((l, idx) => (
             <div key={idx} className={`${TONE_CLASS[l.tone]} whitespace-pre-wrap`}>
