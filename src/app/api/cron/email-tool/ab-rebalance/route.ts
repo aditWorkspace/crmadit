@@ -34,12 +34,10 @@ import { log } from '@/lib/email-tool/log';
 // MUST stay in sync with src/lib/email-tool/start.ts. If you change
 // one, change the other.
 const AB_TEST_OVERRIDE_PT_DATES = new Set<string>([
-  '2026-05-17', // Sun
-  '2026-05-18', // Mon
-  '2026-05-19', // Tue
-  '2026-05-20', // Wed
-  '2026-05-21', // Thu
-  '2026-05-22', // Fri
+  '2026-05-17', // Sun — historical, already ran. 5/18–5/22 pulled because
+                //       the week now uses round-robin general variants
+                //       (no Phase A/B rebalance needed). Mirror of
+                //       start.ts AB_TEST_OVERRIDE_PT_DATES.
 ]);
 // Data cutoff for Phase A signals (8:30 AM PT). Phase B in start.ts
 // starts at 9:00 AM PT — the 30-min gap gives this route time to

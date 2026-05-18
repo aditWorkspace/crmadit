@@ -36,12 +36,11 @@ import { sendCriticalAlert } from './alert';
 // Empty set disables. Mirrored in /api/cron/email-tool/ab-rebalance/
 // route.ts — change both together.
 const AB_TEST_OVERRIDE_PT_DATES = new Set<string>([
-  '2026-05-17', // Sun
-  '2026-05-18', // Mon
-  '2026-05-19', // Tue
-  '2026-05-20', // Wed
-  '2026-05-21', // Thu
-  '2026-05-22', // Fri
+  '2026-05-17', // Sun — historical, already ran. 5/18–5/22 removed so the
+                //       week runs normal weekday flow with 50/50 general
+                //       split between prioritization + quick-question
+                //       variants. YC pool is exhausted (4 rows), so the
+                //       4-template rotation has nothing to rebalance.
 ]);
 
 // ── Weekend full-volume override ──────────────────────────────────────────
@@ -594,9 +593,10 @@ export async function runDailyStart(
     // Variants split into two audiences (migration 035):
     //   audience='yc'      → the 4-template A/B rotation. Used for any
     //                        recipient whose assigned.yc_batch is non-null.
-    //   audience='general' → a single product-prioritization template
-    //                        per founder. Used for recipients without a
-    //                        yc_batch. No A/B rotation, no rebalance.
+    //   audience='general' → one OR MORE general templates per founder,
+    //                        round-robined per founder. Used for recipients
+    //                        without a yc_batch. No Phase A/B rebalance —
+    //                        rotation is fixed by ORDER BY id.
     // Followups (is_followup=true) are excluded from BOTH — they belong
     // to the step ⑤a follow-up loop and would otherwise leak "bumping
     // in case it got lost" copy onto fresh leads.
@@ -607,15 +607,12 @@ export async function runDailyStart(
       .eq('is_followup', false)
       .order('id', { ascending: true });
     const ycVariantsByFounder = new Map<string, string[]>();
-    const generalVariantByFounder = new Map<string, string>();
+    const generalVariantsByFounder = new Map<string, string[]>();
     for (const v of (variantsData ?? []) as Array<{ id: string; founder_id: string; audience: string }>) {
       if (v.audience === 'general') {
-        // Multiple general variants per founder are unsupported by design
-        // (no A/B test for the general audience). First-by-id wins; we
-        // keep the order deterministic via the ORDER BY above.
-        if (!generalVariantByFounder.has(v.founder_id)) {
-          generalVariantByFounder.set(v.founder_id, v.id);
-        }
+        const list = generalVariantsByFounder.get(v.founder_id) ?? [];
+        list.push(v.id);
+        generalVariantsByFounder.set(v.founder_id, list);
       } else {
         const list = ycVariantsByFounder.get(v.founder_id) ?? [];
         list.push(v.id);
@@ -655,8 +652,8 @@ export async function runDailyStart(
     for (let fi = 0; fi < activeFounders.length; fi++) {
       const founder = activeFounders[fi];
       const ycVariants = ycVariantsByFounder.get(founder.id) ?? [];
-      const generalVariant = generalVariantByFounder.get(founder.id) ?? null;
-      if (ycVariants.length === 0 && !generalVariant) {
+      const generalVariants = generalVariantsByFounder.get(founder.id) ?? [];
+      if (ycVariants.length === 0 && generalVariants.length === 0) {
         log('warn', 'start_founder_no_active_variants', { founder_id: founder.id });
         continue; // skip this founder's chunk entirely
       }
@@ -676,6 +673,7 @@ export async function runDailyStart(
 
       let cursor = startMs + Math.floor(Math.random() * 10_000); // ≤10s initial offset
       let ycIdx = 0;
+      let generalIdx = 0;
       let phaseBJumpDone = false;
       const phaseBCutoffMs = abTestMode
         ? ptCutoffMs(now, AB_TEST_PHASE_B_CUTOFF_PT_HOUR)
@@ -692,10 +690,12 @@ export async function runDailyStart(
           }
           if (ycVariants.length > 0) {
             variantId = ycVariants[ycIdx % ycVariants.length];
-          } else if (generalVariant) {
+          } else if (generalVariants.length > 0) {
             // Defensive: shouldn't happen, but if a founder has no YC
-            // variants we fall back to general so the row still sends.
-            variantId = generalVariant;
+            // variants we fall back to general (round-robin) so the row
+            // still sends.
+            variantId = generalVariants[generalIdx % generalVariants.length];
+            generalIdx++;
           } else {
             // Unreachable given the early-continue above, but TS demands
             // exhaustiveness.
@@ -703,11 +703,15 @@ export async function runDailyStart(
           }
           ycIdx++;
         } else {
-          // General row → single product-prioritization variant.
-          if (generalVariant) {
-            variantId = generalVariant;
+          // General row → round-robin across the founder's general variants.
+          // With 2 active general variants this yields a ~50/50 split per
+          // founder, alternating each row. Order is deterministic via the
+          // ORDER BY id in step ⑧ above.
+          if (generalVariants.length > 0) {
+            variantId = generalVariants[generalIdx % generalVariants.length];
+            generalIdx++;
           } else if (ycVariants.length > 0) {
-            // Fallback: no general variant defined for this founder.
+            // Fallback: no general variants defined for this founder.
             // Rotate through YC variants so the row still goes out —
             // surfaces the "missing general variant" condition without
             // dropping the lead silently.
