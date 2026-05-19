@@ -96,6 +96,31 @@ async function enrichOne(supabase: Supa, lead: DripifyLeadRow): Promise<{
   resolved_email: string | null;
   outcome: EnrichOutcome;
 }> {
+  // Dripify Test ping shortcut: Bill Gates' microsoft.com emails are bogus
+  // synthetic data and Icypeas won't find a real email either. Skip the whole
+  // resolution pipeline (saves $0.05 per Test click) and stamp the test
+  // recipient as the "resolved" email so the send phase fires. The recipient
+  // gets overridden again in sendOne for defense-in-depth.
+  if (isDripifyTestLead(lead.linkedin_url)) {
+    const testEmail = process.env.DRIPIFY_TEST_RECIPIENT_OVERRIDE || TEST_RECIPIENT_FALLBACK;
+    return {
+      status: 'email_queued',
+      resolved_email: testEmail,
+      outcome: {
+        status: 'kept',
+        final_email: testEmail,
+        candidates_tried: [],
+        bec_calls: 0,
+        bec_passes: 0,
+        bec_fails: 0,
+        icypeas_calls: 0,
+        icypeas_status: 'dripify_test_shortcut',
+        cost_usd: 0,
+        drop_reason: null,
+      } satisfies EnrichOutcome,
+    };
+  }
+
   const givenEmail = pickDripifyProvidedEmail(lead.raw_webhook_payload);
   const domain = lead.company_domain ?? extractHostname(lead.company_url);
   const fullName = lead.full_name
