@@ -1,12 +1,18 @@
-// POST /api/webhooks/dripify/<DRIPIFY_WEBHOOK_SECRET>
+// POST /api/cron/dripify-webhook/<DRIPIFY_WEBHOOK_SECRET>
 //
 // Webhook receiver for Dripify (LinkedIn outreach automation). Dripify hits
-// this URL when a configured trigger fires — currently "After a post is liked"
-// for prospects who ignored the connection request and then engaged with one
-// of our posts.
+// this URL when a configured trigger fires — currently "After a lead's post
+// is liked" for prospects who ignored the connection request and then engaged
+// with one of our posts.
 //
 // Auth model: URL-embedded secret. Dripify cannot send custom auth headers, so
 // the secret lives in the URL path. Compared with timingSafeEqual.
+//
+// Path note: route lives under /api/cron/* (not /api/webhooks/*) because the
+// Vercel project's Deployment Protection allowlist passes /api/cron/* through
+// to the function. Other paths get edge-blocked with a Vercel-owned 401 before
+// our handler runs. The prefix doesn't imply a scheduled cron — it's just the
+// path that bypasses the edge gate.
 //
 // Behavior:
 //   - Always logs the raw payload to dripify_webhook_events (signature_ok=true/false)
