@@ -37,6 +37,7 @@ export {
   Globe,
   Kanban,
   Key as KeyRound,
+  LinkedinLogo as Linkedin,
   Lightning as Zap,
   List as LayoutList,
   MagnifyingGlass as Search,

@@ -45,6 +45,7 @@ import {
   Zap,
   Users,
   Target,
+  Linkedin,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -85,6 +86,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { href: '/mass-email', label: 'Outreach',      icon: Send },
       { href: '/email-tool', label: 'Cold Outreach', icon: Target },
+      { href: '/dripify',    label: 'Dripify',       icon: Linkedin },
     ],
   },
   {
