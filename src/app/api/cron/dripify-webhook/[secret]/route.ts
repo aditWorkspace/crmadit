@@ -80,19 +80,30 @@ function parseDripifyPayload(payload: unknown): Partial<DripifyLeadInsert> {
   const p = payload as Record<string, unknown>;
   const lead = (p.lead && typeof p.lead === 'object' ? p.lead : p) as Record<string, unknown>;
 
+  // Dripify's actual webhook shape (observed 2026-05-19, "After a lead's post
+  // is liked" test): firstName, lastName, link (LinkedIn URL), company,
+  // companyWebsite, position, location, city, country, education, industry,
+  // numberOfCompanyEmployees, numberOfCompanyFollowers, hookDate, premium,
+  // phone, plus four candidate emails: email, manualEmail, linkedInEmail,
+  // corporateEmail. Dripify does NOT send an event_type field — the trigger
+  // is implicit from which campaign+endpoint pair fired.
+  //
+  // We DON'T extract the four emails here; that's PR2's job (the processor
+  // feeds the most-trusted Dripify-provided email into processEnrichRow's
+  // BEC chain to potentially skip Icypeas).
   return {
-    linkedin_url:       firstString(lead, ['linkedin_url', 'linkedinUrl', 'profile_url', 'profileUrl', 'linkedin']),
+    linkedin_url:       firstString(lead, ['link', 'linkedin_url', 'linkedinUrl', 'profile_url', 'profileUrl', 'linkedin']),
     linkedin_public_id: firstString(lead, ['linkedin_public_id', 'public_id', 'publicId', 'linkedin_id']),
-    first_name:         firstString(lead, ['first_name', 'firstName', 'first']),
-    last_name:          firstString(lead, ['last_name', 'lastName', 'last']),
-    full_name:          firstString(lead, ['full_name', 'fullName', 'name']),
-    headline:           firstString(lead, ['headline', 'title', 'position']),
+    first_name:         firstString(lead, ['firstName', 'first_name', 'first']),
+    last_name:          firstString(lead, ['lastName', 'last_name', 'last']),
+    full_name:          firstString(lead, ['fullName', 'full_name', 'name']),
+    headline:           firstString(lead, ['position', 'headline', 'title']),
     location:           firstString(lead, ['location', 'city', 'country']),
-    company_name:       firstString(lead, ['company_name', 'companyName', 'company', 'organization']),
-    company_url:        firstString(lead, ['company_url', 'companyUrl', 'company_website', 'website']),
+    company_name:       firstString(lead, ['company', 'company_name', 'companyName', 'organization']),
+    company_url:        firstString(lead, ['companyWebsite', 'company_url', 'companyUrl', 'company_website', 'website']),
     company_domain:     firstString(lead, ['company_domain', 'domain']),
-    dripify_campaign_name: firstString(p,    ['campaign_name', 'campaignName', 'campaign']),
-    dripify_event_type:    firstString(p,    ['event', 'event_type', 'eventType', 'trigger', 'action']) ?? 'unknown',
+    dripify_campaign_name: firstString(p,  ['campaignName', 'campaign_name', 'campaign']),
+    dripify_event_type:    firstString(p,  ['event', 'event_type', 'eventType', 'trigger', 'action']) ?? 'after_post_liked',
   };
 }
 
