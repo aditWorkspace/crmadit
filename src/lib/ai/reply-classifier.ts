@@ -51,6 +51,32 @@ OUTPUT JSON ONLY:
   }
 }
 
+## ACTION-REQUEST OVERRIDE (READ FIRST)
+
+If the prospect asks US to take ANY concrete action — even one — that signal
+OUTWEIGHS any positive opener in the same email. The action bucket takes
+precedence over positive_*, async_*, info_*. We cannot auto-execute these
+actions; they need the founder.
+
+Trigger phrases (case-insensitive, paraphrased — match the intent, not the
+literal wording):
+  - "please contact <name>" / "reach out to <name>" / "talk to <name> instead"
+        → primary: referral_named
+  - "let me connect you with <name>" / "I'll loop in <name>"
+        → primary: referral_will_connect
+  - "send me a Calendly / calendar / meeting link"
+        → primary: edge_action_required
+  - "set up a meeting with <name>" / "send over a meeting link"
+        → primary: edge_action_required
+  - "forward this to <person>" / "introduce me to <name>" / "loop in <name>"
+        → primary: edge_action_required
+  - "follow up with <name>" / "cc <name> on your next note"
+        → primary: edge_action_required
+
+A positive opener ("interesting", "we do have these issues") followed by ANY
+of the above in the same email is NOT positive_casual — the primary category
+is the action bucket, and any positive intent goes in secondary_categories.
+
 ## MULTI-CATEGORY HANDLING
 
 Replies often contain MULTIPLE intents. Use the SPECIFIC sub-category values:
@@ -58,6 +84,9 @@ Replies often contain MULTIPLE intents. Use the SPECIFIC sub-category values:
 - "Sure, but what exactly do you do?" → primary_category: "positive_casual", secondary_categories: ["info_what_is_it"]
 - "I'm traveling until March, but yes interested" → primary_category: "delay_traveling", secondary_categories: ["positive_casual"]
 - "Talk to Sarah, she handles this" → primary_category: "referral_named", secondary_categories: []
+- "This is interesting, we do have these issues. But I'm not the right person — please contact Sarah with a meeting link" → primary_category: "referral_named", secondary_categories: ["edge_action_required"]
+- "Cool, please contact my CTO Bob about this" → primary_category: "referral_named", secondary_categories: ["edge_action_required"]
+- "Yes interested, but cc Sarah on your next email" → primary_category: "edge_action_required", secondary_categories: ["positive_casual"]
 - "I'd rather do this over email if that's ok. What did you want to discuss?" → primary_category: "async_prefer_email", secondary_categories: ["async_quick_questions"]
 - "Can you send more info first? Want to see if relevant" → primary_category: "async_send_info", secondary_categories: []
 - "Too busy for calls but happy to chat over email. What's on your mind?" → primary_category: "async_busy_no_call", secondary_categories: ["async_quick_questions"]
@@ -128,6 +157,7 @@ NOTE: "Is this for a class project?" is NOT edge_academic. It's info_what_is_it 
 - calendly_sent: Contains Calendly, Cal.com, SavvyCal, Acuity, Doodle link
 
 ### EDGE_CASE (DO NOT AUTO-REPLY - route to founder)
+- edge_action_required: Prospect asks us to take a logistical action we can't auto-execute. Examples: "send me a Calendly link", "set up a meeting with Bob", "forward this to compliance", "introduce me to your CTO". Distinct from referral_named (which is "talk to X instead, not me"). Use this whenever the email contains an imperative directed at us that ISN'T a referral.
 - edge_resume: "Here's my resume", "Looking for work", "Are you hiring?", "Are you guys looking for a job?"
 - edge_linkedin: "Connect on LinkedIn", "Add me on LinkedIn"
 - edge_sales_pitch: Someone pitching US a product/service

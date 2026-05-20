@@ -73,6 +73,26 @@ OUTPUT JSON ONLY:
   }
 }
 
+## ACTION-REQUEST CHECK (HARD STOP)
+
+If the email contains an imperative directed AT US asking us to take a
+concrete logistical action (contact someone, set up a meeting, send a
+calendar/Calendly link, forward the message, introduce us to a third party,
+cc another person, loop someone in), that ALONE makes the email UNSAFE to
+auto-reply regardless of overall tone score.
+
+Set safe_to_auto_reply=false, recommendation='founder', add
+'action_required' to concerns, and explain in reasoning. We cannot
+reliably execute actions for the founder — even a friendly, positive email
+becomes founder-handled the moment it contains an action ask.
+
+Examples that trigger this hard stop:
+- "Please contact Julian with a meeting link"     → UNSAFE (action_required)
+- "Send me a Calendly link"                       → UNSAFE (action_required)
+- "Forward this to your compliance team"          → UNSAFE (action_required)
+- "Introduce me to your CTO"                      → UNSAFE (action_required)
+- "CC Sarah on your next email"                   → UNSAFE (action_required)
+
 ## KEY PRINCIPLE: POSITIVE + COMMON QUESTION = SAFE
 
 If someone says YES and also asks a common question we have a standard answer for, that's SAFE.
