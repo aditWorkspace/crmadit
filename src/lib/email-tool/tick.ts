@@ -18,7 +18,7 @@ import { getCampaignGmailClient, type CampaignGmailClient } from '@/lib/gmail/cl
 import type { SendMode } from './types';
 import { detectAndAbortOrphans } from './orphan-recovery';
 import { runDailyStart } from './start';
-import { WEEKDAY_START_TIMES_PT } from './schedule';
+import { WEEKDAY_START_TIMES_PT, SCHEDULE_OVERRIDE_PT_DATES } from './schedule';
 import { looksLikeMatch } from './name-email-match';
 
 type Supa = ReturnType<typeof createAdminClient>;
@@ -569,8 +569,8 @@ function ptSlotInstant(y: number, mo: number, d: number, h: number, mi: number):
 
 /** Returns today's PT slot instant if today is a weekday, else null. */
 function todaysSlotInstant(d: Date): Date | null {
-  const dow = ptDayOfWeekFromDate(d);
-  const slot = WEEKDAY_START_TIMES_PT[dow];
+  const override = SCHEDULE_OVERRIDE_PT_DATES[formatPtDate(d)];
+  const slot = override ?? WEEKDAY_START_TIMES_PT[ptDayOfWeekFromDate(d)];
   if (!slot) return null;
   const { year, month, day } = ptDatePartsFromDate(d);
   return ptSlotInstant(year, month, day, slot.hour, slot.minute);

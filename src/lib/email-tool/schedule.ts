@@ -19,6 +19,13 @@ export const WEEKDAY_START_TIMES_PT: Record<number, { hour: number; minute: numb
   6: { hour: 7, minute: 30 },  // Saturday  — 7:30 AM PT (follow-ups only)
 };
 
+// PT-date-keyed one-off overrides. When today's PT date is a key here, the
+// daily-start slot uses these hour/minute instead of the weekday default.
+// Remove entries once their date has passed.
+export const SCHEDULE_OVERRIDE_PT_DATES: Record<string, { hour: number; minute: number }> = {
+  '2026-05-20': { hour: 8, minute: 35 },
+};
+
 const PT_TZ = 'America/Los_Angeles';
 const DAY_OF_WEEK_FMT = new Intl.DateTimeFormat('en-US', {
   timeZone: PT_TZ,
@@ -100,10 +107,11 @@ function ptDateAtTime(year: number, month: number, day: number, hour: number, mi
 export function computeNextRunAt(now: Date = new Date()): Date | null {
   for (let i = 0; i < 8; i++) {
     const candidate = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
-    const dow = ptDayOfWeek(candidate);
-    const slot = WEEKDAY_START_TIMES_PT[dow];
-    if (!slot) continue; // belt-and-suspenders: if a day ever lacks an entry, skip
     const { year, month, day } = ptDateParts(candidate);
+    const ptKey = YMD_FMT.format(candidate);
+    const override = SCHEDULE_OVERRIDE_PT_DATES[ptKey];
+    const slot = override ?? WEEKDAY_START_TIMES_PT[ptDayOfWeek(candidate)];
+    if (!slot) continue;
     const slotInstant = ptDateAtTime(year, month, day, slot.hour, slot.minute);
     if (slotInstant > now) return slotInstant;
   }
