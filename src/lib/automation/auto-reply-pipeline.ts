@@ -278,15 +278,6 @@ export async function runAutoReplyPipeline(
         continue;
       }
 
-      // Async asks = skip. "Send the questions", "send info", etc — we
-      // can't reliably produce that content without founder input.
-      if (classifierResult.primary_category.startsWith('async_')) {
-        result.skipped++;
-        recordDetail(result, lead.id, 'classifier', 'skipped',
-          `async: ${classifierResult.primary_category}`, classifierResult);
-        continue;
-      }
-
       // Info questions about us = skip. Founder wants to answer these
       // personally with up-to-date framing, not a stock blurb.
       if (classifierResult.primary_category.startsWith('info_')) {
@@ -296,12 +287,13 @@ export async function runAutoReplyPipeline(
         continue;
       }
 
-      // Calendar / link actions = skip. Founder needs to actually send
-      // times, confirm a day on their calendar, or send a Calendly link.
+      // Calendar-confirmation actions = skip. Founder must provide real
+      // times or confirm a specific day on their real calendar — the
+      // writer can't fabricate those. Calendly-link asks and async
+      // info/question asks DO auto-reply (writer handles them).
       const ACTION_POSITIVES = new Set([
         'positive_send_times',
         'positive_specific_day',
-        'positive_calendly_request',
       ]);
       if (ACTION_POSITIVES.has(classifierResult.primary_category)) {
         result.skipped++;
