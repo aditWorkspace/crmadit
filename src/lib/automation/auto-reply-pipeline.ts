@@ -249,8 +249,10 @@ export async function runAutoReplyPipeline(
         continue;
       }
 
-      // Low confidence = founder
-      if (classifierResult.confidence < 0.7) {
+      // Low confidence = founder. 0.9 floor: only auto-reply when we're
+      // very sure. Anything murkier surfaces in the founder feed so a
+      // human can read the thread before deciding.
+      if (classifierResult.confidence < 0.9) {
         result.founder++;
         recordDetail(result, lead.id, 'classifier', 'founder', `low_confidence: ${classifierResult.confidence}`, classifierResult);
         if (!dryRun) {
@@ -263,6 +265,48 @@ export async function runAutoReplyPipeline(
       if (classifierResult.primary_category.startsWith('decline')) {
         result.skipped++;
         recordDetail(result, lead.id, 'classifier', 'skipped', `decline: ${classifierResult.primary_category}`, classifierResult);
+        continue;
+      }
+
+      // Embedded questions = skip. Any question is an action we can't
+      // genuinely auto-answer; let it sit in the inbox for the founder.
+      if (classifierResult.embedded_questions.length > 0) {
+        result.skipped++;
+        recordDetail(result, lead.id, 'classifier', 'skipped',
+          `embedded_questions: ${classifierResult.embedded_questions.join(' | ')}`,
+          classifierResult);
+        continue;
+      }
+
+      // Async asks = skip. "Send the questions", "send info", etc — we
+      // can't reliably produce that content without founder input.
+      if (classifierResult.primary_category.startsWith('async_')) {
+        result.skipped++;
+        recordDetail(result, lead.id, 'classifier', 'skipped',
+          `async: ${classifierResult.primary_category}`, classifierResult);
+        continue;
+      }
+
+      // Info questions about us = skip. Founder wants to answer these
+      // personally with up-to-date framing, not a stock blurb.
+      if (classifierResult.primary_category.startsWith('info_')) {
+        result.skipped++;
+        recordDetail(result, lead.id, 'classifier', 'skipped',
+          `info: ${classifierResult.primary_category}`, classifierResult);
+        continue;
+      }
+
+      // Calendar / link actions = skip. Founder needs to actually send
+      // times, confirm a day on their calendar, or send a Calendly link.
+      const ACTION_POSITIVES = new Set([
+        'positive_send_times',
+        'positive_specific_day',
+        'positive_calendly_request',
+      ]);
+      if (ACTION_POSITIVES.has(classifierResult.primary_category)) {
+        result.skipped++;
+        recordDetail(result, lead.id, 'classifier', 'skipped',
+          `action_positive: ${classifierResult.primary_category}`, classifierResult);
         continue;
       }
 

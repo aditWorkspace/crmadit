@@ -56,7 +56,7 @@ Score each dimension 0-10:
 | request_type | 25% | Asking for something we can't provide | Info question | Scheduling/positive |
 | context_fit | 20% | Off-topic, random | Tangentially related | Direct response to outreach |
 
-THRESHOLD: weighted_total must be >= 6.2 to be SAFE.
+THRESHOLD: weighted_total must be >= 7.5 to be SAFE.
 
 OUTPUT JSON ONLY:
 {
@@ -183,7 +183,7 @@ export async function detectEdgeCases(opts: EdgeDetectorInput): Promise<EdgeDete
     const weightedTotal =
       intentClarity * 0.3 + toneSafety * 0.25 + requestType * 0.25 + contextFit * 0.2;
 
-    const isSafe = weightedTotal >= 6.2 && parsed.safe_to_auto_reply !== false;
+    const isSafe = weightedTotal >= 7.5 && parsed.safe_to_auto_reply !== false;
 
     return {
       safe_to_auto_reply: isSafe,
