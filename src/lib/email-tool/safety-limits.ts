@@ -88,3 +88,35 @@ export const SAFETY_LIMITS = {
   SEND_ALLOWED_PT_HOUR_MIN: 4,
   SEND_ALLOWED_PT_HOUR_MAX: 12,
 } as const;
+
+// ── TEMPORARY volume reduction — founder request 2026-06-02 ───────────────
+// Cut fresh cold sends 400 → 100 per account for ~2 weeks (deliverability
+// cooldown for Adit's + Asim's accounts). The 50 reserved follow-up bumps
+// per account (FOLLOWUP_DAILY_CAP_PER_FOUNDER) are left untouched, so the
+// effective per-account ceiling during the window is 150 = 100 fresh + 50
+// bumps. start.ts applies this as a Math.min ceiling over the warmup /
+// steady-state cap, so it also clamps warmup days and is a no-op once the
+// window closes.
+//
+// Window: PT send-dates < TEMP_REDUCED_RESUME_PT_DATE use 150; on/after that
+// date the cap auto-reverts to AUTOMATED_DAILY_TARGET_PER_ACCOUNT (450 = 400
+// fresh + 50 bumps). So sends June 2–15 are reduced; June 16 onward is full
+// volume. To run the window longer/shorter, edit the one date below. To end
+// early, delete this block and the effectiveDailyTargetPerAccount() call in
+// start.ts — the plain constant is the post-window value, so removing the
+// override restores normal behavior. Safe to delete any time on/after the
+// resume date.
+export const TEMP_REDUCED_TARGET_PER_ACCOUNT = 150; // 100 fresh + 50 follow-up bumps
+export const TEMP_REDUCED_RESUME_PT_DATE = '2026-06-16'; // first full-volume PT date (exclusive bound)
+
+/**
+ * Per-account daily send target for a given PT date string ('YYYY-MM-DD').
+ * Returns the temporary reduced ceiling during the cooldown window, otherwise
+ * the steady-state SAFETY_LIMITS.AUTOMATED_DAILY_TARGET_PER_ACCOUNT. ISO date
+ * strings compare lexicographically == chronologically, so a plain `<` works.
+ */
+export function effectiveDailyTargetPerAccount(ptDate: string): number {
+  return ptDate < TEMP_REDUCED_RESUME_PT_DATE
+    ? TEMP_REDUCED_TARGET_PER_ACCOUNT
+    : SAFETY_LIMITS.AUTOMATED_DAILY_TARGET_PER_ACCOUNT;
+}

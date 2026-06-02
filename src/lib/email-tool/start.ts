@@ -11,7 +11,7 @@
 // alert, fall through to drain, or short-circuit.
 
 import type { createAdminClient } from '@/lib/supabase/admin';
-import { SAFETY_LIMITS } from './safety-limits';
+import { SAFETY_LIMITS, effectiveDailyTargetPerAccount } from './safety-limits';
 import {
   FOLLOWUP_DAILY_CAP_PER_FOUNDER,
   FOLLOWUP_MIN_AGE_HOURS,
@@ -197,9 +197,15 @@ export async function runDailyStart(
       .eq('id', 1)
       .single();
     const warmupDay = (scheduleRow as { warmup_day_completed: number } | null)?.warmup_day_completed ?? 0;
-    const dailyCapPerAcct = warmupDay === 0
+    const baseCapPerAcct = warmupDay === 0
       ? SAFETY_LIMITS.WARMUP_DAY_1_CAP
       : SAFETY_LIMITS.AUTOMATED_DAILY_TARGET_PER_ACCOUNT;
+    // Temporary cooldown reduction (see safety-limits.ts) applied as a ceiling
+    // so it clamps warmup days too and auto-reverts on its resume PT date.
+    const dailyCapPerAcct = Math.min(
+      baseCapPerAcct,
+      effectiveDailyTargetPerAccount(formatPtDate(now)),
+    );
     const cappedPerAcct = Math.min(dailyCapPerAcct, SAFETY_LIMITS.ABSOLUTE_DAILY_CAP_PER_ACCOUNT);
 
     const { data: foundersData } = await supabase

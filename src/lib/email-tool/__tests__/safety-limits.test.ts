@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { SAFETY_LIMITS } from '../safety-limits';
+import {
+  SAFETY_LIMITS,
+  TEMP_REDUCED_TARGET_PER_ACCOUNT,
+  TEMP_REDUCED_RESUME_PT_DATE,
+  effectiveDailyTargetPerAccount,
+} from '../safety-limits';
+import { FOLLOWUP_DAILY_CAP_PER_FOUNDER } from '../constants';
 
 describe('SAFETY_LIMITS — relational invariants', () => {
   it('absolute hard ceiling stays above the automated target', () => {
@@ -80,6 +86,41 @@ describe('SAFETY_LIMITS — relational invariants', () => {
     // a campaign mid-start is rarer and harder to recover automatically.
     expect(SAFETY_LIMITS.ORPHAN_CAMPAIGN_THRESHOLD_MINUTES).toBeGreaterThan(0);
     expect(SAFETY_LIMITS.CRASH_RECOVERY_STALE_MINUTES).toBeGreaterThan(0);
+  });
+});
+
+describe('effectiveDailyTargetPerAccount — temporary cooldown window (2026-06-02 → 2026-06-15)', () => {
+  it('returns the reduced target on PT dates before the resume date', () => {
+    expect(effectiveDailyTargetPerAccount('2026-06-02')).toBe(TEMP_REDUCED_TARGET_PER_ACCOUNT);
+    expect(effectiveDailyTargetPerAccount('2026-06-15')).toBe(TEMP_REDUCED_TARGET_PER_ACCOUNT);
+  });
+
+  it('returns the full steady-state target on and after the resume date', () => {
+    expect(effectiveDailyTargetPerAccount(TEMP_REDUCED_RESUME_PT_DATE)).toBe(
+      SAFETY_LIMITS.AUTOMATED_DAILY_TARGET_PER_ACCOUNT
+    );
+    expect(effectiveDailyTargetPerAccount('2026-06-16')).toBe(
+      SAFETY_LIMITS.AUTOMATED_DAILY_TARGET_PER_ACCOUNT
+    );
+    expect(effectiveDailyTargetPerAccount('2026-07-01')).toBe(
+      SAFETY_LIMITS.AUTOMATED_DAILY_TARGET_PER_ACCOUNT
+    );
+  });
+
+  it('reduced target yields exactly 100 fresh cold sends per account (bumps preserved)', () => {
+    // freshPerFounder = perAccountTarget − reserved follow-up bumps.
+    // The whole point of 150 (not 100) is to keep the 50 bumps intact.
+    expect(TEMP_REDUCED_TARGET_PER_ACCOUNT - FOLLOWUP_DAILY_CAP_PER_FOUNDER).toBe(100);
+  });
+
+  it('reduced target is a real reduction below the steady-state target', () => {
+    expect(TEMP_REDUCED_TARGET_PER_ACCOUNT).toBeLessThan(
+      SAFETY_LIMITS.AUTOMATED_DAILY_TARGET_PER_ACCOUNT
+    );
+  });
+
+  it('resume date is an ISO YYYY-MM-DD string so PT-date string compares are chronological', () => {
+    expect(TEMP_REDUCED_RESUME_PT_DATE).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });
 
