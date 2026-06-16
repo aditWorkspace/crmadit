@@ -46,10 +46,12 @@ export const ROLE_BASED_TIER = 6;
 
 // ── Worker / draft lifecycle ───────────────────────────────────────────────
 export const DRAFT_WORKER_BATCH = 12;           // max drafts claimed per worker tick
-export const DRAFT_WORKER_BUDGET_MS = 170_000;  // stop STARTING new drafts past this
-// Hard per-draft wall-clock cap. A single slow draft (slow site + retries) must
-// never run past the 300s Vercel function limit. 170s budget + 120s cap = ≤290s.
-export const PER_DRAFT_TIMEOUT_MS = 120_000;
+// The worker runs as a fire-and-forget background task (Next after()), so the
+// cron gets a fast 200 and never times out. Budget bounds how long the
+// background run keeps claiming. 110s budget + 120s per-draft cap = ≤230s,
+// under the 300s function limit; ~2 minute-fired runs overlap at most.
+export const DRAFT_WORKER_BUDGET_MS = 110_000;  // stop STARTING new drafts past this
+export const PER_DRAFT_TIMEOUT_MS = 120_000;    // hard wall-clock cap per draft
 export const DRAFT_LOCK_DURATION_MS = 5 * 60_000;
 export const MAX_DRAFT_ATTEMPTS = 3;            // retryable provider failures before 'failed'
 // Backoff per attempt: 1m, 5m, 15m. retry_at = now + this. Index = attempt_count-1.
