@@ -175,3 +175,71 @@ export type AiFollowupDecision = z.infer<typeof aiFollowupDecisionSchema>;
 export type FirstReplyDecision = z.infer<typeof firstReplyDecisionSchema>;
 export type FirstReplyCategory = z.infer<typeof firstReplyCategorySchema>;
 export type AiTranscriptAnalysis = z.infer<typeof aiTranscriptAnalysisSchema>;
+
+// ── Cold-email personalization (research → evidence → write → claim-check) ──
+// The extraction model emits structured evidence cards; it NEVER sets tier or
+// score. URL validity is checked in code (verifyEvidence), so source_url is a
+// permissive nullable string here — a malformed URL becomes a verification
+// failure, not a parse failure that loses the whole research blob.
+
+export const evidenceKindSchema = z.enum([
+  'person_quote',           // tier 1 — direct quote/point about customers/feedback/roadmap
+  'person_post',            // tier 1 — post/podcast/talk by the person on those themes
+  'company_changelog',      // tier 2 — shipped feature / changelog / launch
+  'company_customer_story', // tier 2 — published customer story / case study
+  'company_hiring',         // tier 3 — hiring product/support/customer/ops/eng
+  'tool_stack',             // tier 4 — their actual support/sales/eng tools
+  'adjacent_tool',          // tier 5 — competing/adjacent tool or prioritization process
+  'public_complaint',       // supporting only — never an opener
+  'role_based',             // tier 6 — generic fallback
+]);
+
+export const evidenceSourceTypeSchema = z.enum(['firecrawl', 'sonar', 'derived']);
+
+export const evidenceCardSchema = z.object({
+  id: z.string().min(1),
+  kind: evidenceKindSchema,
+  statement: z.string().min(1),       // one-line factual claim, used by the writer
+  evidence_quote: z.string().nullable().default(null), // verbatim snippet backing it
+  source_url: z.string().nullable().default(null),
+  source_type: evidenceSourceTypeSchema,
+  confidence: z.number().min(0).max(1).default(0.5),
+  // Filled in by code (verifyEvidence), not trusted from the model.
+  usable_in_email: z.boolean().default(false),
+  supporting_only: z.boolean().default(false),
+  reject_reason: z.string().nullable().default(null),
+});
+
+export const coldExtractionSchema = z.object({
+  cards: z.array(evidenceCardSchema).default([]),
+  linkedin_exists: z.boolean().default(false),
+});
+
+export const coldWriteSchema = z.object({
+  subject: z.string().min(1),
+  body: z.string().min(1),
+});
+
+export const claimTypeSchema = z.enum([
+  'proxi_claim',                  // a claim about Proxi / what we do
+  'recipient_company_person_claim', // a claim about THEM — must map to a selected card
+  'generic_role_pain',            // a generic pain anyone in their seat has
+  'cta_opinion',                  // the ask / an opinion, not a factual claim
+]);
+
+export const claimCheckSchema = z.object({
+  claims: z.array(z.object({
+    text: z.string(),
+    type: claimTypeSchema,
+    supported: z.boolean().default(false),
+    evidence_id: z.string().nullable().default(null),
+  })).default([]),
+});
+
+export type EvidenceKind = z.infer<typeof evidenceKindSchema>;
+export type EvidenceSourceType = z.infer<typeof evidenceSourceTypeSchema>;
+export type EvidenceCard = z.infer<typeof evidenceCardSchema>;
+export type ColdExtraction = z.infer<typeof coldExtractionSchema>;
+export type ColdWrite = z.infer<typeof coldWriteSchema>;
+export type ClaimType = z.infer<typeof claimTypeSchema>;
+export type ClaimCheck = z.infer<typeof claimCheckSchema>;

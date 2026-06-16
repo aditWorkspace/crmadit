@@ -53,6 +53,15 @@ interface QueueRow {
    *  pre-populated in gmail_thread_id below at start.ts step ⑤a. */
   parent_queue_id: string | null;
   gmail_thread_id: string | null;
+  /** 'pool' (fresh cold, now personalized) or 'priority'. */
+  source: string;
+  /** Snapshot of the personalized draft (start.ts step ⑤b). When set, the
+   *  personalized subject/body override the template variant at send time. A
+   *  fresh personalization-intended row missing these FAILS rather than
+   *  sending a generic template. */
+  personalized_draft_id: string | null;
+  personalized_subject: string | null;
+  personalized_body: string | null;
 }
 
 interface FounderRow {
@@ -135,7 +144,7 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
   // ── 4) Pull due rows ──────────────────────────────────────────────────
   const { data: dueData } = await supabase
     .from('email_send_queue')
-    .select('id, campaign_id, account_id, recipient_email, recipient_name, recipient_company, template_variant_id, send_at, attempts, parent_queue_id, gmail_thread_id')
+    .select('id, campaign_id, account_id, recipient_email, recipient_name, recipient_company, template_variant_id, send_at, attempts, parent_queue_id, gmail_thread_id, source, personalized_draft_id, personalized_subject, personalized_body')
     .eq('status', 'pending')
     .lte('send_at', now.toISOString())
     .in('account_id', activeIds)
@@ -222,6 +231,24 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
       continue;
     }
 
+    // Personalization guard (fresh cold rows only). A fresh send that was
+    // meant to be personalized (came from a draft, or is a pool send) MUST
+    // carry personalized copy. We FAIL the row rather than fall back to a
+    // generic template — sending generic copy here would defeat the entire
+    // personalization layer and is exactly what the "no generic fresh send"
+    // invariant forbids.
+    if (row.parent_queue_id == null) {
+      const personalizationIntended = row.personalized_draft_id != null || row.source === 'pool';
+      if (personalizationIntended && !(row.personalized_subject && row.personalized_body)) {
+        await supabase.from('email_send_queue')
+          .update({ status: 'failed', last_error: 'missing_personalized_copy' })
+          .eq('id', row.id);
+        log('warn', 'tick_missing_personalized_copy', { queue_row_id: row.id, source: row.source });
+        stats.failed++;
+        continue;
+      }
+    }
+
     // Name-email mismatch guard (last line of defense).
     //
     // The csv-filter route validates this at upload time, but rows
@@ -289,9 +316,17 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
           allowlist,
         });
       } else {
+        // Fresh cold. Prefer the personalized snapshot; the generic template
+        // is only a fallback for non-personalization-intended rows (the guard
+        // above already failed any personalization-intended row missing copy).
+        // renderTemplate is a no-op on tag-free personalized prose, so the
+        // tracking pixel / unsubscribe / send-mode machinery is unchanged.
+        const effectiveVariant: VariantRow = (row.personalized_subject && row.personalized_body)
+          ? { subject_template: row.personalized_subject, body_template: row.personalized_body }
+          : variant;
         outcome = await sendCampaignEmail({
           queueRow: { ...row, status: 'pending' as const },
-          variant,
+          variant: effectiveVariant,
           founder: { id: founder.id, name: founder.name, email: founder.email },
           sendMode,
           allowlist,

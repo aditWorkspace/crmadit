@@ -89,20 +89,31 @@ describe('SAFETY_LIMITS — relational invariants', () => {
   });
 });
 
-describe('effectiveDailyTargetPerAccount — temporary cooldown window (2026-06-02 → 2026-06-15)', () => {
+describe('effectiveDailyTargetPerAccount — quality-first volume hold (held open for personalization)', () => {
+  // Dates derived from the constant so this survives future moves of the
+  // resume date (the cap was extended past 2026-06-15 for the personalization
+  // layer: ~100 personalized fresh sends/account/day instead of 400 generic).
+  const dayBefore = (iso: string): string => {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().slice(0, 10);
+  };
+  const dayAfter = (iso: string): string => {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().slice(0, 10);
+  };
+
   it('returns the reduced target on PT dates before the resume date', () => {
     expect(effectiveDailyTargetPerAccount('2026-06-02')).toBe(TEMP_REDUCED_TARGET_PER_ACCOUNT);
-    expect(effectiveDailyTargetPerAccount('2026-06-15')).toBe(TEMP_REDUCED_TARGET_PER_ACCOUNT);
+    expect(effectiveDailyTargetPerAccount(dayBefore(TEMP_REDUCED_RESUME_PT_DATE))).toBe(TEMP_REDUCED_TARGET_PER_ACCOUNT);
   });
 
   it('returns the full steady-state target on and after the resume date', () => {
     expect(effectiveDailyTargetPerAccount(TEMP_REDUCED_RESUME_PT_DATE)).toBe(
       SAFETY_LIMITS.AUTOMATED_DAILY_TARGET_PER_ACCOUNT
     );
-    expect(effectiveDailyTargetPerAccount('2026-06-16')).toBe(
-      SAFETY_LIMITS.AUTOMATED_DAILY_TARGET_PER_ACCOUNT
-    );
-    expect(effectiveDailyTargetPerAccount('2026-07-01')).toBe(
+    expect(effectiveDailyTargetPerAccount(dayAfter(TEMP_REDUCED_RESUME_PT_DATE))).toBe(
       SAFETY_LIMITS.AUTOMATED_DAILY_TARGET_PER_ACCOUNT
     );
   });

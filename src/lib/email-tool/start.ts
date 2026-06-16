@@ -300,7 +300,8 @@ export async function runDailyStart(
     const freshTotalTarget = weekendMode
       ? 0
       : Math.max(0, dailyTarget - reservedForFollowups);
-    const regularTarget = Math.max(0, freshTotalTarget - cappedPriorityRows.length);
+    // (regularTarget removed — fresh sends now come from the personalized-draft
+    // buffer, built per sender in step ⑤b below.)
     if (weekendMode && !abTestMode) {
       log('info', 'start_weekend_followups_only', {
         campaign_id: campaignId,
@@ -318,50 +319,12 @@ export async function runDailyStart(
         phase_a_per_founder: AB_TEST_PHASE_A_ROWS_PER_FOUNDER,
       });
     }
-    let poolRows: PoolRow[] = [];
-    if (regularTarget > 0) {
-      const { data: pool } = await supabase.rpc('email_tool_pick_batch', { p_limit: regularTarget });
-      poolRows = (pool ?? []) as PoolRow[];
-      // The picker RPC doesn't return yc_batch (it was added in
-      // migration 035 — the RPC signature is frozen). Hydrate by id so
-      // queue rows know which template family to use. If no rows were
-      // picked, skip the round-trip.
-      if (poolRows.length > 0) {
-        const ids = poolRows.map(r => r.id);
-        const ycMap = new Map<string, string | null>();
-        for (let off = 0; off < ids.length; off += 500) {
-          const slice = ids.slice(off, off + 500);
-          const { data: ycRows } = await supabase
-            .from('email_pool')
-            .select('id, yc_batch')
-            .in('id', slice);
-          for (const r of (ycRows ?? []) as Array<{ id: string; yc_batch: string | null }>) {
-            ycMap.set(r.id, r.yc_batch);
-          }
-        }
-        poolRows = poolRows.map(r => ({ ...r, yc_batch: ycMap.get(r.id) ?? null }));
-      }
-      if (poolRows.length > 0) {
-        const maxSeq = poolRows.reduce((m, r) => Math.max(m, r.sequence), -1);
-        const pickedEmails = poolRows.map(r => r.email.toLowerCase());
-        const { error: claimErr } = await supabase.rpc('email_send_pool_claim_batch', {
-          p_picked_emails: pickedEmails,
-          p_max_sequence:  maxSeq,
-          p_campaign_id:   campaignId,
-        });
-        if (claimErr) {
-          // Pool was selected but never claimed; abort and let admin
-          // investigate. The selected rows remain pickable (no DB state
-          // changed), and the campaign is marked aborted so the next
-          // tick won't try to drain a half-built queue.
-          log('error', 'start_pool_claim_failed', { campaign_id: campaignId, err: claimErr.message });
-          await supabase.from('email_send_campaigns')
-            .update({ status: 'aborted', abort_reason: 'pool_claim_failed', completed_at: now.toISOString() })
-            .eq('id', campaignId);
-          return { kind: 'aborted', campaign_id: campaignId, reason: 'pool_claim_failed' };
-        }
-      }
-    }
+    // Fresh sends no longer come from the legacy pool pick (email_tool_pick_
+    // batch + blacklist claim). They come from cold_email_drafts — seeded from
+    // email_pool, researched + written by the draft worker — pulled per sender
+    // in step ⑤b below. poolRows stays empty so the priority/round-robin
+    // machinery (combined → assigned → dedup) runs on priority rows only.
+    const poolRows: PoolRow[] = [];
     // ── Step ⑤a: opener-no-reply follow-up pick (per founder) ─────────────
     // For each active founder, find queue rows where the original send
     // landed 3–14 days ago, was opened, never replied to, and never
@@ -487,7 +450,107 @@ export async function runDailyStart(
       log('info', 'start_followups_skipped', { campaign_id: campaignId, reason: 'ab_test_mode' });
     }
 
-    if (cappedPriorityRows.length === 0 && poolRows.length === 0 && followupQueueRows.length === 0) {
+    // ── Step ⑤b: personalized fresh sends from each sender's ready drafts ──
+    // Each sender draws from its OWN cold_email_drafts buffer (status='ready',
+    // highest signal_score first), deduped by recipient domain within the
+    // sender. Drafts not taken stay 'ready' for the next campaign (no blacklist
+    // rollback — drafts aren't pool-claimed). Per-sender-vs-priority domain
+    // overlap is left to the send-time checkRecipientDomainOnce guard.
+    interface PersonalizedRow {
+      campaign_id: string;
+      account_id: string;
+      recipient_email: string;
+      recipient_name: string | null;
+      recipient_company: string | null;
+      template_variant_id: string;
+      send_at: string;
+      source: 'pool';
+      priority_id: null;
+      personalized_draft_id: string;
+      personalized_subject: string;
+      personalized_body: string;
+      personalization_tier: number | null;
+      personalization_score: number | null;
+    }
+    const personalizedQueueRows: PersonalizedRow[] = [];
+    if (!weekendMode) {
+      // Inactive sentinel variant per founder (label '*-personalized-sentinel');
+      // only satisfies the queue's NOT-NULL template_variant_id FK — its
+      // templates are never rendered (the personalized snapshot wins at send).
+      const { data: sentinelData } = await supabase
+        .from('email_template_variants')
+        .select('id, founder_id')
+        .eq('is_active', false)
+        .ilike('label', '%personalized-sentinel%');
+      const sentinelByFounder = new Map<string, string>();
+      for (const v of (sentinelData ?? []) as Array<{ id: string; founder_id: string }>) {
+        if (!sentinelByFounder.has(v.founder_id)) sentinelByFounder.set(v.founder_id, v.id);
+      }
+      const priorityPerFounder = Math.ceil(cappedPriorityRows.length / Math.max(1, activeFounders.length));
+      const regularTargetPerFounder = Math.max(
+        0,
+        cappedPerAcct - FOLLOWUP_DAILY_CAP_PER_FOUNDER - priorityPerFounder,
+      );
+      const personalizedStartMs = now.getTime();
+      if (regularTargetPerFounder > 0) {
+        for (const founder of activeFounders) {
+          const sentinelId = sentinelByFounder.get(founder.id);
+          if (!sentinelId) {
+            log('warn', 'start_no_personalized_sentinel', { founder_id: founder.id });
+            continue;
+          }
+          // Over-pick (×2) so per-sender domain dedup still hits the target.
+          const { data: draftsData } = await supabase
+            .from('cold_email_drafts')
+            .select('id, email, first_name, company, subject, body, opener_tier, signal_score')
+            .eq('sender_account_id', founder.id)
+            .eq('status', 'ready')
+            .order('signal_score', { ascending: false })
+            .limit(regularTargetPerFounder * 2);
+          const drafts = (draftsData ?? []) as Array<{
+            id: string; email: string; first_name: string | null; company: string | null;
+            subject: string | null; body: string | null; opener_tier: number | null; signal_score: number | null;
+          }>;
+          const usedDomains = new Set<string>();
+          let cursor = personalizedStartMs + Math.floor(Math.random() * 10_000);
+          let taken = 0;
+          for (const d of drafts) {
+            if (taken >= regularTargetPerFounder) break;
+            if (!d.subject || !d.body) continue; // defensive: a 'ready' row must carry copy
+            const domain = d.email.split('@')[1]?.toLowerCase() ?? '';
+            if (domain && usedDomains.has(domain)) continue; // 1 / domain / sender / day
+            usedDomains.add(domain);
+            personalizedQueueRows.push({
+              campaign_id: campaignId,
+              account_id: founder.id,
+              recipient_email: d.email.toLowerCase(),
+              recipient_name: d.first_name,
+              recipient_company: d.company,
+              template_variant_id: sentinelId,
+              send_at: new Date(cursor).toISOString(),
+              source: 'pool',
+              priority_id: null,
+              personalized_draft_id: d.id,
+              personalized_subject: d.subject,
+              personalized_body: d.body,
+              personalization_tier: d.opener_tier,
+              personalization_score: d.signal_score,
+            });
+            taken++;
+            const range = SAFETY_LIMITS.INTER_SEND_JITTER_MAX_SECONDS - SAFETY_LIMITS.INTER_SEND_JITTER_MIN_SECONDS;
+            const jitterSec = SAFETY_LIMITS.INTER_SEND_JITTER_MIN_SECONDS + Math.random() * range;
+            const clampedSec = Math.max(
+              SAFETY_LIMITS.MIN_INTER_SEND_GAP_SECONDS_HARD_FLOOR,
+              Math.min(jitterSec, SAFETY_LIMITS.MAX_INTER_SEND_GAP_SECONDS_HARD_CEILING),
+            );
+            cursor += clampedSec * 1000;
+          }
+        }
+      }
+      log('info', 'start_personalized_picked', { campaign_id: campaignId, total: personalizedQueueRows.length });
+    }
+
+    if (cappedPriorityRows.length === 0 && poolRows.length === 0 && followupQueueRows.length === 0 && personalizedQueueRows.length === 0) {
       await supabase.from('email_send_campaigns')
         .update({ status: 'exhausted', completed_at: now.toISOString() })
         .eq('id', campaignId);
@@ -761,7 +824,10 @@ export async function runDailyStart(
     // We let the unique constraint surface that as a hard failure if it
     // ever happens — the data would be corrupt either way.
     const seenEmails = new Set<string>();
-    const dedupedFreshRows = queueRows.filter(r => {
+    // Personalized (pool) rows join the fresh dedupe gate alongside priority
+    // rows. A personalized row dropped here (email collides with a priority
+    // row) is simply not consumed — its draft stays 'ready' for next campaign.
+    const dedupedFreshRows = [...queueRows, ...personalizedQueueRows].filter(r => {
       if (seenEmails.has(r.recipient_email)) return false;
       seenEmails.add(r.recipient_email);
       return true;
@@ -808,6 +874,18 @@ export async function runDailyStart(
         .from('email_send_queue')
         .update({ followed_up_at: now.toISOString() })
         .in('id', insertedFollowupSourceIds);
+    }
+
+    // Mark the personalized drafts that actually made it into the queue as
+    // consumed (only those that survived the dedupe gate). A draft dropped by
+    // an email collision stays 'ready' and is re-picked next campaign.
+    const consumedDraftIds = dedupedFreshRows
+      .map(r => (r as { personalized_draft_id?: string | null }).personalized_draft_id)
+      .filter((id): id is string => !!id);
+    if (consumedDraftIds.length > 0) {
+      await supabase.from('cold_email_drafts')
+        .update({ status: 'consumed', consumed_at: now.toISOString(), campaign_id: campaignId })
+        .in('id', consumedDraftIds);
     }
     // followupSourceIds is the FULL list including collisions — keep
     // the variable referenced to avoid TS unused warning; logging the
