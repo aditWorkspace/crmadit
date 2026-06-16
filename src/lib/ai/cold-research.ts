@@ -344,7 +344,7 @@ export async function processDraftRow(
       fallbackModels: COLD_MODEL_FALLBACKS,
       jsonMode: true,
       maxTokens: 2000,
-      timeoutMs: 90_000,
+      timeoutMs: 45_000,
       messages: [
         { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
         { role: 'user', content: buildExtractionUserMessage({
@@ -386,7 +386,7 @@ export async function processDraftRow(
         fallbackModels: COLD_MODEL_FALLBACKS,
         jsonMode: true,
         maxTokens: 800,
-        timeoutMs: 90_000,
+        timeoutMs: 45_000,
         messages: [
           { role: 'system', content: sys },
           { role: 'user', content: buildWriterUserMessage({ firstName: input.first_name, company: input.company, tier, cards }) },

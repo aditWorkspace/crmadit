@@ -28,7 +28,7 @@ export async function claimCheck(input: {
     model: COLD_RESEARCH_MODEL,
     fallbackModels: COLD_MODEL_FALLBACKS,
     jsonMode: true,
-    timeoutMs: 90_000,
+    timeoutMs: 45_000,
     messages: [
       { role: 'system', content: CLAIM_CHECK_SYSTEM_PROMPT },
       { role: 'user', content: buildClaimCheckUserMessage(input) },

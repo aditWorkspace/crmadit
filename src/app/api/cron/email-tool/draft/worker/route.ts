@@ -17,13 +17,14 @@ export const runtime = 'nodejs';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { processDraftRow, type DraftInput } from '@/lib/ai/cold-research';
+import { processDraftRow, type DraftInput, type DraftOutcome } from '@/lib/ai/cold-research';
 import {
   COLD_RESEARCH_MODEL,
   COLD_WRITER_MODEL,
   DRAFT_WORKER_BATCH,
   DRAFT_WORKER_BUDGET_MS,
   DRAFT_LOCK_DURATION_MS,
+  PER_DRAFT_TIMEOUT_MS,
   MAX_DRAFT_ATTEMPTS,
   DRAFT_RETRY_BACKOFF_MS,
   DEFAULT_DRAFT_DAILY_SPEND_CEILING_USD,
@@ -56,7 +57,25 @@ export async function POST(req: NextRequest) {
   const startMs = Date.now();
   const ceiling = Number(process.env.DRAFT_DAILY_SPEND_CEILING_USD ?? DEFAULT_DRAFT_DAILY_SPEND_CEILING_USD);
 
-  const stats = { processed: 0, ready: 0, skipped: 0, retried: 0, failed: 0 };
+  const stats = { processed: 0, ready: 0, skipped: 0, retried: 0, failed: 0, recovered: 0 };
+
+  // ── Recover drafts a prior run left mid-process (function timeout/crash):
+  // an in-progress status whose lock has expired. Reset to 'queued' (bounded
+  // by the attempt cap) so they aren't stranded out of the 'queued' claim set.
+  const { data: stuck } = await supabase
+    .from('cold_email_drafts')
+    .select('id, attempt_count')
+    .in('status', ['researching', 'verifying_evidence', 'writing', 'checking'])
+    .lt('worker_locked_until', new Date().toISOString());
+  for (const d of (stuck ?? []) as Array<{ id: string; attempt_count: number }>) {
+    const attempt = d.attempt_count + 1;
+    await supabase.from('cold_email_drafts').update(
+      attempt < MAX_DRAFT_ATTEMPTS
+        ? { status: 'queued', worker_locked_until: null, attempt_count: attempt, error: 'recovered_from_stuck' }
+        : { status: 'failed', worker_locked_until: null, attempt_count: attempt, error: 'max_attempts_stuck' },
+    ).eq('id', d.id);
+    stats.recovered++;
+  }
 
   while (Date.now() - startMs < DRAFT_WORKER_BUDGET_MS && stats.processed < DRAFT_WORKER_BATCH) {
     // ── Spend guard (rolling 24h) ────────────────────────────────────────────
@@ -110,9 +129,16 @@ export async function POST(req: NextRequest) {
       sender_email: draft.sender_email,
     };
 
-    let outcome;
+    let outcome: DraftOutcome;
     try {
-      outcome = await processDraftRow(input, supabase);
+      // Hard wall-clock cap: a single slow draft must never run past the
+      // function limit. On timeout, treat as a retryable failure and move on
+      // (the stuck-draft recovery above re-queues anything left mid-write).
+      outcome = await Promise.race([
+        processDraftRow(input, supabase),
+        new Promise<DraftOutcome>(resolve =>
+          setTimeout(() => resolve({ kind: 'retry', reason: 'draft_timeout', cost_usd: 0 }), PER_DRAFT_TIMEOUT_MS)),
+      ]);
     } catch (err) {
       // Defensive: the engine shouldn't throw, but if it does, fail terminally
       // and release the lock rather than leaving the row stuck in 'researching'.

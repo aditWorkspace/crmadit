@@ -45,8 +45,11 @@ export const TIER_SCORE: Record<number, number> = {
 export const ROLE_BASED_TIER = 6;
 
 // ── Worker / draft lifecycle ───────────────────────────────────────────────
-export const DRAFT_WORKER_BATCH = 12;           // drafts claimed per worker tick
-export const DRAFT_WORKER_BUDGET_MS = 240_000;  // 240s; 300s function limit, 60s margin
+export const DRAFT_WORKER_BATCH = 12;           // max drafts claimed per worker tick
+export const DRAFT_WORKER_BUDGET_MS = 170_000;  // stop STARTING new drafts past this
+// Hard per-draft wall-clock cap. A single slow draft (slow site + retries) must
+// never run past the 300s Vercel function limit. 170s budget + 120s cap = ≤290s.
+export const PER_DRAFT_TIMEOUT_MS = 120_000;
 export const DRAFT_LOCK_DURATION_MS = 5 * 60_000;
 export const MAX_DRAFT_ATTEMPTS = 3;            // retryable provider failures before 'failed'
 // Backoff per attempt: 1m, 5m, 15m. retry_at = now + this. Index = attempt_count-1.
@@ -73,14 +76,14 @@ export const FIRECRAWL_CANDIDATE_PATHS = [
   '/changelog', '/releases', '/blog', '/careers', '/jobs',
   '/customers', '/case-studies', '/integrations', '/',
 ] as const;
-export const FIRECRAWL_MAX_SCRAPE_ATTEMPTS = 6;
+export const FIRECRAWL_MAX_SCRAPE_ATTEMPTS = 5;
 export const FIRECRAWL_MAX_SUCCESS_PAGES = 4;
 export const FIRECRAWL_MAX_TOTAL_MARKDOWN_CHARS = 40_000;
-export const FIRECRAWL_SCRAPE_TIMEOUT_MS = 20_000;
+export const FIRECRAWL_SCRAPE_TIMEOUT_MS = 12_000;
 
 // Perplexity Sonar request timeout. Without this the fetch can hang forever
 // and hold the worker lock (observed: a single call ran 450s+ in testing).
-export const SONAR_TIMEOUT_MS = 60_000;
+export const SONAR_TIMEOUT_MS = 45_000;
 
 // ── Rough cost estimates (USD) for the spend guard / cost_usd accounting ───
 // These are planning numbers; verify against live pricing before scaling.
