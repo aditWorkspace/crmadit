@@ -325,12 +325,22 @@ export async function processDraftRow(
       if (fresh) {
         scrapedPages = ((cached!.scraped_pages ?? []) as ScrapedPage[]);
       } else {
-        scrapedPages = await deps.scrapeCompanySiteFn(domain); // FirecrawlError → retry
-        cost += scrapedPages.length * FIRECRAWL_SCRAPE_COST_USD;
-        await supabase.from('company_research_cache').upsert(
-          { domain, scraped_pages: scrapedPages, cost_usd: scrapedPages.length * FIRECRAWL_SCRAPE_COST_USD, cached_at: new Date().toISOString() },
-          { onConflict: 'domain' },
-        );
+        // Firecrawl is a BONUS signal (the company's own pages). If it's
+        // unavailable for ANY reason — out of credits, rate-limited, site down,
+        // SSL error — proceed with Sonar-only research rather than failing the
+        // draft. Sonar (Perplexity) is the primary research source and produces
+        // strong drafts on its own. A scrape failure must never burn a draft.
+        try {
+          scrapedPages = await deps.scrapeCompanySiteFn(domain);
+          cost += scrapedPages.length * FIRECRAWL_SCRAPE_COST_USD;
+          await supabase.from('company_research_cache').upsert(
+            { domain, scraped_pages: scrapedPages, cost_usd: scrapedPages.length * FIRECRAWL_SCRAPE_COST_USD, cached_at: new Date().toISOString() },
+            { onConflict: 'domain' },
+          );
+        } catch (scrapeErr) {
+          console.warn('[cold-research] firecrawl scrape skipped (Sonar-only):', scrapeErr instanceof Error ? scrapeErr.message.slice(0, 140) : String(scrapeErr));
+          scrapedPages = [];
+        }
       }
     }
 

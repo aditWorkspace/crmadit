@@ -181,4 +181,19 @@ describe('processDraftRow outcome semantics', () => {
     });
     expect(out.kind).toBe('retry');
   });
+
+  it('degrades to Sonar-only when Firecrawl fails (does NOT fail/retry on the scrape error)', async () => {
+    // Firecrawl out-of-credits must not burn the draft. Proof it continued past
+    // the scrape: the only error surfaced is the (injected) Sonar one, not firecrawl.
+    const supa = makeSupa();
+    const out = await processDraftRow(baseInput, supa, {
+      scrapeCompanySiteFn: async () => { throw new FirecrawlError('quota', 402, 'out of credits'); },
+      runSonarFn: async () => { throw new Error('Perplexity API error 503: down'); },
+    });
+    expect(out.kind).toBe('retry');
+    if (out.kind === 'retry') {
+      expect(out.reason).toContain('503');
+      expect(out.reason).not.toContain('firecrawl');
+    }
+  });
 });

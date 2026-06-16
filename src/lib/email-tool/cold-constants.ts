@@ -45,20 +45,29 @@ export const TIER_SCORE: Record<number, number> = {
 export const ROLE_BASED_TIER = 6;
 
 // ── Worker / draft lifecycle ───────────────────────────────────────────────
-export const DRAFT_WORKER_BATCH = 12;           // max drafts claimed per worker tick
+export const DRAFT_WORKER_BATCH = 40;           // max drafts processed per worker run
+// Drafts are processed through this many concurrent slots. Each draft scrapes
+// its pages sequentially, so ≤5 in flight ⇒ ≤5 concurrent Firecrawl requests =
+// the Hobby plan's browser limit (and ≤5 Sonar/OpenRouter, both safe). A global
+// single-runner lock (email_pool_state.draft_worker_lock_until) keeps overlapping
+// fire-and-forget invocations from stacking past this.
+export const DRAFT_WORKER_CONCURRENCY = 5;
+export const FIRECRAWL_CONCURRENCY = 5;          // Hobby plan: 5 concurrent browsers
 // The worker runs as a fire-and-forget background task (Next after()), so the
-// cron gets a fast 200 and never times out. Budget bounds how long the
-// background run keeps claiming. 110s budget + 120s per-draft cap = ≤230s,
-// under the 300s function limit; ~2 minute-fired runs overlap at most.
+// cron gets a fast 200 and never times out.
 export const DRAFT_WORKER_BUDGET_MS = 110_000;  // stop STARTING new drafts past this
 export const PER_DRAFT_TIMEOUT_MS = 120_000;    // hard wall-clock cap per draft
 export const DRAFT_LOCK_DURATION_MS = 5 * 60_000;
+// How long the global single-runner lock is held before auto-expiring (a killed
+// function must not deadlock the worker). Must exceed the worker's max runtime
+// (110s budget + 120s per-draft tail ≈ 230s) and stay under the 300s limit.
+export const DRAFT_WORKER_LOCK_MS = 260_000;
 export const MAX_DRAFT_ATTEMPTS = 3;            // retryable provider failures before 'failed'
 // Backoff per attempt: 1m, 5m, 15m. retry_at = now + this. Index = attempt_count-1.
 export const DRAFT_RETRY_BACKOFF_MS = [60_000, 300_000, 900_000] as const;
-// Seed keeps roughly this many ready/in-flight drafts per sender (≈2 days runway
-// at 100/day). The seed route enqueues up to this minus current backlog.
-export const DRAFT_BUFFER_TARGET_PER_SENDER = 220;
+// Per-sender buffer the seed keeps topped up (~1 day + margin). Generated fresh
+// in the morning window, not a multi-day overnight buffer.
+export const DRAFT_BUFFER_TARGET_PER_SENDER = 120;
 // Default hard ceiling on per-day draft spend; overridable via env.
 export const DEFAULT_DRAFT_DAILY_SPEND_CEILING_USD = 25;
 
@@ -78,8 +87,8 @@ export const FIRECRAWL_CANDIDATE_PATHS = [
   '/changelog', '/releases', '/blog', '/careers', '/jobs',
   '/customers', '/case-studies', '/integrations', '/',
 ] as const;
-export const FIRECRAWL_MAX_SCRAPE_ATTEMPTS = 5;
-export const FIRECRAWL_MAX_SUCCESS_PAGES = 4;
+export const FIRECRAWL_MAX_SCRAPE_ATTEMPTS = 3;
+export const FIRECRAWL_MAX_SUCCESS_PAGES = 2;
 export const FIRECRAWL_MAX_TOTAL_MARKDOWN_CHARS = 40_000;
 export const FIRECRAWL_SCRAPE_TIMEOUT_MS = 12_000;
 
