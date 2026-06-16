@@ -3,17 +3,16 @@ import { listAllNotes, getNoteWithTranscript, transcriptItemsToText, type Granol
 import { matchNoteToLead, type MatchConfidence } from './matcher';
 import { processAndApplyTranscript } from '@/lib/automation/process-and-apply-transcript';
 
-// Two founders, two API keys. The label is what we use in granola_sync_state
+// Single API key (Adit). The label is what we use in granola_sync_state
 // and as the source attribution on the imported transcript.
 export interface GranolaKey {
-  label: string;       // 'adit' | 'srijay'
+  label: string;       // 'adit'
   apiKey: string;
 }
 
 export function loadGranolaKeys(): GranolaKey[] {
   const out: GranolaKey[] = [];
   if (process.env.GRANOLA_API_KEY_ADIT) out.push({ label: 'adit', apiKey: process.env.GRANOLA_API_KEY_ADIT });
-  if (process.env.GRANOLA_API_KEY_SRIJAY) out.push({ label: 'srijay', apiKey: process.env.GRANOLA_API_KEY_SRIJAY });
   return out;
 }
 
