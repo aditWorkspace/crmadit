@@ -7,15 +7,17 @@ import { ScheduleTab } from './schedule-tab';
 import { PriorityTab } from './priority-tab';
 import { OverviewTab } from './overview-tab';
 import { AbTestTab } from './ab-test-tab';
+import { VisualTab } from './visual-tab';
 import { PriorityUploadModal } from '@/components/email-tool/priority-upload-modal';
 
-type TabId = 'overview' | 'templates' | 'schedule' | 'priority' | 'ab-test';
+type TabId = 'visual' | 'overview' | 'templates' | 'schedule' | 'priority' | 'ab-test';
 
 interface Props {
   memberName: string;
 }
 
 const TABS: { id: TabId; label: string }[] = [
+  { id: 'visual', label: 'Review & Send' },
   { id: 'overview', label: 'Overview' },
   { id: 'templates', label: 'Templates' },
   { id: 'schedule', label: 'Schedule' },
@@ -33,7 +35,7 @@ export default function AdminClient({ memberName }: Props) {
   const params = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
-  const initialTab = (params.get('tab') as TabId) ?? 'overview';
+  const initialTab = (params.get('tab') as TabId) ?? 'visual';
   const [tab, setTab] = useState<TabId>(initialTab);
   const [schedule, setSchedule] = useState<ScheduleSummary | null>(null);
   const [showUpload, setShowUpload] = useState(false);
@@ -41,7 +43,7 @@ export default function AdminClient({ memberName }: Props) {
 
   // Keep tab state in sync with URL when user uses back/forward.
   useEffect(() => {
-    const t = (params.get('tab') as TabId) ?? 'overview';
+    const t = (params.get('tab') as TabId) ?? 'visual';
     if (t !== tab) setTab(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params]);
@@ -161,6 +163,7 @@ export default function AdminClient({ memberName }: Props) {
         </nav>
 
         <main>
+          {tab === 'visual' && <VisualTab />}
           {tab === 'templates' && <TemplatesTab />}
           {tab === 'overview' && <OverviewTab />}
           {tab === 'schedule' && <ScheduleTab />}

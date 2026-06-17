@@ -18,6 +18,9 @@ export interface SendInput {
     template_variant_id: string;
     send_at: string;
     status: 'pending';
+    /** Visual-outreach v2: prebuilt HTML body. When set, it is used verbatim
+     *  as the text/html part (the per-send tracking pixel is injected). */
+    personalized_html?: string | null;
   };
   variant: {
     subject_template: string;
@@ -81,6 +84,7 @@ export async function sendCampaignEmail(
     subject: rendered.subject,
     body: rendered.body,
     queueId: input.queueRow.id,
+    personalizedHtml: input.queueRow.personalized_html ?? null,
   });
 
   // ── dry_run: skip Gmail call entirely, synthesize the id ────────────────
@@ -128,6 +132,9 @@ interface BuildMimeArgs {
    *  map back to the specific send. Same UUID stays the message-
    *  identity for the lifetime of this delivery. */
   queueId: string;
+  /** Visual-outreach v2 prebuilt HTML; used verbatim as the html part
+   *  (with the tracking pixel injected) when present. */
+  personalizedHtml?: string | null;
 }
 
 /** Public base URL for the tracking endpoint. Falls back to the prod
@@ -175,14 +182,22 @@ function buildRawMime(args: BuildMimeArgs): string {
   // readers quiet. `width=1 height=1` is the floor that most clients still
   // fire a GET for (0×0 is commonly skipped).
   const pixelUrl = `${trackingBaseUrl()}/api/cron/email-tool/track/${args.queueId}.png`;
-  const escapedBody = linkifyDomains(escapeHtml(args.body));
-  // No font-family / font-size — Gmail (and most clients) substitute
-  // their default compose font when none is specified, which is what
-  // recipients are used to seeing from a hand-written email. The
-  // smaller / off-feel rendering before was caused by the explicit
-  // -apple-system stack overriding Gmail's default Arial-equivalent.
-  // Keep only white-space:pre-wrap so manual line breaks survive.
-  const htmlBody = `<!doctype html><html><body><div style="white-space:pre-wrap">${escapedBody}</div><img src="${pixelUrl}" alt="" width="1" height="1" style="display:none" /></body></html>`;
+  const pixelImg = `<img src="${pixelUrl}" alt="" width="1" height="1" style="display:none" />`;
+  // Visual-outreach v2 carries prebuilt HTML (greeting + page link + image).
+  // Use it verbatim and inject the per-send tracking pixel before </body>.
+  // Otherwise build the legacy plain-text-in-a-div HTML.
+  // No font-family / font-size — Gmail (and most clients) substitute their
+  // default compose font when none is specified, which is what recipients are
+  // used to seeing from a hand-written email.
+  let htmlBody: string;
+  if (args.personalizedHtml && args.personalizedHtml.trim()) {
+    htmlBody = args.personalizedHtml.includes('</body>')
+      ? args.personalizedHtml.replace('</body>', `${pixelImg}</body>`)
+      : `${args.personalizedHtml}${pixelImg}`;
+  } else {
+    const escapedBody = linkifyDomains(escapeHtml(args.body));
+    htmlBody = `<!doctype html><html><body><div style="white-space:pre-wrap">${escapedBody}</div>${pixelImg}</body></html>`;
+  }
 
   // Multipart boundary — must not appear anywhere in either part body.
   // We use a long random hex string so collisions are effectively impossible.

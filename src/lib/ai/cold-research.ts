@@ -82,6 +82,12 @@ export type DraftOutcome =
       selected_evidence_ids: string[];
       cost_usd: number;
       trace?: string; // write/claim-check attempt log, for debugging
+      // ── Visual-outreach v2 (set by processVisualDraftRow; optional so the
+      //    legacy text path still satisfies the type) ──
+      industry?: string | null;
+      image_url?: string | null;
+      page_slug?: string | null;
+      email_html?: string | null;
     }
   | { kind: 'skipped'; reason: string; cost_usd: number }
   | { kind: 'retry'; reason: string; cost_usd: number }
