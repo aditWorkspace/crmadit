@@ -66,8 +66,11 @@ export const MAX_DRAFT_ATTEMPTS = 3;            // retryable provider failures b
 // Backoff per attempt: 1m, 5m, 15m. retry_at = now + this. Index = attempt_count-1.
 export const DRAFT_RETRY_BACKOFF_MS = [60_000, 300_000, 900_000] as const;
 // Per-sender buffer the seed keeps topped up (~1 day + margin). Generated fresh
-// in the morning window, not a multi-day overnight buffer.
-export const DRAFT_BUFFER_TARGET_PER_SENDER = 120;
+// in the morning window, not a multi-day overnight buffer. Sized to supply the
+// 250 fresh-send cap per account (TEMP_REDUCED_TARGET_PER_ACCOUNT − FOLLOWUP)
+// with a cushion for drafts still in-flight or failed at send time, so ~250
+// reach status 'ready'. Raised 120 → 275 on 2026-06-16 with the cap bump.
+export const DRAFT_BUFFER_TARGET_PER_SENDER = 275;
 // Default hard ceiling on per-day draft spend; overridable via env.
 export const DEFAULT_DRAFT_DAILY_SPEND_CEILING_USD = 25;
 
