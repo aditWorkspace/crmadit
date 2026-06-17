@@ -84,9 +84,10 @@ const GROUPS: NavGroup[] = [
     id: 'outreach',
     label: 'Outreach',
     items: [
-      { href: '/mass-email', label: 'Outreach',      icon: Send },
-      { href: '/email-tool', label: 'Cold Outreach', icon: Target },
-      { href: '/dripify',    label: 'Dripify',       icon: Linkedin },
+      { href: '/email-tool/admin', label: 'Review & Send', icon: Send },
+      { href: '/mass-email',       label: 'Outreach',      icon: Mail },
+      { href: '/email-tool',       label: 'Cold Outreach', icon: Target },
+      { href: '/dripify',          label: 'Dripify',       icon: Linkedin },
     ],
   },
   {
@@ -103,6 +104,18 @@ const GROUPS: NavGroup[] = [
 const FOOTER_ITEMS: NavItem[] = [
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
 ];
+
+const ALL_HREFS = [...TOP_LEVEL, ...GROUPS.flatMap(g => g.items), ...FOOTER_ITEMS].map(i => i.href);
+/** The single nav href that best (longest) matches the path, so /email-tool/admin
+ *  highlights "Review & Send" and NOT also "Cold Outreach" (/email-tool). */
+function bestMatchHref(pathname: string): string | null {
+  let best: string | null = null;
+  for (const href of ALL_HREFS) {
+    const match = href === '/' ? pathname === '/' : (pathname === href || pathname.startsWith(href + '/'));
+    if (match && (best === null || href.length > best.length)) best = href;
+  }
+  return best;
+}
 
 const COLLAPSED_KEY = 'sidenav:collapsed';
 const GROUP_STATE_KEY = 'sidenav:groups';
@@ -293,6 +306,5 @@ function NavLink({
 }
 
 function isActive(pathname: string, href: string): boolean {
-  if (href === '/') return pathname === '/';
-  return pathname.startsWith(href);
+  return bestMatchHref(pathname) === href;
 }

@@ -62,6 +62,8 @@ interface QueueRow {
   personalized_draft_id: string | null;
   personalized_subject: string | null;
   personalized_body: string | null;
+  /** Visual-outreach v2 prebuilt HTML body (used verbatim by sendCampaignEmail). */
+  personalized_html: string | null;
 }
 
 interface FounderRow {
@@ -144,7 +146,7 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
   // ── 4) Pull due rows ──────────────────────────────────────────────────
   const { data: dueData } = await supabase
     .from('email_send_queue')
-    .select('id, campaign_id, account_id, recipient_email, recipient_name, recipient_company, template_variant_id, send_at, attempts, parent_queue_id, gmail_thread_id, source, personalized_draft_id, personalized_subject, personalized_body')
+    .select('id, campaign_id, account_id, recipient_email, recipient_name, recipient_company, template_variant_id, send_at, attempts, parent_queue_id, gmail_thread_id, source, personalized_draft_id, personalized_subject, personalized_body, personalized_html')
     .eq('status', 'pending')
     .lte('send_at', now.toISOString())
     .in('account_id', activeIds)

@@ -159,11 +159,11 @@ SUBJECT: deciding what to build
 BODY:
 Hi Sam,
 
-We've yet to be formally introduced, but I'm ${senderFirstName}, a Berkeley student studying CS and Business. I've been reaching out to a handful of people building product at fast-growing B2B companies.
+We've yet to be formally introduced but I'm ${senderFirstName}, a Berkeley student studying CS and Business. I came across your impressive profile on LinkedIn while engaging with one of our mutual connections, and what you've built at Northwind is super inspiring. I've been focused on product prioritization, PM, and startup building, so it is great to see teams like yours tackling product strategy at real operational scale.
 
-The reason I'm reaching out is I'm working with a fellow Berkeley student to develop a new product for rapidly growing product teams. I'd love to get your input on how you and your team weigh all the requests that come in and decide what actually gets built, to steer us in the right direction.
+The reason I'm reaching out is I'm working with a fellow Berkeley student to develop a new product for eng teams. Given your experience at Northwind, I'd love to get your input on where the biggest challenges are to steer us in the right direction.
 
-Would a 30-minute call this week work for you? Very happy to work around your schedule.
+Would a 30-minute call on Thursday afternoon or Friday morning work well for you? Very happy to work around your schedule.
 
 Thanks!
 ${senderFirstName}

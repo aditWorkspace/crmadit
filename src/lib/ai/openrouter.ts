@@ -2,6 +2,11 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_MODEL = 'deepseek/deepseek-chat-v3-0324';
 const DEFAULT_MAX_TOKENS = 2000;
 
+// Image generation / editing (visual-outreach v2). These models output images
+// in choices[0].message.images[] when called with modalities:["image","text"].
+export const DEFAULT_IMAGE_MODEL = 'google/gemini-3.1-flash-image-preview';
+export const IMAGE_MODEL_FALLBACKS = ['google/gemini-2.5-flash-image', 'openai/gpt-5.4-image-2'];
+
 export interface AiCallParams {
   systemPrompt: string;
   userMessage: string;
@@ -117,6 +122,99 @@ async function singleAttempt(params: AiCallMessagesParams): Promise<string> {
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       throw new Error('OpenRouter request timed out after 55 seconds');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// ── Image generation / editing ─────────────────────────────────────────────
+
+export interface ImageGenParams {
+  prompt: string;
+  /** Base64 data URLs (data:image/png;base64,...) of reference image(s) to
+   *  edit. Omit for pure text-to-image. */
+  referenceImages?: string[];
+  model?: string;
+  fallbackModels?: string[];
+  /** 0..1 — lower keeps the output closer to the reference image (face/scene
+   *  preservation); only meaningful when referenceImages is set. */
+  strength?: number;
+  timeoutMs?: number;
+}
+
+/**
+ * Generate (or edit) an image via OpenRouter and return a base64 PNG data URL
+ * (the raw `choices[0].message.images[0].image_url.url`). Mirrors callAIMessages'
+ * fallback ladder: a 429/5xx/empty-image on one model falls through to the next.
+ */
+export async function generateImage(params: ImageGenParams): Promise<string> {
+  const candidates = [params.model || DEFAULT_IMAGE_MODEL, ...(params.fallbackModels || IMAGE_MODEL_FALLBACKS)];
+  let lastErr: Error | null = null;
+  for (const model of candidates) {
+    try {
+      return await singleImageAttempt({ ...params, model });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      lastErr = err instanceof Error ? err : new Error(message);
+      const retryable =
+        /API error (429|5\d\d)/.test(message) ||
+        /no image in response/i.test(message);
+      if (!retryable) throw lastErr;
+      console.warn(`[openrouter-image] ${model} failed (${message.slice(0, 100)}), trying next fallback`);
+    }
+  }
+  throw lastErr ?? new Error('OpenRouter image gen failed with no specific error');
+}
+
+async function singleImageAttempt(params: ImageGenParams & { model: string }): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 90_000);
+
+  // content = the text prompt followed by any reference images to edit.
+  const content: Array<Record<string, unknown>> = [{ type: 'text', text: params.prompt }];
+  for (const img of params.referenceImages ?? []) {
+    content.push({ type: 'image_url', image_url: { url: img } });
+  }
+
+  try {
+    const response = await fetch(OPENROUTER_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
+        'X-Title': 'Proxi CRM',
+      },
+      body: JSON.stringify({
+        model: params.model,
+        messages: [{ role: 'user', content }],
+        modalities: ['image', 'text'],
+        ...(params.strength != null ? { image_config: { strength: params.strength } } : {}),
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      if (response.status === 402) {
+        const e = new Error('OpenRouter credits depleted — add credits at https://openrouter.ai/settings/credits');
+        (e as Error & { code?: string }).code = 'OPENROUTER_CREDITS_DEPLETED';
+        throw e;
+      }
+      throw new Error(`OpenRouter API error ${response.status}: ${error}`);
+    }
+
+    const data = await response.json();
+    const url: string | undefined = data.choices?.[0]?.message?.images?.[0]?.image_url?.url;
+    if (!url) {
+      throw new Error(`No image in response (model=${params.model})`);
+    }
+    return url;
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('OpenRouter image request timed out');
     }
     throw err;
   } finally {

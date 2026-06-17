@@ -72,7 +72,7 @@ export const DRAFT_RETRY_BACKOFF_MS = [60_000, 300_000, 900_000] as const;
 // reach status 'ready'. Raised 120 → 275 on 2026-06-16 with the cap bump.
 export const DRAFT_BUFFER_TARGET_PER_SENDER = 275;
 // Default hard ceiling on per-day draft spend; overridable via env.
-export const DEFAULT_DRAFT_DAILY_SPEND_CEILING_USD = 25;
+export const DEFAULT_DRAFT_DAILY_SPEND_CEILING_USD = 50;
 
 // Minimum extractor confidence to accept a Sonar-cited evidence card (one with
 // a real source URL + quote that we trust from Perplexity's grounding instead
@@ -106,6 +106,20 @@ export const FIRECRAWL_SCRAPE_COST_USD = 0.002;
 export const LLM_EXTRACT_COST_USD = 0.0006;   // DeepSeek extraction
 export const LLM_WRITE_COST_USD = 0.0015;     // Haiku write
 export const LLM_CLAIMCHECK_COST_USD = 0.0006;
+
+// ── Visual-outreach v2 (per-person image + landing page) ───────────────────
+export const LLM_INDUSTRY_COST_USD = 0.001;   // one cheap JSON call for industry
+export const IMAGE_GEN_COST_USD = 0.03;       // per-person whiteboard image edit
+// gemini-2.5-flash-image ("nano banana") — stable + ~50% cheaper than the 3.1
+// preview, same quality. Fallback to 3.1 (drop the expensive gpt-image-2).
+export const VISUAL_IMAGE_MODEL = 'google/gemini-2.5-flash-image';
+export const VISUAL_IMAGE_FALLBACKS = ['google/gemini-3.1-flash-image-preview'];
+export const VISUAL_INDUSTRY_MODEL = 'google/gemini-2.5-flash';
+export const VISUAL_INDUSTRY_FALLBACKS = ['deepseek/deepseek-chat-v3-0324'];
+export const OUTREACH_IMAGE_BUCKET = 'outreach-images';
+export const OUTREACH_REFERENCE_KEY = '_reference/founders.png'; // base photo edited per person
+export const CAL_BOOKING_URL = 'https://cal.com/adit-mittal/30min';
+export const VISUAL_SUBJECT = 'Berkeley project interview';
 
 // ── Email copy rules ───────────────────────────────────────────────────────
 export const BODY_MIN_WORDS = 50;

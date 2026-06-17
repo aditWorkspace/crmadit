@@ -23,10 +23,9 @@ export const runtime = 'nodejs';
 
 import { NextRequest, NextResponse, after } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { processDraftRow, type DraftInput, type DraftOutcome } from '@/lib/ai/cold-research';
+import { type DraftInput, type DraftOutcome } from '@/lib/ai/cold-research';
+import { processVisualDraftRow } from '@/lib/ai/visual-draft';
 import {
-  COLD_RESEARCH_MODEL,
-  COLD_WRITER_MODEL,
   DRAFT_WORKER_BATCH,
   DRAFT_WORKER_BUDGET_MS,
   DRAFT_WORKER_CONCURRENCY,
@@ -177,7 +176,7 @@ async function processAndPersist(supabase: Supa, draft: ClaimedDraft, stats: Sta
     // Hard wall-clock cap: one slow draft must never run past the function
     // limit. On timeout, retry (recoverStuckDrafts re-queues anything left mid-write).
     outcome = await Promise.race([
-      processDraftRow(input, supabase),
+      processVisualDraftRow(input, supabase),
       new Promise<DraftOutcome>(resolve =>
         setTimeout(() => resolve({ kind: 'retry', reason: 'draft_timeout', cost_usd: 0 }), PER_DRAFT_TIMEOUT_MS)),
     ]);
@@ -200,7 +199,12 @@ async function processAndPersist(supabase: Supa, draft: ClaimedDraft, stats: Sta
       subject: outcome.subject, body: outcome.body,
       opener_tier: outcome.opener_tier, signal_score: outcome.signal_score,
       evidence_cards: outcome.evidence_cards, selected_evidence_ids: outcome.selected_evidence_ids,
-      research_model: 'sonar', decider_model: COLD_RESEARCH_MODEL, writer_model: COLD_WRITER_MODEL,
+      // visual-outreach v2 output
+      industry: outcome.industry ?? null,
+      image_url: outcome.image_url ?? null,
+      page_slug: outcome.page_slug ?? null,
+      email_html: outcome.email_html ?? null,
+      research_model: 'visual', decider_model: 'gemini-2.5-flash', writer_model: 'gemini-3.1-flash-image',
       written_at: nowIso, ready_at: nowIso, error: null,
     }).eq('id', draft.id);
     stats.ready++;
