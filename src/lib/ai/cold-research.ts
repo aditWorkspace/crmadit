@@ -229,6 +229,22 @@ export function selectAndScore(verified: EvidenceCard[]): {
   return { cards: ranked.slice(0, MAX_WRITER_CARDS), tier, score };
 }
 
+/** Job/title words we'll trust from research to ground a brief seniority line. */
+const ROLE_TITLE_RE = /\b(ceo|cto|cpo|coo|cfo|founder|co-?founder|president|chief|vp|vice president|head of|director|partner|owner|principal|lead)\b/i;
+const ROLE_SPECULATIVE_RE = /\b(likely|probably|might|may|as a|as the)\b/i;
+
+/**
+ * Pull the recipient's actual role/title from the role_based cards the writer
+ * never sees as openers, so a brief seniority line can be grounded (and survive
+ * claim-check). Prefer a stated title over a speculative inference; null if none.
+ */
+export function pickRoleContext(verified: EvidenceCard[]): string | null {
+  const roleCards = verified.filter(c => c.kind === 'role_based' && !!c.statement?.trim());
+  const factual = roleCards.find(c => ROLE_TITLE_RE.test(c.statement) && !ROLE_SPECULATIVE_RE.test(c.statement));
+  const pick = factual ?? roleCards.find(c => ROLE_TITLE_RE.test(c.statement));
+  return pick ? pick.statement.trim() : null;
+}
+
 // ── Sonar (Perplexity) research call ───────────────────────────────────────
 
 export async function runColdSonar(input: DraftInput): Promise<{ text: string; citations: string[] }> {
@@ -385,12 +401,13 @@ export async function processDraftRow(
     // ── 5) Tier + score (code) ──────────────────────────────────────────────
     const sel = selectAndScore(verified);
     const senderFirst = input.sender_name.split(/\s+/)[0] || input.sender_name;
+    const roleContext = pickRoleContext(verified);
 
     // ── 6+7) Write → lint → claim-check, with regen → downgrade ladder ──────
-    const writeOnce = async (tier: number, cards: EvidenceCard[], feedback?: string) => {
+    const writeOnce = async (cards: EvidenceCard[], feedback?: string) => {
       const sys = feedback
-        ? `${buildWriterSystemPrompt(senderFirst, tier)}\n\n${feedback}`
-        : buildWriterSystemPrompt(senderFirst, tier);
+        ? `${buildWriterSystemPrompt(senderFirst)}\n\n${feedback}`
+        : buildWriterSystemPrompt(senderFirst);
       const raw = await callAIMessages({
         model: COLD_WRITER_MODEL,
         fallbackModels: COLD_MODEL_FALLBACKS,
@@ -399,7 +416,7 @@ export async function processDraftRow(
         timeoutMs: 45_000,
         messages: [
           { role: 'system', content: sys },
-          { role: 'user', content: buildWriterUserMessage({ firstName: input.first_name, company: input.company, tier, cards }) },
+          { role: 'user', content: buildWriterUserMessage({ firstName: input.first_name, company: input.company, cards, roleContext }) },
         ],
       });
       cost += LLM_WRITE_COST_USD;
@@ -414,7 +431,7 @@ export async function processDraftRow(
         const blockers = lint.issues.filter(i => i.severity === 'blocker');
         return { ok: false as const, reason: `lint:${blockers.map(i => i.code).join(',')}`, lintMessages: blockers.map(i => i.message), subject, body };
       }
-      const cc = await claimCheck({ subject, body, cards });
+      const cc = await claimCheck({ subject, body, cards, roleContext });
       cost += LLM_CLAIMCHECK_COST_USD;
       if (!cc.ok) return { ok: false as const, reason: 'claimcheck', unsupported: cc.unsupportedClaims, subject, body };
       return { ok: true as const, subject, body };
@@ -426,7 +443,7 @@ export async function processDraftRow(
     let writerCards = sel.cards;
     const trace: string[] = [];
 
-    let res = await writeOnce(tier, writerCards);
+    let res = await writeOnce(writerCards);
     trace.push(`t${tier}:${res.ok ? 'ok' : res.reason}`);
     if (!res.ok) {
       // Regenerate once with feedback naming exactly what was wrong.
@@ -436,7 +453,7 @@ export async function processDraftRow(
           ? `Your previous draft broke these rules: ${res.lintMessages.join('; ')}. Rewrite it, fixing each, and follow every rule.`
           : `Your previous draft failed a copy rule (${res.reason}). Rewrite it, following every hard rule exactly.`;
       await setStatus(supabase, input.id, 'checking');
-      res = await writeOnce(tier, writerCards, feedback);
+      res = await writeOnce(writerCards, feedback);
       trace.push(`t${tier}regen:${res.ok ? 'ok' : res.reason}`);
     }
     if (!res.ok && writerCards.length > 1) {
@@ -444,7 +461,7 @@ export async function processDraftRow(
       // with only the single strongest fact — fewer claims to support, so it
       // clears the claim-check while staying specific. Beats falling to generic.
       const top = writerCards.slice(0, 1);
-      res = await writeOnce(tier, top);
+      res = await writeOnce(top);
       trace.push(`t${tier}top1:${res.ok ? 'ok' : res.reason}`);
       if (res.ok) writerCards = top;
     }
@@ -453,7 +470,7 @@ export async function processDraftRow(
       tier = ROLE_BASED_TIER;
       score = TIER_SCORE[ROLE_BASED_TIER];
       writerCards = [];
-      res = await writeOnce(tier, writerCards);
+      res = await writeOnce(writerCards);
       trace.push(`t6:${res.ok ? 'ok' : res.reason}`);
     }
     if (!res.ok) {

@@ -22,6 +22,7 @@ export async function claimCheck(input: {
   subject: string;
   body: string;
   cards: EvidenceCard[];
+  roleContext?: string | null;
 }): Promise<ClaimCheckResult> {
   // Throws on provider failure → bubbles to the engine (retry path).
   const raw = await callAIMessages({

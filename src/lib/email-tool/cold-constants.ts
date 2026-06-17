@@ -106,8 +106,8 @@ export const LLM_CLAIMCHECK_COST_USD = 0.0006;
 
 // ── Email copy rules ───────────────────────────────────────────────────────
 export const BODY_MIN_WORDS = 50;
-export const BODY_MAX_WORDS = 160;
-export const SUBJECT_MAX_WORDS = 6; // "under 6 words" → at most 5
+export const BODY_MAX_WORDS = 180;
+export const SUBJECT_MAX_WORDS = 8; // "under 8 words" → at most 7, so specific subjects survive without a regen
 
 // Phrases that read as corporate cliché or hype. A warm, human greeting like
 // "Hope you're doing well." and "I wanted to reach out" are NOW ALLOWED on

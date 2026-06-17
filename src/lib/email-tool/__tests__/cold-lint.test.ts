@@ -41,8 +41,8 @@ describe('lintColdEmail', () => {
     expect(codes('Intercom Into Linear', GOOD_BODY)).toContain('subject_not_lowercase');
   });
 
-  it('blocks a subject of 6+ words', () => {
-    expect(codes('saw the customer ops role posting today', GOOD_BODY)).toContain('subject_too_long');
+  it('blocks a subject of 8+ words', () => {
+    expect(codes('saw the customer ops role posting today and tomorrow', GOOD_BODY)).toContain('subject_too_long');
   });
 
   it('blocks corporate-cliché / hype phrases', () => {
