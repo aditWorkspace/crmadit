@@ -28,12 +28,12 @@ export async function POST(req: NextRequest) {
   const supabase = createAdminClient();
   const { data: draft } = await supabase
     .from('cold_email_drafts')
-    .select('id, status, email, first_name, company, sender_account_id, subject, body, email_html, image_url')
+    .select('id, status, email, first_name, full_name, company, sender_account_id, subject, body, email_html, image_url')
     .eq('id', id)
     .maybeSingle();
   if (!draft) return NextResponse.json({ error: 'draft not found' }, { status: 404 });
   const d = draft as {
-    id: string; status: string; email: string; first_name: string | null; company: string | null;
+    id: string; status: string; email: string; first_name: string | null; full_name: string | null; company: string | null;
     sender_account_id: string; subject: string | null; body: string | null; email_html: string | null; image_url: string | null;
   };
   if (d.status !== 'ready') return NextResponse.json({ error: `draft is '${d.status}', not ready` }, { status: 400 });
@@ -63,18 +63,48 @@ export async function POST(req: NextRequest) {
   }
   if (!campaign) return NextResponse.json({ error: 'could not create manual campaign' }, { status: 500 });
 
-  const { data: qrow, error: qerr } = await supabase.from('email_send_queue').insert({
+  const recipientEmail = d.email.toLowerCase(); // CHECK requires lowercase
+  const queueFields = {
     campaign_id: campaign.id, account_id: d.sender_account_id,
-    recipient_email: d.email, recipient_name: d.first_name, recipient_company: d.company,
+    recipient_email: recipientEmail, recipient_name: d.first_name, recipient_company: d.company,
+    recipient_full_name: d.full_name,
     template_variant_id: sentinel.id, send_at: nowIso, status: 'pending', source: 'pool',
     personalized_draft_id: d.id, personalized_subject: d.subject, personalized_body: d.body,
     personalized_html: d.email_html, image_url: d.image_url,
-  }).select('id').single();
-  if (qerr || !qrow) return NextResponse.json({ error: 'enqueue failed', detail: qerr?.message }, { status: 500 });
+    // reset send-state so a reused (previously skipped/failed) row is sendable
+    attempts: 0, last_error: null, sent_at: null, gmail_message_id: null, sending_started_at: null,
+  };
 
-  await supabase.from('cold_email_drafts')
-    .update({ status: 'consumed', consumed_at: nowIso, campaign_id: campaign.id })
-    .eq('id', id);
+  // The manual campaign has UNIQUE(campaign_id, recipient_email). A prior
+  // click may have left a skipped/failed row for this recipient — reuse it
+  // instead of conflicting on insert. But NEVER resurrect one already 'sent'.
+  const { data: existing } = await supabase.from('email_send_queue')
+    .select('id, status')
+    .eq('campaign_id', campaign.id)
+    .eq('recipient_email', recipientEmail)
+    .maybeSingle();
+  const ex = existing as { id: string; status: string } | null;
+
+  let queueId: string;
+  if (ex?.status === 'sent') {
+    // Already emailed on an earlier click — converge the draft, don't double-send.
+    await supabase.from('cold_email_drafts')
+      .update({ status: 'consumed', consumed_at: nowIso, campaign_id: campaign.id })
+      .eq('id', id);
+    return NextResponse.json({ ok: true, queue_status: 'sent', already_sent: true });
+  } else if (ex) {
+    queueId = ex.id;
+    const { error: uerr } = await supabase.from('email_send_queue').update(queueFields).eq('id', queueId);
+    if (uerr) return NextResponse.json({ error: 'requeue failed', detail: uerr.message }, { status: 500 });
+  } else {
+    const { data: qrow, error: qerr } = await supabase.from('email_send_queue').insert(queueFields).select('id').single();
+    if (qerr || !qrow) return NextResponse.json({ error: 'enqueue failed', detail: qerr?.message }, { status: 500 });
+    queueId = qrow.id;
+  }
+
+  // NB: the draft stays 'ready' until the send is CONFIRMED below. The old
+  // code marked it 'consumed' up-front, so a skipped/failed send stranded it
+  // as "consumed, not ready" — unsendable and unretryable.
 
   // Drain — runTick sends due rows via the full safety path.
   const stats = await runTick(supabase);
@@ -82,12 +112,24 @@ export async function POST(req: NextRequest) {
   const { data: after } = await supabase
     .from('email_send_queue')
     .select('status, gmail_message_id, last_error')
-    .eq('id', qrow.id)
+    .eq('id', queueId)
     .maybeSingle();
   const a = after as { status: string; gmail_message_id: string | null; last_error: string | null } | null;
+  const status = a?.status ?? 'unknown';
+  // 'sent' = delivered. 'pending' = deferred by a pace/pause guard but still
+  // queued — the per-minute cron will deliver it. Both are committed, so the
+  // draft is consumed. 'skipped'/'failed' will NOT send: leave it ready to retry.
+  const committed = status === 'sent' || status === 'pending';
+  if (committed) {
+    await supabase.from('cold_email_drafts')
+      .update({ status: 'consumed', consumed_at: nowIso, campaign_id: campaign.id })
+      .eq('id', id);
+  }
   return NextResponse.json({
-    ok: a?.status === 'sent',
-    queue_status: a?.status ?? 'unknown',
+    ok: status === 'sent',
+    queued: status === 'pending',
+    committed,
+    queue_status: status,
     gmail_message_id: a?.gmail_message_id ?? null,
     last_error: a?.last_error ?? null,
     tick: stats,

@@ -473,6 +473,7 @@ export async function runDailyStart(
       personalized_body: string;
       personalized_html: string | null;
       image_url: string | null;
+      recipient_full_name: string | null;
       personalization_tier: number | null;
       personalization_score: number | null;
     }
@@ -506,13 +507,13 @@ export async function runDailyStart(
           // Over-pick (×2) so per-sender domain dedup still hits the target.
           const { data: draftsData } = await supabase
             .from('cold_email_drafts')
-            .select('id, email, first_name, company, subject, body, opener_tier, signal_score, email_html, image_url')
+            .select('id, email, first_name, full_name, company, subject, body, opener_tier, signal_score, email_html, image_url')
             .eq('sender_account_id', founder.id)
             .eq('status', 'ready')
             .order('signal_score', { ascending: false })
             .limit(regularTargetPerFounder * 2);
           const drafts = (draftsData ?? []) as Array<{
-            id: string; email: string; first_name: string | null; company: string | null;
+            id: string; email: string; first_name: string | null; full_name: string | null; company: string | null;
             subject: string | null; body: string | null; opener_tier: number | null; signal_score: number | null;
             email_html: string | null; image_url: string | null;
           }>;
@@ -540,6 +541,7 @@ export async function runDailyStart(
               personalized_body: d.body,
               personalized_html: d.email_html,
               image_url: d.image_url,
+              recipient_full_name: d.full_name,
               personalization_tier: d.opener_tier,
               personalization_score: d.signal_score,
             });

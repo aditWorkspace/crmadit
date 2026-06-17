@@ -64,6 +64,9 @@ interface QueueRow {
   personalized_body: string | null;
   /** Visual-outreach v2 prebuilt HTML body (used verbatim by sendCampaignEmail). */
   personalized_html: string | null;
+  /** Recipient's full name, snapshotted so the name-email match guard can
+   *  validate last-name-based addresses (trowley@ = "Tim Rowley"). */
+  recipient_full_name: string | null;
 }
 
 interface FounderRow {
@@ -146,7 +149,7 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
   // ── 4) Pull due rows ──────────────────────────────────────────────────
   const { data: dueData } = await supabase
     .from('email_send_queue')
-    .select('id, campaign_id, account_id, recipient_email, recipient_name, recipient_company, template_variant_id, send_at, attempts, parent_queue_id, gmail_thread_id, source, personalized_draft_id, personalized_subject, personalized_body, personalized_html')
+    .select('id, campaign_id, account_id, recipient_email, recipient_name, recipient_company, template_variant_id, send_at, attempts, parent_queue_id, gmail_thread_id, source, personalized_draft_id, personalized_subject, personalized_body, personalized_html, recipient_full_name')
     .eq('status', 'pending')
     .lte('send_at', now.toISOString())
     .in('account_id', activeIds)
@@ -259,10 +262,11 @@ export async function runTick(supabase: Supa, opts: RunTickOpts = {}): Promise<R
     // explicitly: "I would rather not send the email than send with
     // wrong info." If first_name doesn't plausibly belong to the
     // email's local-part, skip and never call Gmail.
-    // Note: queue rows only carry recipient_name (the first_name from
-    // the pool — never a full name). The helper handles `null` fullName
-    // by skipping last-name-based checks.
-    const matchCheck = looksLikeMatch(row.recipient_name, null, row.recipient_email);
+    // Queue rows snapshot recipient_full_name (start.ts ⑤b / visual-send)
+    // so the helper can also accept first-initial+last-name addresses like
+    // trowley@ for "Tim Rowley". Older rows without it pass null and fall
+    // back to the first-name-only check.
+    const matchCheck = looksLikeMatch(row.recipient_name, row.recipient_full_name, row.recipient_email);
     if (!matchCheck.ok) {
       await supabase.from('email_send_queue')
         .update({ status: 'skipped', last_error: `name_email_mismatch:${matchCheck.reason}` })
