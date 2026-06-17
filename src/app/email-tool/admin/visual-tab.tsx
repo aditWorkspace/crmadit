@@ -95,7 +95,8 @@ export function VisualTab() {
         body: JSON.stringify({ id: d.id }),
       }).then(x => x.json());
       if (r.ok) { setMsg(`✓ Sent to ${d.email} (${r.gmail_message_id ?? ''})`); setDrafts(ds => ds.filter(x => x.id !== d.id)); }
-      else setMsg(`Send failed (${d.email}): ${r.last_error ?? r.error ?? r.queue_status}`);
+      else if (r.committed) { setMsg(`✓ Queued for ${d.email} — sending shortly`); setDrafts(ds => ds.filter(x => x.id !== d.id)); }
+      else setMsg(`Send failed (${d.email}): ${r.last_error ?? r.error ?? r.queue_status} — still ready, try again`);
     } finally { setB(d.id, null); }
   }
 
