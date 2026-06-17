@@ -118,10 +118,10 @@ describe('effectiveDailyTargetPerAccount — quality-first volume hold (held ope
     );
   });
 
-  it('reduced target yields exactly 100 fresh cold sends per account (bumps preserved)', () => {
+  it('reduced target yields exactly 250 fresh cold sends per account (bumps preserved)', () => {
     // freshPerFounder = perAccountTarget − reserved follow-up bumps.
-    // The whole point of 150 (not 100) is to keep the 50 bumps intact.
-    expect(TEMP_REDUCED_TARGET_PER_ACCOUNT - FOLLOWUP_DAILY_CAP_PER_FOUNDER).toBe(100);
+    // The whole point of 350 (not 250) is to keep the 100 bumps intact.
+    expect(TEMP_REDUCED_TARGET_PER_ACCOUNT - FOLLOWUP_DAILY_CAP_PER_FOUNDER).toBe(250);
   });
 
   it('reduced target is a real reduction below the steady-state target', () => {

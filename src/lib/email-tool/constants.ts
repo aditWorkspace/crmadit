@@ -11,7 +11,7 @@ export const HISTORY_CAP = 50;        // standalone wrote at most 50 history ent
 // the original but never replied. Fresh-cold target is reduced by this
 // amount; if fewer recipients are eligible, the cap shrinks the day's
 // total send (so daily can go below BATCH_SIZE).
-export const FOLLOWUP_DAILY_CAP_PER_FOUNDER = 50;
+export const FOLLOWUP_DAILY_CAP_PER_FOUNDER = 100; // raised 50 → 100 on 2026-06-16; reserved first, so each account aims for ≥50 bumps when reply candidates exist
 // A recipient must have at least N hours between original send and
 // follow-up. Anything sooner feels too pushy.
 export const FOLLOWUP_MIN_AGE_HOURS = 72;   // 3 days

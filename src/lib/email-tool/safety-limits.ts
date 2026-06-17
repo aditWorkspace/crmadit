@@ -3,10 +3,10 @@
 // + PR review. See spec §2 + §4.3 for rationale on each value.
 export const SAFETY_LIMITS = {
   // Automated cold-send target per account per day. This is the *total*
-  // slot count: ~400 of these are fresh-cold sends and 50 are reserved
-  // for opener-no-reply follow-ups (see FOLLOWUP_DAILY_CAP_PER_FOUNDER in
-  // src/lib/email-tool/constants.ts). Bumped 400 → 450 on 2026-05-15 to
-  // give 400 fresh + 50 follow-ups per account.
+  // slot count: fresh-cold sends + reserved opener-no-reply follow-ups
+  // (see FOLLOWUP_DAILY_CAP_PER_FOUNDER in src/lib/email-tool/constants.ts).
+  // Bumped 400 → 450 on 2026-05-15; follow-up reserve raised 50 → 100 on
+  // 2026-06-16, so 450 now = 350 fresh + 100 follow-ups per account.
   AUTOMATED_DAILY_TARGET_PER_ACCOUNT: 450,
 
   // Absolute ceiling — system never schedules more than this even if a
@@ -91,19 +91,20 @@ export const SAFETY_LIMITS = {
 
 // ── Quality-first volume hold — extended for the personalization layer ────
 // Originally a 2-week deliverability cooldown (2026-06-02 → 06-15); now held
-// open because we deliberately send ~100 *personalized* fresh emails per
-// account per day rather than 400 generic ones (each one is researched +
-// written by the cold-email draft pipeline). The 50 reserved follow-up bumps
-// per account (FOLLOWUP_DAILY_CAP_PER_FOUNDER) are untouched, so the effective
-// per-account ceiling is 150 = 100 fresh + 50 bumps. start.ts applies this as
-// a Math.min ceiling over the warmup / steady-state cap.
+// open because we send *personalized* fresh emails (each one is researched +
+// written by the cold-email draft pipeline) rather than generic blasts. Raised
+// 2026-06-16 to 250 personalized fresh + 100 reserved follow-up bumps per
+// account (FOLLOWUP_DAILY_CAP_PER_FOUNDER), so the effective per-account ceiling
+// is 350 = 250 fresh + 100 bumps. start.ts applies this as a Math.min ceiling
+// over the warmup / steady-state cap, and reserves the follow-up bumps first
+// (so each account aims for at least ~50 bumps whenever reply candidates exist).
 //
-// Window: PT send-dates < TEMP_REDUCED_RESUME_PT_DATE use 150; on/after that
+// Window: PT send-dates < TEMP_REDUCED_RESUME_PT_DATE use 350; on/after that
 // date the cap reverts to AUTOMATED_DAILY_TARGET_PER_ACCOUNT (450). To keep the
 // quality-first regime, push the date out; to return to full generic volume,
 // set it to a past date (or delete this block and the effectiveDailyTarget-
 // PerAccount() call in start.ts). Assumes only Adit + Asim send.
-export const TEMP_REDUCED_TARGET_PER_ACCOUNT = 150; // 100 fresh + 50 follow-up bumps
+export const TEMP_REDUCED_TARGET_PER_ACCOUNT = 350; // 250 fresh + 100 follow-up bumps
 export const TEMP_REDUCED_RESUME_PT_DATE = '2026-09-01'; // first full-volume PT date (exclusive bound)
 
 /**

@@ -29,10 +29,11 @@ import { sendCriticalAlert } from './alert';
 //   - pushes rows beyond AB_TEST_PHASE_A_ROWS_PER_FOUNDER per founder out
 //     to send_at ≥ AB_TEST_PHASE_B_CUTOFF_PT_HOUR so the morning rebalance
 //     route has time to UPDATE their template_variant_id before they fire.
-//   - STILL reserves 50 follow-up slots per founder (unlike the original
-//     A/B override which skipped follow-ups entirely). With AUTOMATED_
-//     DAILY_TARGET_PER_ACCOUNT=450, that's 400 fresh + 50 follow-ups per
-//     founder; the 400 fresh splits into 200 Phase A + 200 Phase B.
+//   - STILL reserves FOLLOWUP_DAILY_CAP_PER_FOUNDER follow-up slots per
+//     founder (unlike the original A/B override which skipped follow-ups
+//     entirely). With AUTOMATED_DAILY_TARGET_PER_ACCOUNT=450 and a 100
+//     follow-up reserve, that's 350 fresh + 100 follow-ups per founder; the
+//     350 fresh splits into 175 Phase A + 175 Phase B.
 // Empty set disables. Mirrored in /api/cron/email-tool/ab-rebalance/
 // route.ts — change both together.
 const AB_TEST_OVERRIDE_PT_DATES = new Set<string>([
@@ -274,14 +275,15 @@ export async function runDailyStart(
     // Weekends (Sat/Sun in PT): freshTotalTarget is forced to 0 so the
     // pool pull is skipped entirely and no priority rows are queued.
     // Step ⑤a still runs, so the only thing that goes out on Sat/Sun
-    // is up to 50 follow-up bumps per founder. The UI already restricts
+    // is up to FOLLOWUP_DAILY_CAP_PER_FOUNDER follow-up bumps per founder. The UI already restricts
     // priority uploads to Mon–Fri, so cappedPriorityRows is naturally
     // empty here — the assertion is defensive.
     const todayPt = formatPtDate(now);
     const abTestMode = AB_TEST_OVERRIDE_PT_DATES.has(todayPt);
     // Follow-ups are reserved on every send day going forward. The old
-    // AB-mode-skips-followups coupling is gone — the user wants 400 fresh
-    // + 50 follow-ups per founder regardless of A/B test mode.
+    // AB-mode-skips-followups coupling is gone — the user wants fresh sends
+    // + up to FOLLOWUP_DAILY_CAP_PER_FOUNDER follow-ups per founder regardless
+    // of A/B test mode.
     const skipFollowupsToday = false;
 
     // Weekend mode forces freshTotalTarget = 0 unless today is either in
@@ -294,9 +296,9 @@ export async function runDailyStart(
       ? 0
       : FOLLOWUP_DAILY_CAP_PER_FOUNDER * activeFounders.length;
     // freshTotalTarget = dailyTarget − reservedForFollowups in all non-
-    // weekend modes (including AB-test mode now). With dailyTarget=900
-    // (450/founder × 2) and reserved=100, that's 800 fresh = 400/founder
-    // = 200 Phase A + 200 Phase B per founder.
+    // weekend modes (including AB-test mode now). During the quality hold,
+    // dailyTarget=700 (350/founder × 2) and reserved=200 (100/founder × 2),
+    // so that's 500 fresh = 250/founder = 125 Phase A + 125 Phase B.
     const freshTotalTarget = weekendMode
       ? 0
       : Math.max(0, dailyTarget - reservedForFollowups);
