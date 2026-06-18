@@ -1,5 +1,6 @@
 import './globals.css';
 import type { Metadata } from 'next';
+import { PostHogProvider } from './providers';
 
 export const metadata: Metadata = {
   title: 'A quick hello',
@@ -17,7 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body>{children}</body>
+      <body><PostHogProvider>{children}</PostHogProvider></body>
     </html>
   );
 }
