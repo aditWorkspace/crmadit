@@ -88,6 +88,7 @@ export type DraftOutcome =
       image_url?: string | null;
       page_slug?: string | null;
       email_html?: string | null;
+      variant?: string | null;
     }
   | { kind: 'skipped'; reason: string; cost_usd: number }
   | { kind: 'retry'; reason: string; cost_usd: number }
