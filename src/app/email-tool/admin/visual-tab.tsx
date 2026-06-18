@@ -15,8 +15,20 @@ interface Draft {
   email_html: string | null;
   sender_account_id: string;
   sender_name: string;
+  variant: string | null;
 }
 interface Founder { id: string; name: string; email: string }
+
+const VARIANT_STYLE: Record<string, string> = {
+  A: 'bg-blue-100 text-blue-700',
+  B: 'bg-violet-100 text-violet-700',
+  C: 'bg-amber-100 text-amber-700',
+};
+const VARIANT_LABEL: Record<string, string> = {
+  A: 'mutual connection',
+  B: 'research ask',
+  C: 'prioritization question',
+};
 
 export function VisualTab() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
@@ -33,16 +45,20 @@ export function VisualTab() {
   const [imgBusy, setImgBusy] = useState(false);
   const [imgCand, setImgCand] = useState<{ image_url: string; current_url: string | null } | null>(null);
   const [gen, setGen] = useState<{ enabled: boolean; ready: number; inflight: number; target: number } | null>(null);
+  const [variant, setVariant] = useState<'all' | 'A' | 'B' | 'C'>('all');
+  const [counts, setCounts] = useState<Record<string, number> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch('/api/cron/email-tool/draft/visual-list').then(x => x.json());
+      const qs = variant === 'all' ? '' : `?variant=${variant}`;
+      const r = await fetch(`/api/cron/email-tool/draft/visual-list${qs}`).then(x => x.json());
       setDrafts(r.drafts ?? []);
       setFounders(r.founders ?? []);
       setPagesBase(r.pages_base_url ?? '');
+      setCounts(r.counts ?? null);
     } finally { setLoading(false); }
-  }, []);
+  }, [variant]);
   useEffect(() => { load(); }, [load]);
 
   const loadGen = useCallback(async () => {
@@ -146,6 +162,22 @@ export function VisualTab() {
           <button onClick={() => { load(); loadGen(); }} className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-md text-sm">Refresh</button>
         </div>
       </div>
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        {(['all', 'A', 'B', 'C'] as const).map(v => {
+          const n = v === 'all' ? counts?.total : counts?.[v];
+          return (
+            <button
+              key={v}
+              onClick={() => setVariant(v)}
+              className={`px-3 py-1 rounded-md text-xs font-medium ${variant === v ? 'bg-black text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+            >
+              {v === 'all' ? 'All' : v}{n != null ? ` · ${n}` : ''}
+              {v !== 'all' && <span className="ml-1 opacity-70 font-normal">{VARIANT_LABEL[v]}</span>}
+            </button>
+          );
+        })}
+        <span className="text-xs text-gray-400 ml-1">A/B arms — same image + page, copy differs</span>
+      </div>
       {msg && <div className="mb-4 text-sm px-3 py-2 bg-blue-50 text-blue-800 rounded-md flex justify-between"><span>{msg}</span><button onClick={() => setMsg(null)}>✕</button></div>}
       {drafts.length === 0 && <div className="text-sm text-gray-400 p-8 text-center">No ready drafts. Generate some, then refresh.</div>}
 
@@ -165,7 +197,10 @@ export function VisualTab() {
                 <div className="flex-1 min-w-[280px]">
                   <div className="flex items-center justify-between">
                     <div>
-                      <div className="font-semibold">{d.first_name} · {d.company}</div>
+                      <div className="font-semibold flex items-center gap-2">
+                        <span>{d.first_name} · {d.company}</span>
+                        {d.variant && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${VARIANT_STYLE[d.variant] ?? 'bg-gray-100 text-gray-600'}`}>{d.variant}</span>}
+                      </div>
                       <div className="text-xs text-gray-500">{d.email} · <span className="text-gray-700">{d.industry}</span></div>
                     </div>
                     <select
@@ -197,6 +232,7 @@ export function VisualTab() {
                     <iframe
                       title={`email-${d.id}`}
                       sandbox=""
+                      loading="lazy"
                       srcDoc={d.email_html ?? ''}
                       className="mt-2 w-full h-44 border border-gray-100 rounded-md bg-white"
                     />
