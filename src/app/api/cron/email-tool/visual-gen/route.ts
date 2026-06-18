@@ -11,7 +11,7 @@ import { seedDrafts } from '@/lib/email-tool/visual-seed';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-export const READY_TARGET = 700; // ~350/account buffer → reliably yields 300 fresh sends/account after domain-dedup
+export const READY_TARGET = 600; // one day's fresh send (300/account × 2); generator won't accumulate past this. NB: domain-dedup may trim actual sends a hair below 600 — bump to ~650 if you ever see fewer going out.
 const SEED_PER_TICK = 60; // cap new drafts started per minute (paces spend + Firecrawl/image concurrency)
 const INFLIGHT = ['queued', 'researching', 'verifying_evidence', 'writing', 'checking'];
 
