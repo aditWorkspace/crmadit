@@ -8,6 +8,7 @@ import { SourceChart } from '@/components/analytics/source-chart';
 import { TimeToDemoChart } from '@/components/analytics/time-to-demo-chart';
 import { WeeklyRetro } from '@/components/analytics/weekly-retro';
 import { VelocityChart } from '@/components/analytics/velocity-chart';
+import { OutreachABCard } from '@/components/analytics/outreach-ab-card';
 import { SpeedScorecard } from '@/components/dashboard/speed-scorecard';
 import { VelocityLeaderboard } from '@/components/dashboard/velocity-leaderboard';
 import { useSession } from '@/hooks/use-session';
@@ -260,6 +261,9 @@ export default function AnalyticsPage() {
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       <h1 className="text-2xl font-semibold text-gray-900">Analytics</h1>
+
+      {/* Outreach A/B test — cold-email variant performance (top, most actionable) */}
+      <OutreachABCard />
 
       {/* Row 1: Funnel — full width */}
       <section className="rounded-xl border border-gray-200 bg-white p-5">
