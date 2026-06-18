@@ -168,6 +168,42 @@ export async function generateImage(params: ImageGenParams): Promise<string> {
   throw lastErr ?? new Error('OpenRouter image gen failed with no specific error');
 }
 
+/**
+ * Vision read: send a text prompt + one image and return the model's TEXT
+ * answer (choices[0].message.content). Used to validate text on a generated
+ * image (e.g. the company name on a whiteboard). Best-effort — callers should
+ * treat a throw as "couldn't check", never a hard failure.
+ */
+export async function callVision(params: { prompt: string; imageDataUrl: string; model?: string; maxTokens?: number; timeoutMs?: number }): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 30_000);
+  try {
+    const response = await fetch(OPENROUTER_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
+        'X-Title': 'Proxi CRM',
+      },
+      body: JSON.stringify({
+        model: params.model || 'google/gemini-2.5-flash',
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: params.prompt },
+          { type: 'image_url', image_url: { url: params.imageDataUrl } },
+        ] }],
+        max_tokens: params.maxTokens ?? 80,
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`OpenRouter vision error ${response.status}`);
+    const data = await response.json();
+    return String(data.choices?.[0]?.message?.content ?? '');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function singleImageAttempt(params: ImageGenParams & { model: string }): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 90_000);
