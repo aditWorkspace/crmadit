@@ -337,8 +337,8 @@ function variantEmail(variant: EmailVariant, p: { first: string; industry: strin
   }
   if (variant === 'C') {
     return {
-      subject: 'two Berkeley students, quick hello',
-      intro: `Hi ${p.first},\n\nMy friend and I are two Berkeley students talking to product leaders${spec ? ` in ${spec}` : ''} about how they decide what to build. We're not pitching anything, just trying to learn. Put together a little page for you: ${p.pageUrl}`,
+      subject: 'what makes it onto your roadmap?',
+      intro: `Hi ${p.first},\n\nGenuine question — when there's far more to build than time to build it, how does your team decide what actually makes the roadmap? My friend and I are two Berkeley students talking to product leaders${spec ? ` in ${spec}` : ''} about how they prioritize, and we put together a quick page for you: ${p.pageUrl}`,
     };
   }
   // A (control) — current copy
