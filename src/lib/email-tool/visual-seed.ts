@@ -36,12 +36,19 @@ export async function seedDrafts(supabase: Supa, count: number): Promise<number>
   const emails = Array.from(new Set(window.map(r => r.email.toLowerCase())));
   const blacklisted = new Set<string>();
   const isLead = new Set<string>();
+  const alreadySent = new Set<string>();
   for (let i = 0; i < emails.length; i += LOOKUP_CHUNK) {
     const slice = emails.slice(i, i + LOOKUP_CHUNK);
     const { data: bl } = await supabase.from('email_blacklist').select('email').in('email', slice);
     for (const r of (bl ?? []) as Array<{ email: string }>) blacklisted.add(r.email.toLowerCase());
     const { data: leads } = await supabase.from('leads').select('contact_email').in('contact_email', slice);
     for (const r of (leads ?? []) as Array<{ contact_email: string }>) if (r.contact_email) isLead.add(r.contact_email.toLowerCase());
+    // Never email anyone we've already sent to in any prior campaign. The
+    // blacklist/leads checks miss non-repliers (they never became leads), so
+    // this closes the duplicate-send gap when a freshly-uploaded lead overlaps
+    // the send history.
+    const { data: sent } = await supabase.from('email_send_queue').select('recipient_email').in('recipient_email', slice);
+    for (const r of (sent ?? []) as Array<{ recipient_email: string }>) if (r.recipient_email) alreadySent.add(r.recipient_email.toLowerCase());
   }
 
   const senderIds = senders.map(s => s.id);
@@ -53,7 +60,7 @@ export async function seedDrafts(supabase: Supa, count: number): Promise<number>
     if (taken >= count) break;
     lastSeq = row.sequence;
     const e = row.email.toLowerCase();
-    if (blacklisted.has(e) || isLead.has(e)) continue;
+    if (blacklisted.has(e) || isLead.has(e) || alreadySent.has(e)) continue;
     const sid = senderIds[rr % senderIds.length];
     rr++;
     const sender = senders.find(s => s.id === sid)!;

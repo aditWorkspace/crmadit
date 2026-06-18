@@ -11,7 +11,7 @@ import { seedDrafts } from '@/lib/email-tool/visual-seed';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-export const READY_TARGET = 300;
+export const READY_TARGET = 700; // ~350/account buffer → reliably yields 300 fresh sends/account after domain-dedup
 const SEED_PER_TICK = 60; // cap new drafts started per minute (paces spend + Firecrawl/image concurrency)
 const INFLIGHT = ['queued', 'researching', 'verifying_evidence', 'writing', 'checking'];
 

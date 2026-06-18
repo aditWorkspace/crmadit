@@ -380,21 +380,22 @@ export async function runDailyStart(
         continue;
       }
 
-      // Candidates: opened ≥3d ago, never replied, never followed up.
-      // Random-sample server-side with a generous LIMIT then shuffle in
-      // JS — Supabase doesn't expose `ORDER BY random()` on the JS
-      // client. The LIMIT is a soft cap (10x the daily target should
-      // be plenty even for a heavy day).
+      // Candidates: sent 3–14d ago, never replied, never followed up. We bump
+      // non-repliers OPENED-FIRST — those who opened ("warm") are prioritized,
+      // then never-opened non-repliers fill the rest (the opened-not-replied
+      // pool can be empty once a campaign has already bumped them all). Order
+      // by opened_at desc (nulls last) so the soft LIMIT fetches all openers
+      // before unopened, then shuffle within each tier for an unbiased pick.
       const { data: candidatesData } = await supabase
         .from('email_send_queue')
-        .select('id, recipient_email, recipient_name, recipient_company, gmail_thread_id')
+        .select('id, recipient_email, recipient_name, recipient_company, gmail_thread_id, opened_at')
         .eq('account_id', founder.id)
         .is('parent_queue_id', null)
-        .not('opened_at', 'is', null)
         .is('replied_at', null)
         .is('followed_up_at', null)
         .gte('sent_at', minSentAtIso)
         .lte('sent_at', maxSentAtIso)
+        .order('opened_at', { ascending: false, nullsFirst: false })
         .limit(FOLLOWUP_DAILY_CAP_PER_FOUNDER * 10);
       const candidates = (candidatesData ?? []) as Array<{
         id: string;
@@ -402,15 +403,21 @@ export async function runDailyStart(
         recipient_name: string | null;
         recipient_company: string | null;
         gmail_thread_id: string | null;
+        opened_at: string | null;
       }>;
       if (candidates.length === 0) continue;
 
-      // Fisher–Yates style shuffle for an unbiased pick.
-      for (let i = candidates.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
-      }
-      const picked = candidates.slice(0, FOLLOWUP_DAILY_CAP_PER_FOUNDER);
+      // Fisher–Yates shuffle within a tier for an unbiased pick.
+      const shuffle = <T,>(arr: T[]): T[] => {
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+      };
+      const opened = shuffle(candidates.filter(c => c.opened_at != null));
+      const unopened = shuffle(candidates.filter(c => c.opened_at == null));
+      const picked = [...opened, ...unopened].slice(0, FOLLOWUP_DAILY_CAP_PER_FOUNDER);
 
       // Schedule each follow-up with its own per-founder jitter cursor.
       // Stagger them across the same window the fresh-cold drain will
