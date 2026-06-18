@@ -109,11 +109,17 @@ export const LLM_CLAIMCHECK_COST_USD = 0.0006;
 
 // ── Visual-outreach v2 (per-person image + landing page) ───────────────────
 export const LLM_INDUSTRY_COST_USD = 0.001;   // one cheap JSON call for industry
-export const IMAGE_GEN_COST_USD = 0.03;       // per-person whiteboard image edit
-// gemini-2.5-flash-image ("nano banana") — stable + ~50% cheaper than the 3.1
-// preview, same quality. Fallback to 3.1 (drop the expensive gpt-image-2).
-export const VISUAL_IMAGE_MODEL = 'google/gemini-2.5-flash-image';
-export const VISUAL_IMAGE_FALLBACKS = ['google/gemini-3.1-flash-image-preview'];
+export const IMAGE_GEN_COST_USD = 0.04;       // per-person whiteboard image edit (gemini 3.1)
+// gemini-3.1-flash-image-preview — ~100% text fidelity on the whiteboard
+// (multi-word/odd company names) vs ~40-50% for 2.5; only ~20% more per image.
+// Tested 8/8 on the hard cases. Fallback to 2.5 if 3.1 is unavailable/rate-limited.
+export const VISUAL_IMAGE_MODEL = 'google/gemini-3.1-flash-image-preview';
+export const VISUAL_IMAGE_FALLBACKS = ['google/gemini-2.5-flash-image'];
+// Cheap vision detectors for the whiteboard-text check. Two independent models
+// must BOTH flag a board wrong before we redo it — their false-positives don't
+// overlap, so the agreement catches every real error with ~0 false-flags.
+export const WHITEBOARD_DETECTOR_PRIMARY = 'google/gemini-2.5-flash-lite';
+export const WHITEBOARD_DETECTOR_CONFIRM = 'google/gemini-2.5-flash';
 export const VISUAL_INDUSTRY_MODEL = 'google/gemini-2.5-flash';
 export const VISUAL_INDUSTRY_FALLBACKS = ['deepseek/deepseek-chat-v3-0324'];
 export const OUTREACH_IMAGE_BUCKET = 'outreach-images';

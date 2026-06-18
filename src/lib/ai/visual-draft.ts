@@ -23,6 +23,8 @@ import {
   IMAGE_GEN_COST_USD,
   VISUAL_IMAGE_MODEL,
   VISUAL_IMAGE_FALLBACKS,
+  WHITEBOARD_DETECTOR_PRIMARY,
+  WHITEBOARD_DETECTOR_CONFIRM,
   VISUAL_INDUSTRY_MODEL,
   VISUAL_INDUSTRY_FALLBACKS,
   OUTREACH_IMAGE_BUCKET,
@@ -228,51 +230,74 @@ async function loadReferenceImage(supabase: Supa): Promise<string | null> {
   return null;
 }
 
+// Strip parenthetical noise ("XTECH (Recreational Goods)") + odd chars so the
+// whiteboard never writes a category/ticker. Used for both the name and company.
+const boardName = (s: string) => (s || '').replace(/\s*\([^)]*\)/g, ' ').replace(/["'\n\r]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+// Spell a company letter-by-letter ("Memo Therapeutics" → "M-e-m-o   T-h-...") —
+// this is what stopped the model from misspelling long company names.
+const spellOut = (s: string) => s.split(' ').filter(Boolean).map(w => w.split('').join('-')).join('   ');
+// The exact text the base whiteboard should read once edited (the known formula).
+const expectedBoard = (first: string, company: string) =>
+  `Hey ${boardName(first)}, We are students interested in learning how product work is done at ${boardName(company)}. Thank You!`;
+
+// v2 prompt — Gemini 3.1 hits ~100% with this: name the two edits, give the
+// EXACT target sentence, spell the company letter-for-letter, and forbid dropping
+// any other word. (Tested 8/8 on the hard cases vs 3-4/8 for the old wording.)
 function buildImagePrompt(first: string, company: string): string {
-  // Keep the prompt clean: strip parenthetical noise that pollutes some company
-  // names ("XTECH (Recreational Goods)", "VisionWave Holdings (NAS: VWAV)") so
-  // the whiteboard never writes the category/ticker; also drop odd characters.
-  const clean = (s: string) => s.replace(/\s*\([^)]*\)/g, ' ').replace(/["'\n\r]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
-  const name = clean(first);
-  const co = clean(company);
-  // Direct, minimal edit: fully replace the name (Bob) and the WHOLE company
-  // name (Acme Corp) on the whiteboard — the model used to leave a fragment
-  // ("Acme" or "Corp") behind, so the prompt is explicit about clearing both.
-  return `Hey, only edit the name (Bob) and the entire company name (Acme Corp, not just "acme" and not just "corp". dont keep either, replace both words with the company name) on the whiteboard for this lead. Keep the person, the handwriting style, and everything else exactly the same.\nName: ${name}\nCompany: ${co}`;
+  const name = boardName(first);
+  const co = boardName(company);
+  return `Edit this photo of two students holding a small whiteboard with a handwritten note. Make ONLY two text changes on the whiteboard, and change nothing else (same two people, room, handwriting style, marker, size, and layout):
+1. Replace the first name written after "Hey" with: ${name}
+2. Replace the company written after the word "at" (it currently says "Acme Corp") with: ${co}
+Spell the company exactly, letter for letter: ${spellOut(co)}
+Keep every other word on the board EXACTLY as written — do not drop, merge, add, or misspell any word (keep the words "done" and "at"). The whiteboard must read exactly:
+"${expectedBoard(first, company)}"`;
+}
+
+// Retry prompt — a FRESH edit of the base photo (never built off the failed
+// output) that states exactly what the previous attempt got wrong, plus stricter
+// rules. Used only on attempt 2.
+function buildRetryPrompt(first: string, company: string, reason: string): string {
+  const name = boardName(first);
+  const co = boardName(company);
+  const note = reason ? `A previous edit was wrong (${reason}). ` : '';
+  return `Edit this photo of two students holding a whiteboard. ${note}Redo it from this original photo so the whiteboard reads EXACTLY, with no missing or misspelled words:
+"${expectedBoard(first, company)}"
+Strict rules:
+- Spell the company letter for letter: ${spellOut(co)}. Do not abbreviate, truncate, or drop any part of it.
+- Replace the name after "Hey" with exactly: ${name}
+- Keep EVERY other word, especially "done" and "at" — do not drop or merge words.
+- Same handwriting style, same two people, same layout. Change nothing outside the whiteboard text.`;
 }
 
 // Normalize a company name for fuzzy comparison: drop common suffixes/filler
-// and anything non-alphanumeric, so "Acme Corp." ~ "acme" and we only flag a
-// real mismatch ("Proxi" vs the garbled "Prme Coxi").
-function normalizeCompany(s: string): string {
-  return (s || '').toLowerCase()
-    .replace(/\b(inc|llc|ltd|limited|corp|corporation|co|company|the|app|labs?|technologies|group|holdings|io|ai)\b/g, '')
-    .replace(/[^a-z0-9]/g, '');
+// Cheap one-shot text check: does the whiteboard match its exact expected text?
+// We give a cheap vision model the target sentence and ask it to reply "done" or
+// "WRONG: <what's off>". Vision reads handwriting far better than classical OCR.
+// Returns the verdict + reason (the reason feeds a targeted retry). Leans toward
+// "not wrong" on a vision error so a hiccup never forces a needless redo.
+export async function detectWhiteboard(dataUrl: string, first: string, company: string, model: string): Promise<{ wrong: boolean; reason: string }> {
+  try {
+    const raw = ((await callVision({
+      prompt: `The whiteboard in this image should read EXACTLY:\n"${expectedBoard(first, company)}"\n\nLook at the handwriting carefully. Reply with exactly the single word "done" if the first name and the company name are both spelled correctly and no words are missing or garbled. Ignore the word "Hey", punctuation, capitalization, and line breaks. Otherwise reply "WRONG:" followed by exactly what is misspelled, missing, or wrong.`,
+      imageDataUrl: dataUrl, model, maxTokens: 60, timeoutMs: 25_000,
+    })) || '').trim();
+    const done = /^done\b/i.test(raw);
+    return { wrong: !done, reason: raw.replace(/\n/g, ' ').slice(0, 200) };
+  } catch {
+    return { wrong: false, reason: '' };
+  }
 }
 
-// Is the whiteboard in `dataUrl` clean — i.e. shows roughly the right company
-// AND no leftover placeholder ("Acme"/"Corp"/"Bob") from the base photo? The
-// image model is stochastic about replacing the placeholder, so this gates the
-// retry loop. Returns false on a confident problem (leftover placeholder, or a
-// clearly wrong company); true otherwise — a vision hiccup or unreadable board
-// must NEVER block a good image.
-export async function whiteboardIsClean(dataUrl: string, company: string): Promise<boolean> {
-  const want = normalizeCompany(company);
-  try {
-    const raw = await callVision({
-      prompt: 'Look at the handwritten whiteboard. Reply EXACTLY in this format and nothing else: COMPANY=<the company name written after the word "at"> | PLACEHOLDER=<YES if any of the words "Acme", "Corp", or "Bob" appear anywhere on the board, otherwise NO>',
-      imageDataUrl: dataUrl, maxTokens: 50, timeoutMs: 25_000,
-    });
-    const line = (raw || '').split('\n')[0];
-    if (/PLACEHOLDER\s*=\s*YES/i.test(line)) return false; // leftover placeholder → reject
-    if (want.length < 3) return true;                      // company too short/generic to validate
-    const m = /COMPANY\s*=\s*([^|]*)/i.exec(line);
-    const got = normalizeCompany(m ? m[1] : '');
-    if (!got || got === 'unknown') return true;            // couldn't read company → don't block
-    return got.includes(want) || want.includes(got);
-  } catch {
-    return true; // any error → don't block the draft
-  }
+// Two independent cheap models must BOTH flag a board wrong before we redo it.
+// Their false-positives don't overlap (lite trips on "UrgentIQ", flash on
+// wrapped lines), so the agreement caught every real error with zero false-flags
+// in calibration — important so we never needlessly skip a good lead.
+export async function whiteboardNeedsRedo(dataUrl: string, first: string, company: string): Promise<{ redo: boolean; reason: string }> {
+  const a = await detectWhiteboard(dataUrl, first, company, WHITEBOARD_DETECTOR_PRIMARY);
+  if (!a.wrong) return { redo: false, reason: '' };
+  const b = await detectWhiteboard(dataUrl, first, company, WHITEBOARD_DETECTOR_CONFIRM);
+  return { redo: b.wrong, reason: [a.reason, b.reason].filter(Boolean).join(' / ') };
 }
 
 async function uploadImage(supabase: Supa, key: string, bytes: Buffer): Promise<string> {
@@ -336,21 +361,23 @@ export async function regenerateLeadWhiteboard(
 ): Promise<string | null> {
   const reference = await loadReferenceImage(supabase);
   if (!reference) return null;
-  const genOpts = {
-    prompt: buildImagePrompt(opts.first || 'there', opts.company || 'your company'),
-    referenceImages: [reference],
-    model: VISUAL_IMAGE_MODEL,
-    fallbackModels: VISUAL_IMAGE_FALLBACKS,
-    strength: 0.35,
-    timeoutMs: 90_000,
-  };
-  for (let attempt = 0; attempt < (opts.tries ?? 4); attempt++) {
-    const candidate = await generateImage(genOpts).catch(() => null);
+  const first = opts.first || 'there';
+  const company = opts.company || 'your company';
+  let reason = '';
+  // Attempt 0 = the v2 prompt; a retry is a FRESH edit of the base photo with
+  // the specific mistake fed back. Two cheap models must agree it's wrong before
+  // we retry. Gemini 3.1 is ~100% so this rarely needs the second try.
+  for (let attempt = 0; attempt < (opts.tries ?? 2); attempt++) {
+    const prompt = attempt === 0 ? buildImagePrompt(first, company) : buildRetryPrompt(first, company, reason);
+    const candidate = await generateImage({
+      prompt, referenceImages: [reference], model: VISUAL_IMAGE_MODEL,
+      fallbackModels: VISUAL_IMAGE_FALLBACKS, strength: 0.35, timeoutMs: 90_000,
+    }).catch(() => null);
     if (!candidate) continue;
     opts.onCost?.(IMAGE_GEN_COST_USD);
-    if (await whiteboardIsClean(candidate, opts.company)) {
-      return uploadImage(supabase, `${opts.slug}.jpg`, await compressImage(dataUrlToBuffer(candidate)));
-    }
+    const v = await whiteboardNeedsRedo(candidate, first, company);
+    if (!v.redo) return uploadImage(supabase, `${opts.slug}.jpg`, await compressImage(dataUrlToBuffer(candidate)));
+    reason = v.reason;
   }
   return null;
 }
@@ -469,10 +496,11 @@ export async function processVisualDraftRow(input: DraftInput, supabase: Supa): 
     const last = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
     const slug = await buildSlug(supabase, first, last, input.email);
 
-    // Verify-and-retry: the image model is flaky about replacing the "Acme
-    // Corp"/"Bob" placeholder, so regenerate until the board reads clean. If it
-    // never does (~1%), ship NO image rather than a broken "Acme Corp" board.
+    // Generate + verify the whiteboard. If no clean image after the retries,
+    // never create a blank `ready` draft — return `retry` so the worker
+    // re-attempts later (3.1 is ~100%, so this path is rare).
     const imageUrl = await regenerateLeadWhiteboard(supabase, { first, company, slug, onCost: (c) => { cost += c; } });
+    if (!imageUrl) return { kind: 'retry', reason: 'no_clean_whiteboard_image', cost_usd: cost };
 
     // 3) email + landing copy (A/B variant on the email only — page unchanged)
     const variant = assignVariant(input.email);
