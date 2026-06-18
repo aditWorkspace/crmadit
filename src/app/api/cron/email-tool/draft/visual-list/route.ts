@@ -17,14 +17,33 @@ export async function GET(req: NextRequest) {
   if (!(await authorized(req))) return NextResponse.json({ error: 'admin only' }, { status: 403 });
   const supabase = createAdminClient();
 
-  const { data: drafts, error } = await supabase
+  // optional ?variant=A|B|C filter (browse the A/B test one arm at a time)
+  const variantParam = req.nextUrl.searchParams.get('variant');
+  const variant = variantParam && ['A', 'B', 'C'].includes(variantParam) ? variantParam : null;
+
+  let q = supabase
     .from('cold_email_drafts')
-    .select('id, email, first_name, full_name, company, domain, industry, image_url, page_slug, subject, body, email_html, sender_account_id, sender_name, ready_at')
+    .select('id, email, first_name, full_name, company, domain, industry, image_url, page_slug, subject, body, email_html, sender_account_id, sender_name, variant, ready_at')
     .eq('status', 'ready')
-    .not('email_html', 'is', null)
+    .not('email_html', 'is', null);
+  if (variant) q = q.eq('variant', variant);
+  const { data: drafts, error } = await q
     .order('ready_at', { ascending: false })
-    .limit(200);
+    .limit(variant ? 300 : 200);
   if (error) return NextResponse.json({ error: 'database_error', detail: error.message }, { status: 500 });
+
+  // per-variant counts across the whole ready visual pool (cheap single-column scan)
+  const { data: allVariants } = await supabase
+    .from('cold_email_drafts')
+    .select('variant')
+    .eq('status', 'ready')
+    .not('email_html', 'is', null);
+  const counts: Record<string, number> = { A: 0, B: 0, C: 0, total: 0 };
+  for (const r of allVariants ?? []) {
+    const v = (r as { variant: string | null }).variant ?? 'A';
+    counts[v] = (counts[v] ?? 0) + 1;
+    counts.total += 1;
+  }
 
   const { data: founders } = await supabase
     .from('team_members')
@@ -34,5 +53,5 @@ export async function GET(req: NextRequest) {
     .order('name', { ascending: true });
 
   const base = (process.env.LANDING_PAGES_BASE_URL || '').replace(/\/$/, '');
-  return NextResponse.json({ drafts: drafts ?? [], founders: founders ?? [], pages_base_url: base });
+  return NextResponse.json({ drafts: drafts ?? [], founders: founders ?? [], pages_base_url: base, counts });
 }
