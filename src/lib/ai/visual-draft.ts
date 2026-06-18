@@ -203,12 +203,15 @@ export async function resolveIndustry(supabase: Supa, domain: string, company: s
 
 /** Load the founders' reference whiteboard photo as a base64 data URL.
  *  Storage key first, then an optional public URL env, else null (skip image). */
+let _referenceCache: string | null = null;
 async function loadReferenceImage(supabase: Supa): Promise<string | null> {
+  if (_referenceCache) return _referenceCache; // static asset — cache the base64
   try {
     const { data, error } = await supabase.storage.from(OUTREACH_IMAGE_BUCKET).download(OUTREACH_REFERENCE_KEY);
     if (!error && data) {
       const buf = Buffer.from(await data.arrayBuffer());
-      return `data:image/png;base64,${buf.toString('base64')}`;
+      _referenceCache = `data:image/png;base64,${buf.toString('base64')}`;
+      return _referenceCache;
     }
   } catch { /* fall through to env */ }
   const url = process.env.OUTREACH_REFERENCE_URL;
@@ -217,7 +220,8 @@ async function loadReferenceImage(supabase: Supa): Promise<string | null> {
       const res = await fetch(url);
       if (res.ok) {
         const buf = Buffer.from(await res.arrayBuffer());
-        return `data:image/png;base64,${buf.toString('base64')}`;
+        _referenceCache = `data:image/png;base64,${buf.toString('base64')}`;
+        return _referenceCache;
       }
     } catch { /* none */ }
   }
@@ -225,13 +229,16 @@ async function loadReferenceImage(supabase: Supa): Promise<string | null> {
 }
 
 function buildImagePrompt(first: string, company: string): string {
-  // Keep the prompt clean if a name/company has odd characters.
-  const clean = (s: string) => s.replace(/["'\n\r]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+  // Keep the prompt clean: strip parenthetical noise that pollutes some company
+  // names ("XTECH (Recreational Goods)", "VisionWave Holdings (NAS: VWAV)") so
+  // the whiteboard never writes the category/ticker; also drop odd characters.
+  const clean = (s: string) => s.replace(/\s*\([^)]*\)/g, ' ').replace(/["'\n\r]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
   const name = clean(first);
   const co = clean(company);
-  // Direct, minimal edit: swap only the name (Bob) and company (Acme Corp) on
-  // the whiteboard; keep the person, handwriting, and everything else identical.
-  return `Hey, only edit the name (Bob) and the company name (Acme Corp) on the whiteboard for this lead. Keep the person, the handwriting style, and everything else exactly the same.\nName: ${name}\nCompany: ${co}`;
+  // Direct, minimal edit: fully replace the name (Bob) and the WHOLE company
+  // name (Acme Corp) on the whiteboard — the model used to leave a fragment
+  // ("Acme" or "Corp") behind, so the prompt is explicit about clearing both.
+  return `Hey, only edit the name (Bob) and the entire company name (Acme Corp, not just "acme" and not just "corp". dont keep either, replace both words with the company name) on the whiteboard for this lead. Keep the person, the handwriting style, and everything else exactly the same.\nName: ${name}\nCompany: ${co}`;
 }
 
 // Normalize a company name for fuzzy comparison: drop common suffixes/filler
@@ -243,19 +250,25 @@ function normalizeCompany(s: string): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
-// Best-effort: does the whiteboard in `dataUrl` show roughly the right company?
-// Returns false ONLY on a confident mismatch; true otherwise (a vision hiccup,
-// unreadable board, or short/generic name must NEVER block a draft).
-async function whiteboardLooksRight(dataUrl: string, company: string): Promise<boolean> {
+// Is the whiteboard in `dataUrl` clean — i.e. shows roughly the right company
+// AND no leftover placeholder ("Acme"/"Corp"/"Bob") from the base photo? The
+// image model is stochastic about replacing the placeholder, so this gates the
+// retry loop. Returns false on a confident problem (leftover placeholder, or a
+// clearly wrong company); true otherwise — a vision hiccup or unreadable board
+// must NEVER block a good image.
+export async function whiteboardIsClean(dataUrl: string, company: string): Promise<boolean> {
   const want = normalizeCompany(company);
-  if (want.length < 3) return true; // too short/generic to validate reliably
   try {
     const raw = await callVision({
-      prompt: 'Read ONLY the company name handwritten on the whiteboard in this photo. Reply with JUST that name and nothing else. If you cannot read it, reply exactly: UNKNOWN.',
-      imageDataUrl: dataUrl, maxTokens: 40, timeoutMs: 25_000,
+      prompt: 'Look at the handwritten whiteboard. Reply EXACTLY in this format and nothing else: COMPANY=<the company name written after the word "at"> | PLACEHOLDER=<YES if any of the words "Acme", "Corp", or "Bob" appear anywhere on the board, otherwise NO>',
+      imageDataUrl: dataUrl, maxTokens: 50, timeoutMs: 25_000,
     });
-    const got = normalizeCompany((raw || '').split('\n')[0]);
-    if (!got || got === 'unknown') return true; // couldn't read → don't block
+    const line = (raw || '').split('\n')[0];
+    if (/PLACEHOLDER\s*=\s*YES/i.test(line)) return false; // leftover placeholder → reject
+    if (want.length < 3) return true;                      // company too short/generic to validate
+    const m = /COMPANY\s*=\s*([^|]*)/i.exec(line);
+    const got = normalizeCompany(m ? m[1] : '');
+    if (!got || got === 'unknown') return true;            // couldn't read company → don't block
     return got.includes(want) || want.includes(got);
   } catch {
     return true; // any error → don't block the draft
@@ -309,6 +322,37 @@ export async function regenerateLeadImage(
     timeoutMs: 90_000,
   });
   return uploadImage(supabase, opts.key, await compressImage(dataUrlToBuffer(dataUrl)));
+}
+
+/** Generate the per-lead whiteboard with a verify-and-retry loop and upload it
+ *  to `${slug}.jpg`. The image model is stochastic about replacing the "Acme
+ *  Corp"/"Bob" placeholder, so we read the board back after each attempt and
+ *  retry until it's clean (up to `tries`). Returns the public image URL, or
+ *  null if it never came clean — the caller then ships NO image rather than a
+ *  broken board that still says "Acme Corp". */
+export async function regenerateLeadWhiteboard(
+  supabase: Supa,
+  opts: { first: string; company: string; slug: string; tries?: number; onCost?: (usd: number) => void },
+): Promise<string | null> {
+  const reference = await loadReferenceImage(supabase);
+  if (!reference) return null;
+  const genOpts = {
+    prompt: buildImagePrompt(opts.first || 'there', opts.company || 'your company'),
+    referenceImages: [reference],
+    model: VISUAL_IMAGE_MODEL,
+    fallbackModels: VISUAL_IMAGE_FALLBACKS,
+    strength: 0.35,
+    timeoutMs: 90_000,
+  };
+  for (let attempt = 0; attempt < (opts.tries ?? 4); attempt++) {
+    const candidate = await generateImage(genOpts).catch(() => null);
+    if (!candidate) continue;
+    opts.onCost?.(IMAGE_GEN_COST_USD);
+    if (await whiteboardIsClean(candidate, opts.company)) {
+      return uploadImage(supabase, `${opts.slug}.jpg`, await compressImage(dataUrlToBuffer(candidate)));
+    }
+  }
+  return null;
 }
 
 // ── 3) Email + landing copy ─────────────────────────────────────────────────
@@ -425,22 +469,10 @@ export async function processVisualDraftRow(input: DraftInput, supabase: Supa): 
     const last = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
     const slug = await buildSlug(supabase, first, last, input.email);
 
-    let imageUrl: string | null = null;
-    const reference = await loadReferenceImage(supabase);
-    if (reference) {
-      const imgPrompt = buildImagePrompt(first, company);
-      const genOpts = { prompt: imgPrompt, referenceImages: [reference], model: VISUAL_IMAGE_MODEL, fallbackModels: VISUAL_IMAGE_FALLBACKS, strength: 0.35, timeoutMs: 90_000 };
-      let dataUrl = await generateImage(genOpts);
-      cost += IMAGE_GEN_COST_USD;
-      // Full-auto has no human review, so guard the whiteboard text: if the
-      // company looks garbled (e.g. "Prme Coxi" for "Proxi"), regenerate once.
-      // Best-effort — a vision/gen hiccup keeps the first image, never blocks.
-      if (!(await whiteboardLooksRight(dataUrl, company))) {
-        const retry = await generateImage(genOpts).catch(() => null);
-        if (retry) { dataUrl = retry; cost += IMAGE_GEN_COST_USD; }
-      }
-      imageUrl = await uploadImage(supabase, `${slug}.jpg`, await compressImage(dataUrlToBuffer(dataUrl)));
-    }
+    // Verify-and-retry: the image model is flaky about replacing the "Acme
+    // Corp"/"Bob" placeholder, so regenerate until the board reads clean. If it
+    // never does (~1%), ship NO image rather than a broken "Acme Corp" board.
+    const imageUrl = await regenerateLeadWhiteboard(supabase, { first, company, slug, onCost: (c) => { cost += c; } });
 
     // 3) email + landing copy (A/B variant on the email only — page unchanged)
     const variant = assignVariant(input.email);
