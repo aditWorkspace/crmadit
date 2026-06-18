@@ -86,60 +86,117 @@ async function setStatus(supabase: Supa, id: string, status: string): Promise<vo
 
 // ── 1) Industry lookup ──────────────────────────────────────────────────────
 
-const INDUSTRY_SYSTEM = `You classify a company from its website text. Return ONLY a JSON object: {"industry": string, "descriptor": string}.
-- "industry": a short lowercase noun phrase for the kind of team that uses their product (e.g. "fintech", "developer tools", "logistics", "healthcare", "e-commerce"). 1-3 words. Never a sentence.
-- "descriptor": one plain sentence describing what the company does. No marketing fluff.
-If unsure, infer from the domain. Never invent specifics.`;
+const INDUSTRY_SYSTEM = `You identify the SPECIFIC industry/vertical a company serves. Your answer fills two cold-outreach lines:
+  "we're trying to understand how {industry} teams like {company} decide what to build next"
+  "we've been talking to product leaders in {industry}"
+Return ONLY JSON: {"industry": string, "descriptor": string}.
+
+"industry": a specific lowercase vertical, 1-3 words, that reads naturally before "teams" and after "in". Usually <domain> + software/tech/apps. Examples:
+construction software, food delivery, fintech, developer tools, healthtech, legal tech, real estate software, logistics, cybersecurity, e-commerce, hr software, insurance tech, video editing, gaming, ad tech, supply chain, biotech, edtech, climate tech, robotics, sales software, marketing automation, customer support software, data infrastructure, crypto, manufacturing software, hospitality tech, travel tech, accounting software, property management, telehealth, fitness apps, agtech, energy software, govtech, design tools, restaurant software, fleet management, recruiting software.
+Rules:
+- NEVER answer with a bare generic word: not "product", "software", "technology", "tech", "saas", "platform", "app", "startup", "business", "tools", or "services". Always name the actual domain they serve.
+- Keep it short and natural before "teams": say "telehealth", not "telehealth platforms"; "crypto", not "crypto rewards".
+- Use the website text first; if it is thin or missing, infer from the company name + domain.
+- Only return "" if you genuinely cannot make a reasonable guess.
+
+"descriptor": one plain factual sentence about what the company does. No marketing fluff.`;
 
 interface IndustryResult { industry: string; descriptor: string; scrapeUsed: boolean; }
 
-async function resolveIndustry(supabase: Supa, domain: string, company: string): Promise<IndustryResult> {
-  // Cache hit (per domain) — avoid re-scraping/re-classifying the same company.
-  if (domain) {
+const FETCH_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
+const GENERIC_INDUSTRY = new Set(['product', 'software', 'technology', 'tech', 'saas', 'platform', 'app', 'apps', 'startup', 'business', 'tools', 'services', 'unknown', '']);
+
+// Pull the useful text out of raw homepage HTML: <title>, meta/og descriptions,
+// then de-tagged body. Enough signal for an industry classifier.
+function htmlToText(html: string): string {
+  const pick = (re: RegExp) => { const m = html.match(re); return m ? m[1].trim() : ''; };
+  const title = pick(/<title[^>]*>([^<]+)<\/title>/i);
+  const desc = pick(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i)
+    || pick(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']/i);
+  const og = pick(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i);
+  const body = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim();
+  return [title && `Title: ${title}`, desc && `Meta: ${desc}`, og && `OG: ${og}`, body.slice(0, 3800)]
+    .filter(Boolean).join('\n');
+}
+
+// Homepage text for grounding: Firecrawl first (renders JS), then a free plain
+// fetch fallback (works for most static / meta-rich sites). Either may come back
+// empty — the classifier then infers from the company name + domain.
+async function fetchHomepageText(domain: string): Promise<{ text: string; used: boolean }> {
+  if (!domain) return { text: '', used: false };
+  try {
+    const md = await scrapeUrl(`https://${domain}`);
+    if (md && md.trim().length > 80) return { text: md.slice(0, 6000), used: true };
+  } catch (err) {
+    console.warn('[visual-draft] firecrawl scrape failed, trying plain fetch:', err instanceof Error ? err.message.slice(0, 100) : String(err));
+  }
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12_000);
+    try {
+      const res = await fetch(`https://${domain}`, { signal: ctrl.signal, redirect: 'follow', headers: { 'User-Agent': FETCH_UA } });
+      if (res.ok) {
+        const text = htmlToText(await res.text());
+        if (text.trim().length > 40) return { text: text.slice(0, 6000), used: true };
+      }
+    } finally { clearTimeout(timer); }
+  } catch { /* ignore — fall through to name/domain inference */ }
+  return { text: '', used: false };
+}
+
+async function classifyIndustry(company: string, domain: string, text: string): Promise<{ industry: string; descriptor: string }> {
+  const user = `Company: ${company || 'unknown'}\nDomain: ${domain || 'unknown'}\n\nWebsite text:\n${text || '(none — infer from the company name + domain)'}`;
+  const raw = await callAIMessages({
+    model: VISUAL_INDUSTRY_MODEL,
+    fallbackModels: VISUAL_INDUSTRY_FALLBACKS,
+    jsonMode: true,
+    maxTokens: 200,
+    timeoutMs: 30_000,
+    messages: [{ role: 'system', content: INDUSTRY_SYSTEM }, { role: 'user', content: user }],
+  });
+  const parsed = tolerantJsonParse(raw) as { industry?: string; descriptor?: string };
+  let industry = String(parsed.industry ?? '').toLowerCase().trim().slice(0, 40);
+  if (GENERIC_INDUSTRY.has(industry)) industry = ''; // reject the generic fallbacks outright
+  const descriptor = String(parsed.descriptor ?? '').trim().slice(0, 240);
+  return { industry, descriptor };
+}
+
+// opts.refresh bypasses the per-domain cache (used by the industry backfill).
+export async function resolveIndustry(supabase: Supa, domain: string, company: string, opts: { refresh?: boolean } = {}): Promise<IndustryResult> {
+  // Cache hit (per domain). A cached value is always a real, specific industry —
+  // we never cache the empty fallback, so a past failure re-tries next time.
+  if (domain && !opts.refresh) {
     const { data: cached } = await supabase
       .from('company_research_cache').select('industry').eq('domain', domain).maybeSingle();
     const ind = (cached as { industry?: string } | null)?.industry;
-    if (ind) return { industry: ind, descriptor: '', scrapeUsed: false };
+    if (ind && !GENERIC_INDUSTRY.has(ind.toLowerCase().trim())) return { industry: ind, descriptor: '', scrapeUsed: false };
   }
 
-  // Firecrawl homepage is a BONUS grounding signal. Missing key / any failure →
-  // classify from domain+company alone rather than failing the draft.
-  let markdown = '';
-  let scrapeUsed = false;
-  if (domain) {
+  const { text, used } = await fetchHomepageText(domain);
+
+  // Classify with one retry. A transient model failure must NOT silently become
+  // the generic "product" fallback — that was the bug that made ~1/5 of leads
+  // read "product leaders in product".
+  let industry = '';
+  let descriptor = '';
+  for (let attempt = 0; attempt < 2 && !industry; attempt++) {
     try {
-      const md = await scrapeUrl(`https://${domain}`);
-      if (md) { markdown = md.slice(0, 6000); scrapeUsed = true; }
+      const r = await classifyIndustry(company, domain, text);
+      industry = r.industry; descriptor = r.descriptor;
     } catch (err) {
-      console.warn('[visual-draft] firecrawl industry scrape skipped:', err instanceof Error ? err.message.slice(0, 120) : String(err));
+      console.warn(`[visual-draft] industry classify attempt ${attempt + 1} failed:`, err instanceof Error ? err.message.slice(0, 100) : String(err));
     }
   }
 
-  const user = `Company: ${company || 'unknown'}\nDomain: ${domain || 'unknown'}\n\nWebsite text:\n${markdown || '(none — infer from domain/company)'}`;
-  let industry = 'product';
-  let descriptor = '';
-  try {
-    const raw = await callAIMessages({
-      model: VISUAL_INDUSTRY_MODEL,
-      fallbackModels: VISUAL_INDUSTRY_FALLBACKS,
-      jsonMode: true,
-      maxTokens: 200,
-      timeoutMs: 30_000,
-      messages: [{ role: 'system', content: INDUSTRY_SYSTEM }, { role: 'user', content: user }],
-    });
-    const parsed = tolerantJsonParse(raw) as { industry?: string; descriptor?: string };
-    if (parsed.industry) industry = String(parsed.industry).toLowerCase().trim().slice(0, 40);
-    if (parsed.descriptor) descriptor = String(parsed.descriptor).trim().slice(0, 240);
-  } catch (err) {
-    console.warn('[visual-draft] industry classify failed, defaulting:', err instanceof Error ? err.message.slice(0, 120) : String(err));
-  }
-
-  if (domain) {
+  // Cache only a real result, so a failure retries next time instead of sticking.
+  if (domain && industry) {
     await supabase.from('company_research_cache').upsert(
       { domain, industry, cached_at: new Date().toISOString() }, { onConflict: 'domain' },
     );
   }
-  return { industry, descriptor, scrapeUsed };
+  return { industry, descriptor, scrapeUsed: used };
 }
 
 // ── 2) Per-person image ─────────────────────────────────────────────────────
