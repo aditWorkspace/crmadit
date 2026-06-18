@@ -18,7 +18,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     if (!key || inited) return;
     inited = true;
     posthog.init(key, {
-      api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com',
+      api_host: '/cp-relay', // reverse proxy (next.config rewrites) → adblock-proof
       ui_host: 'https://us.posthog.com',
       capture_pageview: true,
       capture_pageleave: true,
