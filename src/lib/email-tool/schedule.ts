@@ -10,13 +10,13 @@
 // instants; the Intl APIs do the zone conversion.
 
 export const WEEKDAY_START_TIMES_PT: Record<number, { hour: number; minute: number }> = {
-  0: { hour: 7, minute: 30 },  // Sunday    — 7:30 AM PT (follow-ups only)
-  1: { hour: 5, minute: 0 },   // Monday    — 5:00 AM PT
-  2: { hour: 5, minute: 30 },  // Tuesday   — 5:30 AM PT
-  3: { hour: 6, minute: 0 },   // Wednesday — 6:00 AM PT
-  4: { hour: 6, minute: 30 },  // Thursday  — 6:30 AM PT
-  5: { hour: 7, minute: 0 },   // Friday    — 7:00 AM PT
-  6: { hour: 7, minute: 30 },  // Saturday  — 7:30 AM PT (follow-ups only)
+  0: { hour: 8, minute: 0 },   // Sunday    — 8:00 AM PT (follow-ups only)
+  1: { hour: 8, minute: 0 },   // Monday    — 8:00 AM PT
+  2: { hour: 8, minute: 15 },  // Tuesday   — 8:15 AM PT
+  3: { hour: 8, minute: 30 },  // Wednesday — 8:30 AM PT
+  4: { hour: 8, minute: 45 },  // Thursday  — 8:45 AM PT
+  5: { hour: 9, minute: 0 },   // Friday    — 9:00 AM PT
+  6: { hour: 8, minute: 0 },   // Saturday  — 8:00 AM PT (follow-ups only)
 };
 
 // PT-date-keyed one-off overrides. When today's PT date is a key here, the

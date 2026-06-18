@@ -517,6 +517,7 @@ export async function runDailyStart(
             .select('id, email, first_name, full_name, company, subject, body, opener_tier, signal_score, email_html, image_url')
             .eq('sender_account_id', founder.id)
             .eq('status', 'ready')
+            .not('email_html', 'is', null) // visual-only: never send a legacy v1 text draft
             .order('signal_score', { ascending: false })
             .limit(regularTargetPerFounder * 2);
           const drafts = (draftsData ?? []) as Array<{
