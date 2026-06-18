@@ -104,8 +104,8 @@ export const SAFETY_LIMITS = {
 // quality-first regime, push the date out; to return to full generic volume,
 // set it to a past date (or delete this block and the effectiveDailyTarget-
 // PerAccount() call in start.ts). Assumes only Adit + Asim send.
-export const TEMP_REDUCED_TARGET_PER_ACCOUNT = 350; // 250 fresh + 100 follow-up bumps
-export const TEMP_REDUCED_RESUME_PT_DATE = '2026-09-01'; // first full-volume PT date (exclusive bound)
+export const TEMP_REDUCED_TARGET_PER_ACCOUNT = 400; // 300 fresh + 100 follow-up bumps (full-auto standing cap, raised 2026-06-17)
+export const TEMP_REDUCED_RESUME_PT_DATE = '2027-01-01'; // pushed out so 400 stays the steady cap (was 2026-09-01)
 
 /**
  * Per-account daily send target for a given PT date string ('YYYY-MM-DD').
