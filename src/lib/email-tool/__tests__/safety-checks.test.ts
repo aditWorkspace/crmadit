@@ -6,6 +6,7 @@ import {
   checkReplySinceQueue,
   checkActiveVariant,
 } from '../safety-checks';
+import { DOMAIN_DEDUP_ENABLED } from '../safety-limits';
 
 // Build a chainable Supabase-style query mock. Each terminal method
 // (maybeSingle, single, eq, etc.) returns the chain so .eq().eq()...
@@ -128,7 +129,10 @@ describe('checkPerSecondPace', () => {
   });
 });
 
-describe('checkRecipientDomainOnce', () => {
+// Domain-dedup is currently disabled (DOMAIN_DEDUP_ENABLED=false) so the
+// function short-circuits to ok:true. Skip these blocking-behavior tests until
+// it's re-enabled, rather than delete the coverage.
+(DOMAIN_DEDUP_ENABLED ? describe : describe.skip)('checkRecipientDomainOnce', () => {
   const TODAY = '2026-04-28T00:00:00Z';
 
   it('returns ok when zero same-domain sends today (count=0)', async () => {

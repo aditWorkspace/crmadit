@@ -11,7 +11,7 @@
 // alert, fall through to drain, or short-circuit.
 
 import type { createAdminClient } from '@/lib/supabase/admin';
-import { SAFETY_LIMITS, effectiveDailyTargetPerAccount } from './safety-limits';
+import { SAFETY_LIMITS, effectiveDailyTargetPerAccount, DOMAIN_DEDUP_ENABLED } from './safety-limits';
 import {
   FOLLOWUP_DAILY_CAP_PER_FOUNDER,
   FOLLOWUP_MIN_AGE_HOURS,
@@ -533,7 +533,7 @@ export async function runDailyStart(
             if (taken >= regularTargetPerFounder) break;
             if (!d.subject || !d.body) continue; // defensive: a 'ready' row must carry copy
             const domain = d.email.split('@')[1]?.toLowerCase() ?? '';
-            if (domain && usedDomains.has(domain)) continue; // 1 / domain / sender / day
+            if (DOMAIN_DEDUP_ENABLED && domain && usedDomains.has(domain)) continue; // 1 / domain / sender / day
             usedDomains.add(domain);
             personalizedQueueRows.push({
               campaign_id: campaignId,
@@ -646,14 +646,13 @@ export async function runDailyStart(
     const dedupedByFounder: AssignedItem[][] = activeFounders.map(() => []);
     const deferred: AssignedItem[] = [];
     for (const a of assigned) {
-      const domain = a.email.split('@')[1]?.toLowerCase() ?? '';
       const founderChunk = dedupedByFounder[a.founderIdx];
-      const dupe = founderChunk.find(x => x.email.split('@')[1]?.toLowerCase() === domain);
-      if (dupe) {
-        deferred.push(a);
-      } else {
-        founderChunk.push(a);
+      if (DOMAIN_DEDUP_ENABLED) {
+        const domain = a.email.split('@')[1]?.toLowerCase() ?? '';
+        const dupe = founderChunk.find(x => x.email.split('@')[1]?.toLowerCase() === domain);
+        if (dupe) { deferred.push(a); continue; }
       }
+      founderChunk.push(a);
     }
     // Roll back blacklist insert for deferred POOL rows so they're pickable
     // next campaign. Filter by `source = 'pool:<campaign_id>'` so we can
