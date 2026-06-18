@@ -204,6 +204,7 @@ async function processAndPersist(supabase: Supa, draft: ClaimedDraft, stats: Sta
       image_url: outcome.image_url ?? null,
       page_slug: outcome.page_slug ?? null,
       email_html: outcome.email_html ?? null,
+      variant: outcome.variant ?? 'A',
       research_model: 'visual', decider_model: 'gemini-2.5-flash', writer_model: 'gemini-3.1-flash-image',
       written_at: nowIso, ready_at: nowIso, error: null,
     }).eq('id', draft.id);

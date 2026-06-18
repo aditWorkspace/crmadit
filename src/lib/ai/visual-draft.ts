@@ -313,9 +313,39 @@ export async function regenerateLeadImage(
 
 // ── 3) Email + landing copy ─────────────────────────────────────────────────
 
-function buildEmailIntro(p: { first: string; industry: string; pageUrl: string }): string {
+export type EmailVariant = 'A' | 'B' | 'C';
+
+/** Deterministic, ~balanced A/B/C assignment from the recipient email — the
+ *  same email always lands in the same bucket, ~1/3 each across the list. */
+export function assignVariant(email: string): EmailVariant {
+  const e = email.toLowerCase();
+  let h = 0;
+  for (let i = 0; i < e.length; i++) h = (h * 31 + e.charCodeAt(i)) >>> 0;
+  return (['A', 'B', 'C'] as const)[h % 3];
+}
+
+// The 3 A/B pitches: subject + intro differ; the image, sign-off, and landing
+// page link are identical across variants. {industry} falls back cleanly.
+function variantEmail(variant: EmailVariant, p: { first: string; industry: string; pageUrl: string }): { subject: string; intro: string } {
   const ind = (p.industry || 'product').trim();
-  return `Hi ${p.first}!\n\nI came across your profile through our mutual LinkedIn connections. Me and another Berkeley student are developing a new product for ${ind} eng teams. We made this quick page for you: ${p.pageUrl}`;
+  const spec = ind && ind !== 'product' && ind !== 'unknown' ? ind : ''; // a specific vertical only
+  if (variant === 'B') {
+    return {
+      subject: 'how your team decides what to build',
+      intro: `Hi ${p.first},\n\nI'm a student at Berkeley, and my friend and I are trying to understand how ${ind} teams actually decide what to build next. We're talking to product leaders to learn how they prioritize, and would genuinely love your take. Made you a quick page: ${p.pageUrl}`,
+    };
+  }
+  if (variant === 'C') {
+    return {
+      subject: 'two Berkeley students, quick hello',
+      intro: `Hi ${p.first},\n\nMy friend and I are two Berkeley students talking to product leaders${spec ? ` in ${spec}` : ''} about how they decide what to build. We're not pitching anything, just trying to learn. Put together a little page for you: ${p.pageUrl}`,
+    };
+  }
+  // A (control) — current copy
+  return {
+    subject: VISUAL_SUBJECT,
+    intro: `Hi ${p.first}!\n\nI came across your profile through our mutual LinkedIn connections. Me and another Berkeley student are developing a new product for ${ind} eng teams. We made this quick page for you: ${p.pageUrl}`,
+  };
 }
 
 /** Public page URL for a slug (base from LANDING_PAGES_BASE_URL). */
@@ -357,13 +387,13 @@ export function renderEmailHtml(introText: string, imageUrl: string | null, page
 /** Compose subject + body + HTML for a recipient given the sender. Used by the
  *  engine AND the dashboard. `industry` feeds the "{industry} eng teams" line;
  *  the sign-off ("Best, <name>") renders below the image. */
-export function composeEmail(p: { first: string; senderName: string; industry: string; pageSlug: string; imageUrl: string | null }): { subject: string; body: string; emailHtml: string } {
+export function composeEmail(p: { first: string; senderName: string; industry: string; pageSlug: string; imageUrl: string | null; variant?: EmailVariant }): { subject: string; body: string; emailHtml: string } {
   const senderFirst = firstName(p.senderName);
   const pageUrl = pageUrlForSlug(p.pageSlug);
-  const intro = buildEmailIntro({ first: p.first, industry: p.industry, pageUrl });
+  const { subject, intro } = variantEmail(p.variant ?? 'A', { first: p.first, industry: p.industry, pageUrl });
   const signoff = `Best,\n${senderFirst}`;
   const body = `${intro}\n\n${signoff}`;
-  return { subject: VISUAL_SUBJECT, body, emailHtml: renderEmailHtml(intro, p.imageUrl, pageUrl, signoff) };
+  return { subject, body, emailHtml: renderEmailHtml(intro, p.imageUrl, pageUrl, signoff) };
 }
 
 function buildBlurb(): string {
@@ -412,8 +442,9 @@ export async function processVisualDraftRow(input: DraftInput, supabase: Supa): 
       imageUrl = await uploadImage(supabase, `${slug}.jpg`, await compressImage(dataUrlToBuffer(dataUrl)));
     }
 
-    // 3) email + landing copy
-    const { subject, body, emailHtml } = composeEmail({ first, senderName: input.sender_name, industry, pageSlug: slug, imageUrl });
+    // 3) email + landing copy (A/B variant on the email only — page unchanged)
+    const variant = assignVariant(input.email);
+    const { subject, body, emailHtml } = composeEmail({ first, senderName: input.sender_name, industry, pageSlug: slug, imageUrl, variant });
     const headline = `Hey ${first}, we're looking to help ${industry} teams with product work.`;
     const subline = ``;
     const blurb = buildBlurb();
@@ -448,6 +479,7 @@ export async function processVisualDraftRow(input: DraftInput, supabase: Supa): 
       image_url: imageUrl,
       page_slug: slug,
       email_html: emailHtml,
+      variant,
     };
   } catch (err) {
     // Provider blips → retry (worker backs off / caps attempts). Everything

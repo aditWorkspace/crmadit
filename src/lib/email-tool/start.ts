@@ -483,6 +483,7 @@ export async function runDailyStart(
       recipient_full_name: string | null;
       personalization_tier: number | null;
       personalization_score: number | null;
+      variant: string | null;
     }
     const personalizedQueueRows: PersonalizedRow[] = [];
     if (!weekendMode) {
@@ -514,7 +515,7 @@ export async function runDailyStart(
           // Over-pick (×2) so per-sender domain dedup still hits the target.
           const { data: draftsData } = await supabase
             .from('cold_email_drafts')
-            .select('id, email, first_name, full_name, company, subject, body, opener_tier, signal_score, email_html, image_url')
+            .select('id, email, first_name, full_name, company, subject, body, opener_tier, signal_score, email_html, image_url, variant')
             .eq('sender_account_id', founder.id)
             .eq('status', 'ready')
             .not('email_html', 'is', null) // visual-only: never send a legacy v1 text draft
@@ -523,7 +524,7 @@ export async function runDailyStart(
           const drafts = (draftsData ?? []) as Array<{
             id: string; email: string; first_name: string | null; full_name: string | null; company: string | null;
             subject: string | null; body: string | null; opener_tier: number | null; signal_score: number | null;
-            email_html: string | null; image_url: string | null;
+            email_html: string | null; image_url: string | null; variant: string | null;
           }>;
           const usedDomains = new Set<string>();
           let cursor = personalizedStartMs + Math.floor(Math.random() * 10_000);
@@ -552,6 +553,7 @@ export async function runDailyStart(
               recipient_full_name: d.full_name,
               personalization_tier: d.opener_tier,
               personalization_score: d.signal_score,
+              variant: d.variant ?? 'A',
             });
             taken++;
             const range = SAFETY_LIMITS.INTER_SEND_JITTER_MAX_SECONDS - SAFETY_LIMITS.INTER_SEND_JITTER_MIN_SECONDS;
