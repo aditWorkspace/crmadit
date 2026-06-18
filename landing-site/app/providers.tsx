@@ -9,7 +9,7 @@ import { useEffect } from 'react';
 // PostHog project key is a PUBLIC, write-only client key (it ships in the
 // browser bundle regardless, like a GA measurement ID) — hardcoded as a fallback
 // so prod works even without the env var; an env var still overrides it.
-const POSTHOG_KEY = 'phc_kqenxtDXiJD9L8wraDXbhEZafonDeUBhQFG7YDSZYaY6';
+const POSTHOG_KEY = 'phc_zRxp8buoyw3f2qEQsZfcJNQePbSLupeHMjLjjgKoMUsv';
 let inited = false;
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
