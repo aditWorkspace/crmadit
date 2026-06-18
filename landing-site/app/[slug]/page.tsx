@@ -53,14 +53,14 @@ function buildCopy(p: LandingPage) {
   const note =
     `We're Adit and Asim, two students at Berkeley. We've been talking to a bunch of product ` +
     `leaders ${namedIndustry ? `in ${namedIndustry} ` : ''}to understand how teams actually decide ` +
-    `what to build, and where it gets messy. We aren't pitching anything. We're just genuinely ` +
+    `what to build, and where it gets messy. We aren't pitching anything. We're just ` +
     `curious how you and your team work.`;
 
   // "What we'd love to ask" — broad, product-flavoured, no emdashes.
   const asks = [
-    { n: '01', t: 'Your product cycle', d: 'how an idea travels from a bit of feedback to something you actually ship' },
-    { n: '02', t: 'Your biggest pain points', d: 'the parts that still feel slow, scattered, or a little too manual' },
-    { n: '03', t: 'How you decide what is next', d: 'what makes the roadmap, what gets cut, and how you make the call' },
+    { n: '01', t: 'Your product cycle' },
+    { n: '02', t: 'Your biggest pain points' },
+    { n: '03', t: 'How you prioritize' },
   ];
 
   return { first, headline, eyebrow, note, asks };
@@ -147,7 +147,6 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
               <span className="ask-n">{a.n}</span>
               <div>
                 <h3 className="ask-t">{a.t}</h3>
-                <p className="ask-d">{a.d}</p>
               </div>
             </li>
           ))}
@@ -159,8 +158,7 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
         <p className="cta-line">Thirty minutes. We just want to learn how your team decides what to build.</p>
         <a className="btn big" href={cal}>Book a 30 min chat →</a>
       </section>
-
-      <footer className="foot">Adit &amp; Asim · UC Berkeley</footer>
+      <div style={{ height: '6rem' }} aria-hidden />
     </main>
   );
 }
