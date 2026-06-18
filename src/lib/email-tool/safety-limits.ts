@@ -34,6 +34,7 @@ export const SAFETY_LIMITS = {
   MAX_CAMPAIGN_DURATION_HOURS: 2,
 
   // No more than 1 send to any recipient_domain per founder per day.
+  // Only enforced when DOMAIN_DEDUP_ENABLED is true (see below).
   MAX_SENDS_PER_DOMAIN_PER_ACCOUNT_PER_DAY: 1,
 
   // Auto-pause threshold for bounce rate (5%, intentionally above industry
@@ -106,6 +107,12 @@ export const SAFETY_LIMITS = {
 // PerAccount() call in start.ts). Assumes only Adit + Asim send.
 export const TEMP_REDUCED_TARGET_PER_ACCOUNT = 400; // 300 fresh + 100 follow-up bumps (full-auto standing cap, raised 2026-06-17)
 export const TEMP_REDUCED_RESUME_PT_DATE = '2027-01-01'; // pushed out so 400 stays the steady cap (was 2026-09-01)
+
+// Domain-dedup (≤1 email per company-domain per founder per day). Disabled per
+// Adit 2026-06-18 so the full 300 fresh/account always send even when two
+// contacts share a company (rare). Flip to true to re-enforce. Gates the draft
+// pick + step ⑦ pass in start.ts AND the send-time checkRecipientDomainOnce.
+export const DOMAIN_DEDUP_ENABLED = false;
 
 /**
  * Per-account daily send target for a given PT date string ('YYYY-MM-DD').

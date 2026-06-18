@@ -9,7 +9,7 @@
 // because zero active variants makes a render impossible.
 
 import type { createAdminClient } from '@/lib/supabase/admin';
-import { SAFETY_LIMITS } from './safety-limits';
+import { SAFETY_LIMITS, DOMAIN_DEDUP_ENABLED } from './safety-limits';
 
 type Supa = ReturnType<typeof createAdminClient>;
 
@@ -83,6 +83,7 @@ export async function checkRecipientDomainOnce(
   recipientEmail: string,
   todayStartIso: string,
 ): Promise<SafetyVerdict> {
+  if (!DOMAIN_DEDUP_ENABLED) return { ok: true }; // domain-dedup disabled per Adit — allow >1/domain/account/day
   const domain = recipientEmail.split('@')[1]?.toLowerCase();
   if (!domain) return { ok: true }; // No @ sign — let it through; render error happens elsewhere
   const { count } = await supabase
