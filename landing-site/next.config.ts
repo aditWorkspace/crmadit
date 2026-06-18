@@ -10,6 +10,22 @@ const nextConfig: NextConfig = {
   // site neither has nor wants. Vercel builds it isolated, but this keeps local
   // builds honest too.
   turbopack: { root: __dirname },
+
+  // PostHog reverse proxy: route analytics through our own domain so ad blockers
+  // (which filter by *.posthog.com) can't drop events. Path is intentionally
+  // non-obvious (`/cp-relay`, not /ingest|/analytics|/posthog) so blocklists miss
+  // it. `beforeFiles` makes these win over the catch-all [slug] route. Trailing
+  // slash redirect must be skipped — PostHog's API uses trailing slashes (/e/).
+  skipTrailingSlashRedirect: true,
+  async rewrites() {
+    return {
+      beforeFiles: [
+        { source: '/cp-relay/static/:path*', destination: 'https://us-assets.i.posthog.com/static/:path*' },
+        { source: '/cp-relay/array/:path*', destination: 'https://us-assets.i.posthog.com/array/:path*' },
+        { source: '/cp-relay/:path*', destination: 'https://us.i.posthog.com/:path*' },
+      ],
+    };
+  },
 };
 
 export default nextConfig;
