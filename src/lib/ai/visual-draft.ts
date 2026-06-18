@@ -13,7 +13,7 @@
 
 import sharp from 'sharp';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { callAIMessages, generateImage } from './openrouter';
+import { callAIMessages, generateImage, callVision } from './openrouter';
 import { tolerantJsonParse } from './json';
 import { scrapeUrl, FirecrawlError } from '@/lib/external/firecrawl';
 import { deriveDomain, type DraftInput, type DraftOutcome } from './cold-research';
@@ -234,6 +234,34 @@ function buildImagePrompt(first: string, company: string): string {
   return `Hey, only edit the name (Bob) and the company name (Acme Corp) on the whiteboard for this lead. Keep the person, the handwriting style, and everything else exactly the same.\nName: ${name}\nCompany: ${co}`;
 }
 
+// Normalize a company name for fuzzy comparison: drop common suffixes/filler
+// and anything non-alphanumeric, so "Acme Corp." ~ "acme" and we only flag a
+// real mismatch ("Proxi" vs the garbled "Prme Coxi").
+function normalizeCompany(s: string): string {
+  return (s || '').toLowerCase()
+    .replace(/\b(inc|llc|ltd|limited|corp|corporation|co|company|the|app|labs?|technologies|group|holdings|io|ai)\b/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+// Best-effort: does the whiteboard in `dataUrl` show roughly the right company?
+// Returns false ONLY on a confident mismatch; true otherwise (a vision hiccup,
+// unreadable board, or short/generic name must NEVER block a draft).
+async function whiteboardLooksRight(dataUrl: string, company: string): Promise<boolean> {
+  const want = normalizeCompany(company);
+  if (want.length < 3) return true; // too short/generic to validate reliably
+  try {
+    const raw = await callVision({
+      prompt: 'Read ONLY the company name handwritten on the whiteboard in this photo. Reply with JUST that name and nothing else. If you cannot read it, reply exactly: UNKNOWN.',
+      imageDataUrl: dataUrl, maxTokens: 40, timeoutMs: 25_000,
+    });
+    const got = normalizeCompany((raw || '').split('\n')[0]);
+    if (!got || got === 'unknown') return true; // couldn't read → don't block
+    return got.includes(want) || want.includes(got);
+  } catch {
+    return true; // any error → don't block the draft
+  }
+}
+
 async function uploadImage(supabase: Supa, key: string, bytes: Buffer): Promise<string> {
   const contentType = /\.jpe?g$/i.test(key) ? 'image/jpeg' : 'image/png';
   const { error } = await supabase.storage.from(OUTREACH_IMAGE_BUCKET)
@@ -370,15 +398,17 @@ export async function processVisualDraftRow(input: DraftInput, supabase: Supa): 
     let imageUrl: string | null = null;
     const reference = await loadReferenceImage(supabase);
     if (reference) {
-      const dataUrl = await generateImage({
-        prompt: buildImagePrompt(first, company),
-        referenceImages: [reference],
-        model: VISUAL_IMAGE_MODEL,
-        fallbackModels: VISUAL_IMAGE_FALLBACKS,
-        strength: 0.35,
-        timeoutMs: 90_000,
-      });
+      const imgPrompt = buildImagePrompt(first, company);
+      const genOpts = { prompt: imgPrompt, referenceImages: [reference], model: VISUAL_IMAGE_MODEL, fallbackModels: VISUAL_IMAGE_FALLBACKS, strength: 0.35, timeoutMs: 90_000 };
+      let dataUrl = await generateImage(genOpts);
       cost += IMAGE_GEN_COST_USD;
+      // Full-auto has no human review, so guard the whiteboard text: if the
+      // company looks garbled (e.g. "Prme Coxi" for "Proxi"), regenerate once.
+      // Best-effort — a vision/gen hiccup keeps the first image, never blocks.
+      if (!(await whiteboardLooksRight(dataUrl, company))) {
+        const retry = await generateImage(genOpts).catch(() => null);
+        if (retry) { dataUrl = retry; cost += IMAGE_GEN_COST_USD; }
+      }
       imageUrl = await uploadImage(supabase, `${slug}.jpg`, await compressImage(dataUrlToBuffer(dataUrl)));
     }
 
