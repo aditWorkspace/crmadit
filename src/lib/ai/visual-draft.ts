@@ -232,18 +232,18 @@ async function loadReferenceImage(supabase: Supa): Promise<string | null> {
 
 // Strip parenthetical noise ("XTECH (Recreational Goods)") + odd chars so the
 // whiteboard never writes a category/ticker. Used for both the name and company.
-const boardName = (s: string) => (s || '').replace(/\s*\([^)]*\)/g, ' ').replace(/["'\n\r]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+export const boardName = (s: string) => (s || '').replace(/\s*\([^)]*\)/g, ' ').replace(/["'\n\r]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
 // Spell a company letter-by-letter ("Memo Therapeutics" → "M-e-m-o   T-h-...") —
 // this is what stopped the model from misspelling long company names.
-const spellOut = (s: string) => s.split(' ').filter(Boolean).map(w => w.split('').join('-')).join('   ');
+export const spellOut = (s: string) => s.split(' ').filter(Boolean).map(w => w.split('').join('-')).join('   ');
 // The exact text the base whiteboard should read once edited (the known formula).
-const expectedBoard = (first: string, company: string) =>
+export const expectedBoard = (first: string, company: string) =>
   `Hey ${boardName(first)}, We are students interested in learning how product work is done at ${boardName(company)}. Thank You!`;
 
 // v2 prompt — Gemini 3.1 hits ~100% with this: name the two edits, give the
 // EXACT target sentence, spell the company letter-for-letter, and forbid dropping
 // any other word. (Tested 8/8 on the hard cases vs 3-4/8 for the old wording.)
-function buildImagePrompt(first: string, company: string): string {
+export function buildImagePrompt(first: string, company: string): string {
   const name = boardName(first);
   const co = boardName(company);
   return `Edit this photo of two students holding a small whiteboard with a handwritten note. Make ONLY two text changes on the whiteboard, and change nothing else (same two people, room, handwriting style, marker, size, and layout):
@@ -382,6 +382,82 @@ export async function regenerateLeadWhiteboard(
   return null;
 }
 
+// ── 2b) Batched per-person image (two leads, one API call) ──────────────────
+// One Gemini call returns a side-by-side montage with BOTH whiteboards edited;
+// we crop it into two and validate each independently. Output image tokens are
+// billed ~flat per returned image (~1MP whether it holds 1 or 2 boards), so this
+// halves the per-board image cost. The two students never change — only the two
+// boards' name/company text — so a fixed 50/50 vertical crop recovers each lead's
+// image exactly. Verified: 2-up returns the same ~1.05MP / ~$0.068 as a single.
+
+// 2-up montage of the founders photo, cached like the single reference.
+let _pairReferenceCache: string | null = null;
+async function loadPairReference(supabase: Supa): Promise<string | null> {
+  if (_pairReferenceCache) return _pairReferenceCache;
+  const ref = await loadReferenceImage(supabase);
+  if (!ref) return null;
+  const base = dataUrlToBuffer(ref);
+  const m = await sharp(base).metadata();
+  const w = m.width ?? 0, h = m.height ?? 0;
+  if (!w || !h) return null;
+  const montage = await sharp({ create: { width: 2 * w, height: h, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } } })
+    .composite([{ input: base, left: 0, top: 0 }, { input: base, left: w, top: 0 }]).png().toBuffer();
+  _pairReferenceCache = `data:image/png;base64,${montage.toString('base64')}`;
+  return _pairReferenceCache;
+}
+
+// Prompt 3 ("negatives-first") — chosen in testing as the best handwriting match.
+// Leads with the prohibitions (no clean font / bold / darker ink / re-lettering),
+// then states the only 4 things that may change (two names + two companies).
+function buildPairImagePrompt(a: { first: string; company: string }, b: { first: string; company: string }): string {
+  return `Two side-by-side copies (LEFT, RIGHT) of the same student whiteboard photo. Current note on both: "Hey Bob, We are students interested in learning how product work is done at Acme Corp. Thank You!".
+DO NOT: retype the board in a clean or neat font; make the ink bolder, darker, or a different color; straighten or tidy the lines; or rewrite any word that isn't changing. The handwriting must stay messy, thin, and human, in the original marker color.
+DO: change only these 4 spans — name1, name2 (after "Hey") and company1, company2 (after "at") — writing them in that same loose handwriting.
+- LEFT must read EXACTLY: "${expectedBoard(a.first, a.company)}"  (company letter-for-letter: ${spellOut(boardName(a.company))})
+- RIGHT must read EXACTLY: "${expectedBoard(b.first, b.company)}"  (company letter-for-letter: ${spellOut(boardName(b.company))})
+Keep "done", "at", and every other word exactly as handwritten, and keep the people and scene unchanged.`;
+}
+
+// Split a returned 2-up into [left, right] by 50% of its real width (the model may
+// return any resolution, so crop by proportion, not assumed pixels).
+async function cropPairHalves(returned: Buffer): Promise<[Buffer, Buffer]> {
+  const m = await sharp(returned).metadata();
+  const W = m.width ?? 0, H = m.height ?? 0;
+  const cw = Math.floor(W / 2);
+  const left = await sharp(returned).extract({ left: 0, top: 0, width: cw, height: H }).png().toBuffer();
+  const right = await sharp(returned).extract({ left: cw, top: 0, width: W - cw, height: H }).png().toBuffer();
+  return [left, right];
+}
+
+/** Generate BOTH leads' whiteboards in one call, crop, and validate each half
+ *  with the same two-model check as the single path. Uploads only the boards that
+ *  pass to `${slug}.jpg`; a board that fails comes back null so the caller can fall
+ *  back to a single-image regen for just that lead. Returns the (one-call) cost so
+ *  the caller can split it across the pair. No retry here — the verify lives in the
+ *  caller, mirroring regenerateLeadWhiteboard's contract. */
+export async function generateLeadWhiteboardPair(
+  supabase: Supa,
+  pair: [{ first: string; company: string; slug: string }, { first: string; company: string; slug: string }],
+): Promise<{ urls: [string | null, string | null]; cost: number }> {
+  const reference = await loadPairReference(supabase);
+  if (!reference) return { urls: [null, null], cost: 0 };
+  const dataUrl = await generateImage({
+    prompt: buildPairImagePrompt(pair[0], pair[1]),
+    referenceImages: [reference], model: VISUAL_IMAGE_MODEL,
+    fallbackModels: VISUAL_IMAGE_FALLBACKS, strength: 0.35, timeoutMs: 90_000,
+  }).catch(() => null);
+  if (!dataUrl) return { urls: [null, null], cost: 0 };
+  const cost = IMAGE_GEN_COST_USD; // one returned image ≈ one single-board call
+  const halves = await cropPairHalves(dataUrlToBuffer(dataUrl));
+  const urls: [string | null, string | null] = [null, null];
+  for (let i = 0; i < 2; i++) {
+    const jpeg = await compressImage(halves[i]);
+    const v = await whiteboardNeedsRedo(`data:image/jpeg;base64,${jpeg.toString('base64')}`, pair[i].first, pair[i].company);
+    if (!v.redo) urls[i] = await uploadImage(supabase, `${pair[i].slug}.jpg`, jpeg);
+  }
+  return { urls, cost };
+}
+
 // ── 3) Email + landing copy ─────────────────────────────────────────────────
 
 export type EmailVariant = 'A' | 'B' | 'C';
@@ -473,7 +549,7 @@ function buildBlurb(): string {
 
 // ── Engine ──────────────────────────────────────────────────────────────────
 
-export async function processVisualDraftRow(input: DraftInput, supabase: Supa): Promise<DraftOutcome> {
+export async function processVisualDraftRow(input: DraftInput, supabase: Supa, precomputed?: { slug: string; imageUrl: string }): Promise<DraftOutcome> {
   let cost = 0;
   if (!input.email) return { kind: 'skipped', reason: 'no_email', cost_usd: 0 };
 
@@ -490,16 +566,14 @@ export async function processVisualDraftRow(input: DraftInput, supabase: Supa): 
     cost += LLM_INDUSTRY_COST_USD;
     void descriptor; // reserved for richer blurb later
 
-    // 2) slug + image
+    // 2) slug + image. `precomputed` is supplied by the batched pair path (the
+    // image was already generated + validated in one shared call); otherwise we
+    // generate + verify the single whiteboard here. If no clean image, never
+    // create a blank `ready` draft — return `retry` so the worker re-attempts.
     await setStatus(supabase, input.id, 'writing');
-    const nameParts = (input.full_name || '').trim().split(/\s+/).filter(Boolean);
-    const last = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
-    const slug = await buildSlug(supabase, first, last, input.email);
-
-    // Generate + verify the whiteboard. If no clean image after the retries,
-    // never create a blank `ready` draft — return `retry` so the worker
-    // re-attempts later (3.1 is ~100%, so this path is rare).
-    const imageUrl = await regenerateLeadWhiteboard(supabase, { first, company, slug, onCost: (c) => { cost += c; } });
+    const slug = precomputed?.slug ?? await computeSlug(supabase, input, first);
+    const imageUrl = precomputed?.imageUrl
+      ?? await regenerateLeadWhiteboard(supabase, { first, company, slug, onCost: (c) => { cost += c; } });
     if (!imageUrl) return { kind: 'retry', reason: 'no_clean_whiteboard_image', cost_usd: cost };
 
     // 3) email + landing copy (A/B variant on the email only — page unchanged)
@@ -553,4 +627,58 @@ export async function processVisualDraftRow(input: DraftInput, supabase: Supa): 
     }
     return { kind: 'failed', reason: msg.slice(0, 160), cost_usd: cost };
   }
+}
+
+// Slug for a draft = clean `{first}-{last}` (deduped against landing_pages).
+async function computeSlug(supabase: Supa, input: DraftInput, first: string): Promise<string> {
+  const nameParts = (input.full_name || '').trim().split(/\s+/).filter(Boolean);
+  const last = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
+  return buildSlug(supabase, first, last, input.email);
+}
+
+/** Process TWO drafts with ONE shared image call (the batched path). Generates
+ *  both whiteboards in a single 2-up Gemini call, then finishes each draft
+ *  (industry + email + landing) through the normal per-draft engine with the
+ *  pre-made image. Safety: any board the batch can't produce cleanly falls back
+ *  to the proven single-image path for just that lead, and if the whole batch
+ *  call throws, BOTH drafts degrade to independent single processing — so this is
+ *  never worse than the per-draft path, only cheaper when it works. The two
+ *  per-draft completions run sequentially to preserve the worker's Firecrawl
+ *  concurrency invariant (≤1 homepage scrape per slot at a time). */
+export async function processVisualDraftPair(a: DraftInput, b: DraftInput, supabase: Supa): Promise<[DraftOutcome, DraftOutcome]> {
+  const firstA = (a.first_name || '').trim() || 'there';
+  const firstB = (b.first_name || '').trim() || 'there';
+  const companyA = (a.company || '').trim() || 'your company';
+  const companyB = (b.company || '').trim() || 'your company';
+
+  let urls: [string | null, string | null] = [null, null];
+  let batchCost = 0;
+  try {
+    const slugA = await computeSlug(supabase, a, firstA);
+    const slugB = await computeSlug(supabase, b, firstB);
+    const r = await generateLeadWhiteboardPair(supabase, [
+      { first: firstA, company: companyA, slug: slugA },
+      { first: firstB, company: companyB, slug: slugB },
+    ]);
+    urls = r.urls; batchCost = r.cost;
+    const half = batchCost / 2;
+    // Sequential (not Promise.all) to keep ≤1 industry scrape per slot in flight.
+    const oa = urls[0]
+      ? addImageCost(await processVisualDraftRow(a, supabase, { slug: slugA, imageUrl: urls[0] }), half)
+      : await processVisualDraftRow(a, supabase); // batch miss → single fallback
+    const ob = urls[1]
+      ? addImageCost(await processVisualDraftRow(b, supabase, { slug: slugB, imageUrl: urls[1] }), half)
+      : await processVisualDraftRow(b, supabase);
+    return [oa, ob];
+  } catch {
+    // Whole batch failed (montage/crop/provider) → process both independently.
+    const oa = await processVisualDraftRow(a, supabase);
+    const ob = await processVisualDraftRow(b, supabase);
+    return [oa, ob];
+  }
+}
+
+// Attribute the shared batch-call cost onto a draft outcome (split across the pair).
+function addImageCost(outcome: DraftOutcome, extra: number): DraftOutcome {
+  return { ...outcome, cost_usd: (outcome.cost_usd ?? 0) + extra };
 }

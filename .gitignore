@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/batch-test-output
+/prompt-test-output
 
 # next.js
 /.next/

@@ -24,7 +24,7 @@ export const runtime = 'nodejs';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { type DraftInput, type DraftOutcome } from '@/lib/ai/cold-research';
-import { processVisualDraftRow } from '@/lib/ai/visual-draft';
+import { processVisualDraftRow, processVisualDraftPair } from '@/lib/ai/visual-draft';
 import {
   DRAFT_WORKER_BATCH,
   DRAFT_WORKER_BUDGET_MS,
@@ -38,6 +38,9 @@ import {
 } from '@/lib/email-tool/cold-constants';
 
 const SPEND_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Batch two leads into one whiteboard image call (halves per-board image cost).
+// Disable instantly by setting VISUAL_BATCH_PAIR=0 in the environment.
+const BATCH_PAIR = process.env.VISUAL_BATCH_PAIR !== '0';
 
 type Supa = ReturnType<typeof createAdminClient>;
 
@@ -118,6 +121,12 @@ async function runDraftWorker(supabase: Supa): Promise<void> {
       while (Date.now() - startMs < DRAFT_WORKER_BUDGET_MS && stats.processed < DRAFT_WORKER_BATCH) {
         const draft = await claimNextDraft(supabase);
         if (!draft) break;
+        // Batched path: grab a partner and generate both whiteboards in one call.
+        if (BATCH_PAIR) {
+          const partner = await claimNextDraft(supabase);
+          if (partner) { await processPairAndPersist(supabase, draft, partner, stats); continue; }
+          // no partner (odd one out / queue drained) → fall through to solo
+        }
         await processAndPersist(supabase, draft, stats);
       }
     };
@@ -162,34 +171,60 @@ async function claimNextDraft(supabase: Supa): Promise<ClaimedDraft | null> {
   }
 }
 
-async function processAndPersist(supabase: Supa, draft: ClaimedDraft, stats: Stats): Promise<void> {
-  const input: DraftInput = {
+function toInput(draft: ClaimedDraft): DraftInput {
+  return {
     id: draft.id, pool_id: draft.pool_id, email: draft.email,
     first_name: draft.first_name, full_name: draft.full_name, company: draft.company,
     domain: draft.domain, sender_account_id: draft.sender_account_id,
     sender_name: draft.sender_name, sender_email: draft.sender_email,
   };
-  const nowIso = new Date().toISOString();
+}
 
+const draftTimeout = (): Promise<DraftOutcome> =>
+  new Promise<DraftOutcome>(resolve => setTimeout(() => resolve({ kind: 'retry', reason: 'draft_timeout', cost_usd: 0 }), PER_DRAFT_TIMEOUT_MS));
+
+async function processAndPersist(supabase: Supa, draft: ClaimedDraft, stats: Stats): Promise<void> {
   let outcome: DraftOutcome;
   try {
     // Hard wall-clock cap: one slow draft must never run past the function
     // limit. On timeout, retry (recoverStuckDrafts re-queues anything left mid-write).
-    outcome = await Promise.race([
-      processVisualDraftRow(input, supabase),
-      new Promise<DraftOutcome>(resolve =>
-        setTimeout(() => resolve({ kind: 'retry', reason: 'draft_timeout', cost_usd: 0 }), PER_DRAFT_TIMEOUT_MS)),
-    ]);
+    outcome = await Promise.race([processVisualDraftRow(toInput(draft), supabase), draftTimeout()]);
   } catch (err) {
-    await supabase.from('cold_email_drafts').update({
-      status: 'failed',
-      error: `worker_threw:${err instanceof Error ? err.message.slice(0, 160) : String(err)}`,
-      worker_locked_until: null, researched_at: nowIso,
-    }).eq('id', draft.id);
-    stats.processed++; stats.failed++;
+    await failDraft(supabase, draft, err, stats);
     return;
   }
+  await persistOutcome(supabase, draft, outcome, stats);
+}
 
+// Batched pair: both whiteboards from one image call, then persist each outcome
+// independently (one can be ready while the other retries).
+async function processPairAndPersist(supabase: Supa, a: ClaimedDraft, b: ClaimedDraft, stats: Stats): Promise<void> {
+  let outcomes: [DraftOutcome, DraftOutcome];
+  try {
+    outcomes = await Promise.race([
+      processVisualDraftPair(toInput(a), toInput(b), supabase),
+      Promise.all([draftTimeout(), draftTimeout()]) as Promise<[DraftOutcome, DraftOutcome]>,
+    ]);
+  } catch (err) {
+    await failDraft(supabase, a, err, stats);
+    await failDraft(supabase, b, err, stats);
+    return;
+  }
+  await persistOutcome(supabase, a, outcomes[0], stats);
+  await persistOutcome(supabase, b, outcomes[1], stats);
+}
+
+async function failDraft(supabase: Supa, draft: ClaimedDraft, err: unknown, stats: Stats): Promise<void> {
+  await supabase.from('cold_email_drafts').update({
+    status: 'failed',
+    error: `worker_threw:${err instanceof Error ? err.message.slice(0, 160) : String(err)}`,
+    worker_locked_until: null, researched_at: new Date().toISOString(),
+  }).eq('id', draft.id);
+  stats.processed++; stats.failed++;
+}
+
+async function persistOutcome(supabase: Supa, draft: ClaimedDraft, outcome: DraftOutcome, stats: Stats): Promise<void> {
+  const nowIso = new Date().toISOString();
   const newCost = Number(draft.cost_usd || 0) + outcome.cost_usd;
   const base = { worker_locked_until: null as string | null, researched_at: nowIso, cost_usd: newCost };
 
