@@ -26,45 +26,42 @@ export const ACTIVE_STAGES: LeadStage[] = [
   'active_user',
 ];
 
-// Three-tier model routing — the rule is volume, not stakes:
-//   - TRIAGE_MODEL   Qwen 3 14B free. Hot-path per-email calls that we make
-//                    hundreds-to-thousands of times a day. Cheap and fast;
-//                    accuracy floor is "good enough triage, humans + downstream
-//                    models catch escapes."
-//   - DECIDER_MODEL  DeepSeek v3. Low-volume backend decisions where accuracy
+// Three-tier model routing — the rule is volume, not stakes. As of 2026-06 all
+// text models call the Anthropic API DIRECTLY (ids start with `claude-`, routed
+// in openrouter.ts) so our Anthropic credits are what get consumed — not
+// OpenRouter. DeepSeek/Qwen are fully retired here.
+//   - TRIAGE_MODEL   Haiku 4.5. Hot-path per-email calls (hundreds-to-thousands
+//                    a day). Cheap ($1/$5 per MTok) and fast.
+//   - DECIDER_MODEL  Haiku 4.5. Low-volume backend decisions where accuracy
 //                    matters (first-reply auto-send classification, 48h
-//                    followup should-send). JSON mode is reliable here.
+//                    followup should-send). JSON mode via prompt + post-strip.
 //   - WRITER_MODEL   Haiku 4.5. Every outbound prose body (first-reply,
 //                    fast-loop, info-reply, 48h followup). Warm voice.
-// NOTE: `qwen/qwen3-14b:free` was pulled from OpenRouter around 2026-04
-// ("No endpoints found"), so TRIAGE_MODEL now points at DeepSeek v3. It's ~
-// $0.0003 per classification, which is fine at our volume, and JSON mode is
-// reliable. If a free model comes back that's worth using, swap here.
-export const TRIAGE_MODEL = 'deepseek/deepseek-chat-v3-0324';
-export const DECIDER_MODEL = 'deepseek/deepseek-chat-v3-0324';
-export const WRITER_MODEL = 'anthropic/claude-haiku-4-5';
+export const TRIAGE_MODEL = 'claude-haiku-4-5';
+export const DECIDER_MODEL = 'claude-haiku-4-5';
+export const WRITER_MODEL = 'claude-haiku-4-5';
 
 // Legacy alias. Four callers still import this name (sync.ts, reply-classifier,
-// lead-scoring, generate-templates). Pointed at TRIAGE_MODEL so those
-// high-volume paths auto-route to Qwen without touching their code.
+// lead-scoring, generate-templates). Pointed at TRIAGE_MODEL (now Haiku 4.5) so
+// those high-volume paths auto-route without touching their code.
 export const QWEN_FREE_MODEL = TRIAGE_MODEL;
 
 // Legacy alias from the pre-split era — pre-split the classifier wrote prose,
 // so CLASSIFIER_MODEL was Haiku. New code should import DECIDER_MODEL directly.
 export const CLASSIFIER_MODEL = DECIDER_MODEL;
 
-// Insights-chat debate pipeline. Founder explicitly asked for DeepSeek
-// everywhere — no Anthropic models. v3-0324 (chat) is the workhorse;
-// r1 is the reasoning-tuned model used at the judge step.
-//   - CHAT_ROUTER_MODEL   DeepSeek v3. Classifies bucket + emits FTS terms.
-//   - LOOKUP_MODEL        DeepSeek v3. Single-call path for factual questions
+// Insights-chat debate pipeline. Migrated 2026-06 from DeepSeek-only to Claude
+// (direct Anthropic) along with the rest of the stack — the earlier
+// "DeepSeek everywhere, no Anthropic" preference was superseded.
+//   - CHAT_ROUTER_MODEL   Haiku 4.5. Classifies bucket + emits FTS terms.
+//   - LOOKUP_MODEL        Haiku 4.5. Single-call path for factual questions
 //                          and per-transcript filter classifier.
-//   - ADVOCATE_MODEL      DeepSeek v3. FOR/AGAINST advocates in scope debates.
-//   - JUDGE_MODEL         DeepSeek r1. Reasoning model for the deliberation.
+//   - ADVOCATE_MODEL      Haiku 4.5. FOR/AGAINST advocates in scope debates.
+//   - JUDGE_MODEL         Sonnet 4.6. Higher-reasoning model for the deliberation.
 export const CHAT_ROUTER_MODEL = DECIDER_MODEL;
-export const LOOKUP_MODEL = 'deepseek/deepseek-chat-v3-0324';
-export const ADVOCATE_MODEL = 'deepseek/deepseek-chat-v3-0324';
-export const JUDGE_MODEL = 'deepseek/deepseek-r1';
+export const LOOKUP_MODEL = 'claude-haiku-4-5';
+export const ADVOCATE_MODEL = 'claude-haiku-4-5';
+export const JUDGE_MODEL = 'claude-sonnet-4-6';
 
 // Fast-loop follow-up window (in minutes from the original auto-reply).
 // Clamped to the business-hours window by pickFastLoopTime.

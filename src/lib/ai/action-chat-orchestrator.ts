@@ -1,16 +1,18 @@
+import Anthropic from '@anthropic-ai/sdk';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { toolsForLLM } from '@/lib/actions/tools';
 import { runToolCall } from '@/lib/actions/dispatcher';
 import type { ToolOutcome } from '@/lib/actions/dispatcher';
+import { getAnthropic, anthropicError } from './anthropic';
 
-// Action-chat orchestrator. Calls OpenRouter with tools[] enabled, runs
-// every read tool in-loop, and STOPS when a mutation is previewed (the
-// user has to confirm in the UI before the next round).
+// Action-chat orchestrator. Calls the Anthropic API directly (native tool-use)
+// with tools[] enabled, runs every read tool in-loop, and STOPS when a mutation
+// is previewed (the user has to confirm in the UI before the next round).
 
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const PRIMARY_MODEL = 'deepseek/deepseek-v4-pro';
-const FALLBACK_MODELS = ['anthropic/claude-sonnet-4.6', 'deepseek/deepseek-v4-flash'];
+const PRIMARY_MODEL = 'claude-sonnet-4-6';
+const FALLBACK_MODELS = ['claude-haiku-4-5'];
 const MAX_TOOL_LOOPS = 6;          // safety cap on read-tool chains
+const MAX_OUTPUT_TOKENS = 2000;
 
 const SYSTEM_PROMPT = `You are the Action Chat assistant for the Proxi AI CRM. The founder uses you to find, count, export, and bulk-update leads via natural language.
 
@@ -66,22 +68,23 @@ export async function runActionChat(args: RunArgs): Promise<RunResult> {
     { role: 'user', content: args.current_user_text },
   ];
 
-  const tools = toolsForLLM();
+  const tools = toAnthropicTools(toolsForLLM());
   const tool_outcomes: ToolOutcome[] = [];
   const supabase = createAdminClient();
   const persisted_message_ids: string[] = [];
   let final_text = '';
 
   for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
-    const completion = await callWithFallback(messages, tools);
-    const assistantMsg = completion.choices?.[0]?.message;
-    if (!assistantMsg) {
-      final_text = '(no response)';
-      break;
-    }
-
-    const text = (assistantMsg.content as string) || '';
-    const toolCalls = assistantMsg.tool_calls as ChatMessageIn['tool_calls'] | undefined;
+    const { text, toolUses } = await callWithFallback(messages, tools);
+    // Re-encode the model's tool_use blocks into our stored OpenAI-shaped
+    // tool_calls so persistence + history reconstruction stay unchanged.
+    const toolCalls: ChatMessageIn['tool_calls'] = toolUses.length
+      ? toolUses.map(tu => ({
+          id: tu.id,
+          type: 'function' as const,
+          function: { name: tu.name, arguments: JSON.stringify(tu.input ?? {}) },
+        }))
+      : undefined;
 
     // Persist the assistant turn (text + tool_calls).
     const { data: assistantRow } = await supabase
@@ -159,57 +162,88 @@ export async function runActionChat(args: RunArgs): Promise<RunResult> {
   return { final_text, tool_outcomes, persisted_message_ids };
 }
 
+type AnthropicToolUse = { id: string; name: string; input: unknown };
+
+// Our tools[] are OpenAI-shaped ({type:'function', function:{name,description,
+// parameters}}); Anthropic wants {name, description, input_schema} — the JSON
+// schema body is identical, just renamed.
+function toAnthropicTools(tools: ReturnType<typeof toolsForLLM>): Anthropic.Tool[] {
+  return tools.map(t => ({
+    name: t.function.name,
+    description: t.function.description,
+    input_schema: t.function.parameters as Anthropic.Tool['input_schema'],
+  }));
+}
+
+// Translate our OpenAI-shaped ChatMessageIn history into Anthropic's format:
+// system is hoisted to the top level; assistant tool_calls become tool_use
+// blocks; consecutive role:'tool' results are grouped into the single user turn
+// that must follow their assistant turn.
+function toAnthropicMessages(history: ChatMessageIn[]): { system: string; messages: Anthropic.MessageParam[] } {
+  const systemParts: string[] = [];
+  const messages: Anthropic.MessageParam[] = [];
+  for (const m of history) {
+    if (m.role === 'system') { systemParts.push(m.content); continue; }
+    if (m.role === 'assistant') {
+      const blocks: Anthropic.ContentBlockParam[] = [];
+      if (m.content && m.content.trim()) blocks.push({ type: 'text', text: m.content });
+      for (const tc of m.tool_calls ?? []) {
+        let input: unknown = {};
+        try { input = JSON.parse(tc.function.arguments); } catch { input = {}; }
+        blocks.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input });
+      }
+      messages.push({ role: 'assistant', content: blocks.length ? blocks : [{ type: 'text', text: '(no output)' }] });
+      continue;
+    }
+    if (m.role === 'tool') {
+      const block: Anthropic.ContentBlockParam = {
+        type: 'tool_result',
+        tool_use_id: m.tool_call_id ?? '',
+        content: m.content && m.content.trim() ? m.content : '(no output)',
+      };
+      const last = messages[messages.length - 1];
+      const lastBlocks = last && last.role === 'user' && Array.isArray(last.content)
+        ? (last.content as Anthropic.ContentBlockParam[]) : null;
+      if (lastBlocks && lastBlocks[0]?.type === 'tool_result') lastBlocks.push(block);
+      else messages.push({ role: 'user', content: [block] });
+      continue;
+    }
+    // plain user turn
+    messages.push({ role: 'user', content: m.content });
+  }
+  return { system: systemParts.join('\n\n'), messages };
+}
+
 async function callWithFallback(
-  messages: ChatMessageIn[],
-  tools: ReturnType<typeof toolsForLLM>,
-): Promise<{ choices: Array<{ message: { content: string; tool_calls?: unknown } }> }> {
+  history: ChatMessageIn[],
+  tools: Anthropic.Tool[],
+): Promise<{ text: string; toolUses: AnthropicToolUse[] }> {
+  const { system, messages } = toAnthropicMessages(history);
   const candidates = [PRIMARY_MODEL, ...FALLBACK_MODELS];
   let lastErr: Error | null = null;
   for (const model of candidates) {
     try {
-      return await singleCall(model, messages, tools);
+      const resp = await getAnthropic().messages.create(
+        {
+          model,
+          max_tokens: MAX_OUTPUT_TOKENS,
+          ...(system ? { system } : {}),
+          tools,
+          messages,
+        },
+        { timeout: 90_000 },
+      );
+      const text = resp.content.map(b => (b.type === 'text' ? b.text : '')).join('').trim();
+      const toolUses: AnthropicToolUse[] = resp.content
+        .filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+        .map(b => ({ id: b.id, name: b.name, input: b.input }));
+      return { text, toolUses };
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      lastErr = e instanceof Error ? e : new Error(msg);
-      const retryable = /API error (429|5\d\d)/.test(msg);
+      lastErr = anthropicError(e);
+      const retryable = /API error (429|5\d\d)/.test(lastErr.message);
       if (!retryable) throw lastErr;
-      console.warn(`[action-chat] ${model} failed (${msg.slice(0, 100)}), trying next`);
+      console.warn(`[action-chat] ${model} failed (${lastErr.message.slice(0, 100)}), trying next`);
     }
   }
   throw lastErr ?? new Error('all models failed');
-}
-
-async function singleCall(model: string, messages: ChatMessageIn[], tools: ReturnType<typeof toolsForLLM>) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90_000);
-  try {
-    const res = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
-        'X-Title': 'Proxi CRM Action Chat',
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        tools,
-        max_tokens: 1500,
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`OpenRouter API error ${res.status}: ${body.slice(0, 300)}`);
-    }
-    return res.json();
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('Action-chat call timed out after 90s');
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-  }
 }

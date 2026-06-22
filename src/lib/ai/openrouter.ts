@@ -1,5 +1,11 @@
+import Anthropic from '@anthropic-ai/sdk';
+import { getAnthropic, isAnthropicModel, anthropicError } from './anthropic';
+
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const DEFAULT_MODEL = 'deepseek/deepseek-chat-v3-0324';
+// Default workhorse. Direct-Anthropic Haiku — used by callers that pass no
+// model (transcript-processor, followup-drafter). `claude-*` ids route to the
+// Anthropic API; non-claude ids (Gemini image gen) stay on OpenRouter.
+const DEFAULT_MODEL = 'claude-haiku-4-5';
 const DEFAULT_MAX_TOKENS = 2000;
 
 // Image generation / editing (visual-outreach v2). These models output images
@@ -70,7 +76,60 @@ export async function callAIMessages(params: AiCallMessagesParams): Promise<stri
   throw lastErr ?? new Error('OpenRouter call failed with no specific error');
 }
 
+// Strip markdown code fences a model may wrap JSON in, and — if there's
+// leading/trailing prose — extract the outermost {...} / [...] object. Best
+// effort: callers still parse (some via tolerantJsonParse).
+function stripJson(content: string): string {
+  let c = content.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+  if (!(c.startsWith('{') || c.startsWith('['))) {
+    const obj = c.indexOf('{');
+    const arr = c.indexOf('[');
+    const start = obj === -1 ? arr : arr === -1 ? obj : Math.min(obj, arr);
+    if (start > 0) {
+      const end = Math.max(c.lastIndexOf('}'), c.lastIndexOf(']'));
+      if (end > start) c = c.slice(start, end + 1).trim();
+    }
+  }
+  return c;
+}
+
+// Direct-Anthropic text call. Anthropic puts `system` at the top level (not a
+// message role) and has no `response_format` — so we hoist system messages out
+// and, for jsonMode, instruct + post-strip instead.
+async function anthropicTextAttempt(params: AiCallMessagesParams & { model: string }): Promise<string> {
+  const systemParts: string[] = [];
+  const messages: Anthropic.MessageParam[] = [];
+  for (const m of params.messages) {
+    if (m.role === 'system') systemParts.push(m.content);
+    else messages.push({ role: m.role, content: m.content });
+  }
+  let system = systemParts.join('\n\n');
+  if (params.jsonMode) {
+    system = `${system ? system + '\n\n' : ''}Output ONLY valid JSON — no markdown code fences, no commentary before or after.`;
+  }
+  try {
+    const resp = await getAnthropic().messages.create(
+      {
+        model: params.model,
+        max_tokens: params.maxTokens || DEFAULT_MAX_TOKENS,
+        ...(system ? { system } : {}),
+        messages,
+      },
+      { timeout: params.timeoutMs ?? 55_000 },
+    );
+    let content = resp.content.map(b => (b.type === 'text' ? b.text : '')).join('');
+    if (!content) throw new Error(`Empty response from Anthropic (model=${params.model})`);
+    if (params.jsonMode) content = stripJson(content);
+    return content;
+  } catch (err) {
+    throw anthropicError(err);
+  }
+}
+
 async function singleAttempt(params: AiCallMessagesParams): Promise<string> {
+  const model = params.model || DEFAULT_MODEL;
+  if (isAnthropicModel(model)) return anthropicTextAttempt({ ...params, model });
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 55_000);
 
@@ -174,7 +233,37 @@ export async function generateImage(params: ImageGenParams): Promise<string> {
  * image (e.g. the company name on a whiteboard). Best-effort — callers should
  * treat a throw as "couldn't check", never a hard failure.
  */
+// Turn a data: URL (or http URL) into an Anthropic image source block.
+function anthropicImageSource(imageDataUrl: string): Anthropic.ImageBlockParam['source'] {
+  const m = imageDataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]*)$/);
+  if (m) {
+    return { type: 'base64', media_type: m[1] as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp', data: m[2] };
+  }
+  return { type: 'url', url: imageDataUrl };
+}
+
+async function anthropicVisionAttempt(params: { prompt: string; imageDataUrl: string; model: string; maxTokens?: number; timeoutMs?: number }): Promise<string> {
+  const resp = await getAnthropic().messages.create(
+    {
+      model: params.model,
+      max_tokens: params.maxTokens ?? 80,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: anthropicImageSource(params.imageDataUrl) },
+          { type: 'text', text: params.prompt },
+        ],
+      }],
+    },
+    { timeout: params.timeoutMs ?? 30_000 },
+  );
+  return resp.content.map(b => (b.type === 'text' ? b.text : '')).join('');
+}
+
 export async function callVision(params: { prompt: string; imageDataUrl: string; model?: string; maxTokens?: number; timeoutMs?: number }): Promise<string> {
+  const model = params.model || 'claude-haiku-4-5';
+  if (isAnthropicModel(model)) return anthropicVisionAttempt({ ...params, model });
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 30_000);
   try {
@@ -187,7 +276,7 @@ export async function callVision(params: { prompt: string; imageDataUrl: string;
         'X-Title': 'Proxi CRM',
       },
       body: JSON.stringify({
-        model: params.model || 'google/gemini-2.5-flash',
+        model,
         messages: [{ role: 'user', content: [
           { type: 'text', text: params.prompt },
           { type: 'image_url', image_url: { url: params.imageDataUrl } },

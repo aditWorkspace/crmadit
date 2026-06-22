@@ -229,7 +229,7 @@ ${cards}`;
     jsonMode: true,
     maxTokens: 1500,
     timeoutMs: STUFFED_TIMEOUT_MS,
-    fallbackModels: ['deepseek/deepseek-r1'],
+    fallbackModels: ['claude-haiku-4-5'],
   });
 
   let parsed: { matches?: { id?: string; evidence?: string }[] } = {};
@@ -340,7 +340,7 @@ ${raw}`;
     jsonMode: true,
     maxTokens: 200,
     timeoutMs: FANOUT_PER_CALL_TIMEOUT_MS,
-    fallbackModels: ['deepseek/deepseek-r1'],
+    fallbackModels: ['claude-haiku-4-5'],
   });
 
   const parsed = JSON.parse(responseText) as { match?: boolean; evidence?: string | null };

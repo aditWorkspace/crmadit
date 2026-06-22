@@ -121,7 +121,7 @@ export async function GET() {
       };
 
       const draft = await callAI({
-        model: 'deepseek/deepseek-chat-v3-0324',
+        model: 'claude-sonnet-4-6',
         systemPrompt: `You are a sales assistant for Proxi AI (a product prioritization tool for PMs), drafting a follow-up email on behalf of a Berkeley startup founder.
 
 Rules:

@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
   const stageLabel = stage ? STAGE_LABELS[stage as LeadStage] || stage : 'prospects';
 
   const result = await callAI({
-    model: 'deepseek/deepseek-chat-v3-0324',
+    model: 'claude-sonnet-4-6',
     systemPrompt: `You are a sales email assistant for Proxi AI, a product prioritization tool for PMs.
 The team is 2 Berkeley co-founders (Adit, Asim) doing outbound outreach to PMs and CEOs.
 

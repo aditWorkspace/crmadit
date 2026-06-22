@@ -4,13 +4,14 @@
 
 import type { EvidenceKind } from '@/lib/validation';
 
-// ── Models (cheap DeepSeek for the whole cold pipeline) ────────────────────
+// ── Models (direct-Anthropic Claude for the whole cold pipeline) ───────────
 // Isolated from the shared WRITER_MODEL/DECIDER_MODEL so the personalization
-// layer can run on a cheap model without touching auto-followup / first-reply.
-export const COLD_RESEARCH_MODEL = 'deepseek/deepseek-v4-flash'; // extraction + claim-check (JSON)
-export const COLD_WRITER_MODEL = 'deepseek/deepseek-v4-flash';   // email prose
+// layer can be tuned independently. `claude-*` ids hit the Anthropic API
+// directly (openrouter.ts routing) so credits are consumed there.
+export const COLD_RESEARCH_MODEL = 'claude-haiku-4-5';  // extraction + claim-check (JSON)
+export const COLD_WRITER_MODEL = 'claude-sonnet-4-6';   // email prose (quality)
 // Tried in order if the primary model 429s / 5xxs / is unavailable.
-export const COLD_MODEL_FALLBACKS = ['deepseek/deepseek-chat-v3-0324'];
+export const COLD_MODEL_FALLBACKS = ['claude-haiku-4-5'];
 
 // ── Opener ladder ──────────────────────────────────────────────────────────
 // Tier is computed IN CODE from which evidence cards survived verification —
@@ -113,15 +114,19 @@ export const IMAGE_GEN_COST_USD = 0.04;       // per-person whiteboard image edi
 // gemini-3.1-flash-image-preview — ~100% text fidelity on the whiteboard
 // (multi-word/odd company names) vs ~40-50% for 2.5; only ~20% more per image.
 // Tested 8/8 on the hard cases. Fallback to 2.5 if 3.1 is unavailable/rate-limited.
+// IMAGE GENERATION stays on Gemini via OpenRouter — Claude can't generate
+// images, and Gemini 3.1 has ~100% whiteboard text fidelity. Do NOT migrate.
 export const VISUAL_IMAGE_MODEL = 'google/gemini-3.1-flash-image-preview';
 export const VISUAL_IMAGE_FALLBACKS = ['google/gemini-2.5-flash-image'];
-// Cheap vision detectors for the whiteboard-text check. Two independent models
-// must BOTH flag a board wrong before we redo it — their false-positives don't
-// overlap, so the agreement catches every real error with ~0 false-flags.
-export const WHITEBOARD_DETECTOR_PRIMARY = 'google/gemini-2.5-flash-lite';
-export const WHITEBOARD_DETECTOR_CONFIRM = 'google/gemini-2.5-flash';
-export const VISUAL_INDUSTRY_MODEL = 'google/gemini-2.5-flash';
-export const VISUAL_INDUSTRY_FALLBACKS = ['deepseek/deepseek-chat-v3-0324'];
+// Whiteboard-text VISION check — migrated to Claude vision (2026-06). Two
+// independent models must BOTH flag a board wrong before we redo it; Haiku +
+// Sonnet are the two independent readers (different capability tiers → their
+// false-positives shouldn't overlap). Re-validate the agreement on real boards.
+export const WHITEBOARD_DETECTOR_PRIMARY = 'claude-haiku-4-5';
+export const WHITEBOARD_DETECTOR_CONFIRM = 'claude-sonnet-4-6';
+// Industry classifier (text, JSON) — Claude Haiku.
+export const VISUAL_INDUSTRY_MODEL = 'claude-haiku-4-5';
+export const VISUAL_INDUSTRY_FALLBACKS = ['claude-sonnet-4-6'];
 export const OUTREACH_IMAGE_BUCKET = 'outreach-images';
 export const OUTREACH_REFERENCE_KEY = '_reference/founders.png'; // base photo edited per person
 export const CAL_BOOKING_URL = 'https://cal.com/adit-mittal/30min';
