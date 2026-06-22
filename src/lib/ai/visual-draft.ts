@@ -409,7 +409,7 @@ async function loadPairReference(supabase: Supa): Promise<string | null> {
 // Prompt 3 ("negatives-first") — chosen in testing as the best handwriting match.
 // Leads with the prohibitions (no clean font / bold / darker ink / re-lettering),
 // then states the only 4 things that may change (two names + two companies).
-function buildPairImagePrompt(a: { first: string; company: string }, b: { first: string; company: string }): string {
+export function buildPairImagePrompt(a: { first: string; company: string }, b: { first: string; company: string }): string {
   return `Two side-by-side copies (LEFT, RIGHT) of the same student whiteboard photo. Current note on both: "Hey Bob, We are students interested in learning how product work is done at Acme Corp. Thank You!".
 DO NOT: retype the board in a clean or neat font; make the ink bolder, darker, or a different color; straighten or tidy the lines; or rewrite any word that isn't changing. The handwriting must stay messy, thin, and human, in the original marker color.
 DO: change only these 4 spans — name1, name2 (after "Hey") and company1, company2 (after "at") — writing them in that same loose handwriting.
@@ -420,7 +420,7 @@ Keep "done", "at", and every other word exactly as handwritten, and keep the peo
 
 // Split a returned 2-up into [left, right] by 50% of its real width (the model may
 // return any resolution, so crop by proportion, not assumed pixels).
-async function cropPairHalves(returned: Buffer): Promise<[Buffer, Buffer]> {
+export async function cropPairHalves(returned: Buffer): Promise<[Buffer, Buffer]> {
   const m = await sharp(returned).metadata();
   const W = m.width ?? 0, H = m.height ?? 0;
   const cw = Math.floor(W / 2);
