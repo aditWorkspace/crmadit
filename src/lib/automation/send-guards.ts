@@ -152,6 +152,28 @@ export async function hasMinimumGap(leadId: string): Promise<boolean> {
   return hoursSince >= MIN_GAP_HOURS;
 }
 
+// ── Has-the-prospect-ever-replied gate ──────────────────────────────────────
+/**
+ * Returns true if the prospect has ever sent an inbound email on this lead.
+ *
+ * Hard rule (2026-06-23): once a prospect replies even once, we NEVER send
+ * another PROACTIVE auto-email (48h nudge, fast-loop, scheduled recontact) on
+ * that thread — a founder takes over from there. This only gates unsolicited
+ * follow-ups; replying to a fresh inbound (the auto-reply pipeline) is
+ * unaffected. Every auto_send path defers to this as its deterministic backstop.
+ */
+export async function prospectHasReplied(leadId: string): Promise<boolean> {
+  const supabase = createAdminClient();
+  const { data } = await supabase
+    .from('interactions')
+    .select('id')
+    .eq('lead_id', leadId)
+    .eq('type', 'email_inbound')
+    .limit(1)
+    .maybeSingle();
+  return !!data;
+}
+
 // ── Scheduled email queue drainer ───────────────────────────────────────────
 // Both auto-followup and first-reply-responder queue emails into
 // follow_up_queue with auto_send=true and a random scheduled_for time.
@@ -193,6 +215,23 @@ export async function drainScheduledEmails(): Promise<DrainResult> {
         // Mark as failed — missing data
         await supabase.from('follow_up_queue').update({ status: 'failed' }).eq('id', entry.id);
         result.errors.push(`Queue ${entry.id}: missing message or thread_id`);
+        continue;
+      }
+
+      // Hard rule: never deliver a proactive nudge to a prospect who has ever
+      // replied on this thread. This is the universal backstop — it covers every
+      // auto_send type (48h nudge, fast-loop, scheduled recontact) no matter how
+      // or when the row was queued, including rows queued before this rule
+      // existed. A reply hands the thread to a human.
+      if (await prospectHasReplied(entry.lead_id)) {
+        await supabase
+          .from('follow_up_queue')
+          .update({
+            status: 'dismissed',
+            dismissed_at: new Date().toISOString(),
+            reason: 'cancelled_prospect_already_replied',
+          })
+          .eq('id', entry.id);
         continue;
       }
 

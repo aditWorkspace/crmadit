@@ -445,10 +445,14 @@ export async function runAutoReplyPipeline(
             assigned_to: lead.owned_by,
             type: 'scheduled_recontact',
             status: 'pending',
-            auto_send: true, // Will check if human replied before sending
+            // Hard rule (2026-06-23): this prospect has replied, so we never
+            // auto-send the recontact. Keep it as a founder REMINDER (auto_send
+            // false) so the "circle back later" intent isn't lost — a human
+            // sends it manually when it comes due.
+            auto_send: false,
             scheduled_for: `${extractedDate}T10:00:00Z`,
             due_at: `${extractedDate}T10:00:00Z`,
-            reason: `delay_recontact: ${classifierResult.primary_category}`,
+            reason: `delay_recontact (manual — prospect replied): ${classifierResult.primary_category}`,
             gmail_thread_id: threadId,
           });
         }

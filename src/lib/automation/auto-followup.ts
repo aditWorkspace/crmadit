@@ -2,9 +2,8 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { callAI } from '@/lib/ai/openrouter';
 import { WRITER_MODEL } from '@/lib/constants';
 import { aiFollowupDecisionSchema } from '@/lib/validation';
-import { canSendOutbound, hasMinimumGap, pickRandomSendTime } from './send-guards';
+import { canSendOutbound, hasMinimumGap, pickRandomSendTime, prospectHasReplied } from './send-guards';
 import { formatEmailBody } from '@/lib/format/email-body';
-import { detectOutOfOffice } from './ooo-detector';
 
 function firstNameOf(fullName: string | null | undefined, fallback = 'there'): string {
   if (!fullName) return fallback;
@@ -143,6 +142,19 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
     result.processed++;
 
     try {
+      // Hard rule (2026-06-23): never auto-follow-up a prospect who has ever
+      // replied — a single inbound hands the thread to a human. This inverts the
+      // old gate (which REQUIRED an inbound before nudging). Because every
+      // 'scheduling'-stage lead got here by replying, this effectively retires
+      // the unsolicited 48h nudge; only the rare never-replied lead (e.g. one a
+      // founder staged manually) stays eligible.
+      if (await prospectHasReplied(lead.id)) {
+        result.skipped++;
+        result.skipped_reasons['prospect_already_replied'] =
+          (result.skipped_reasons['prospect_already_replied'] || 0) + 1;
+        continue;
+      }
+
       // Guard: max consecutive outbound
       const allowed = await canSendOutbound(lead.id);
       if (!allowed) {
@@ -188,22 +200,9 @@ export async function runAutoFollowup(): Promise<AutoFollowupResult> {
       if (lastInteraction.type !== 'email_outbound') continue;
       if (new Date(lastInteraction.occurred_at) > new Date(cutoff)) continue;
 
-      const hasInbound = recentInteractions.some(i => i.type === 'email_inbound');
-      if (!hasInbound) continue;
-
-      // Deterministic OOO guard: if the most recent INBOUND from the prospect
-      // is an out-of-office auto-reply, skip the 48h follow-up entirely. Never
-      // let the AI write "grabbed your OOO note" prose against an autoresponder.
-      const latestInbound = recentInteractions.find(i => i.type === 'email_inbound');
-      if (latestInbound) {
-        const ooo = detectOutOfOffice(latestInbound.subject, latestInbound.body);
-        if (ooo.isOoo) {
-          result.skipped++;
-          result.skipped_reasons['ooo_detected'] =
-            (result.skipped_reasons['ooo_detected'] || 0) + 1;
-          continue;
-        }
-      }
+      // No inbound / OOO guards needed here anymore: prospectHasReplied() above
+      // already skips any lead with a single inbound (an OOO auto-reply is an
+      // inbound too), so by this point the thread is outbound-only.
 
       const threadId = lastInteraction.gmail_thread_id;
       if (!threadId) continue;
