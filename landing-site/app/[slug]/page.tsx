@@ -18,7 +18,7 @@ interface LandingPage {
 // Static "about us" — the two co-founders (same on every page).
 const SUPA_IMG = 'https://kwxfsilefratpbzhvcpy.supabase.co/storage/v1/object/public/outreach-images/_founders';
 const FOUNDERS = [
-  { name: 'Adit Mittal', img: `${SUPA_IMG}/adit.png`, lines: ['Built Mockstreetai.com', 'Offers from Citadel Securities & BlackRock', 'CS + Business @ Berkeley'] },
+  { name: 'Adit Mittal', img: `${SUPA_IMG}/adit.png`, lines: ['Built Mockstreetai.com', 'Offers from Citadel Securities & BlackRock', 'CS @ Berkeley'] },
   { name: 'Asim Ali', img: `${SUPA_IMG}/asim.png`, lines: ['SWE Intern @ Bluejay (YC Sp25)', 'SWE Full-Time @ Commure (YC S16)', 'CS @ Berkeley'] },
 ];
 
@@ -53,14 +53,14 @@ function buildCopy(p: LandingPage) {
   const note =
     `We're Adit and Asim, two students at Berkeley. We've been talking to a bunch of product ` +
     `leaders ${namedIndustry ? `in ${namedIndustry} ` : ''}to understand how teams actually decide ` +
-    `what to build, and where it gets messy. We aren't pitching anything. We're just ` +
-    `curious how you and your team work.`;
+    `what to build, and where it gets messy. We aren't pitching anything. But if there's a ` +
+    `problem you're wrestling with right now, we'd love to hear it.`;
 
   // "What we'd love to ask" — broad, product-flavoured, no emdashes.
   const asks = [
-    { n: '01', t: 'Your product cycle' },
-    { n: '02', t: 'Your biggest pain points' },
-    { n: '03', t: 'How you prioritize' },
+    { n: '01', t: 'Your biggest pain points' },
+    { n: '02', t: 'How you prioritize' },
+    { n: '03', t: 'What you would fix first' },
   ];
 
   return { first, headline, eyebrow, note, asks };
@@ -155,7 +155,7 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
 
       {/* ── CTA ── */}
       <section className="cta rise">
-        <p className="cta-line">Thirty minutes. We just want to learn how your team decides what to build.</p>
+        <p className="cta-line">{`Thirty minutes. Bring a problem you're stuck on, and we'll dig in to help.`}</p>
         <a className="btn big" href={cal}>Book a 30 min chat →</a>
       </section>
       <div style={{ height: '6rem' }} aria-hidden />
