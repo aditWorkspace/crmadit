@@ -2,6 +2,7 @@
   "crons": [
     { "path": "/api/cron/daily-digest", "schedule": "0 16 * * *" },
     { "path": "/api/cron/process-transcripts", "schedule": "30 17 * * *" },
-    { "path": "/api/cron/granola-sync", "schedule": "0 11 * * *" }
+    { "path": "/api/cron/granola-sync", "schedule": "0 11 * * *" },
+    { "path": "/api/cron/email-tool/credit-check", "schedule": "30 14 * * *" }
   ]
 }

@@ -346,3 +346,35 @@ async function singleImageAttempt(params: ImageGenParams & { model: string }): P
     clearTimeout(timeout);
   }
 }
+
+// ── Account credit balance ──────────────────────────────────────────────────
+
+const OPENROUTER_CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
+
+/**
+ * Fetch the remaining OpenRouter credit balance in USD-equivalent credits
+ * (total_credits − total_usage). Returns null if the key is unset or the call
+ * fails — callers MUST treat null as "couldn't check", never as "empty", so a
+ * transient blip doesn't fire a false alarm.
+ */
+export async function getOpenRouterCreditsRemaining(timeoutMs = 10_000): Promise<number | null> {
+  if (!process.env.OPENROUTER_API_KEY) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(OPENROUTER_CREDITS_URL, {
+      headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const total = Number(data?.data?.total_credits);
+    const used = Number(data?.data?.total_usage);
+    if (!Number.isFinite(total) || !Number.isFinite(used)) return null;
+    return total - used;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}

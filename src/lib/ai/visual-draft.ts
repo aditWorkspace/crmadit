@@ -309,11 +309,24 @@ async function uploadImage(supabase: Supa, key: string, bytes: Buffer): Promise<
   return data.publicUrl;
 }
 
-/** Resize + JPEG-compress a model image (raw PNG is ~1.5MB) so it loads fast in
- *  the email + dashboard (~80-150KB). Falls back to the input on error. */
+// Cold-email deliverability: heavy images hurt inbox placement, so keep the
+// hosted email image under 50KB. Target a hair below for headroom.
+const MAX_EMAIL_IMAGE_BYTES = 48 * 1024;
+
+/** Resize + JPEG-compress a model image (raw PNG is ~1.5MB) so it loads fast and
+ *  stays under ~48KB in the email + dashboard. Caps the LONGEST side (so tall
+ *  portrait crops don't stay heavy), then steps quality down until it fits the
+ *  size budget. Falls back to the input on error. */
 export async function compressImage(input: Buffer): Promise<Buffer> {
   try {
-    return await sharp(input).resize({ width: 720, withoutEnlargement: true }).jpeg({ quality: 80, mozjpeg: true }).toBuffer();
+    const base = sharp(input).resize(680, 680, { fit: 'inside', withoutEnlargement: true });
+    let out = await base.clone().jpeg({ quality: 78, mozjpeg: true }).toBuffer();
+    // Whiteboard photos look fine well below q78; floor at q54 so we never
+    // over-crush. The loop guarantees the <50KB cap for any image/orientation.
+    for (let q = 72; q >= 54 && out.length > MAX_EMAIL_IMAGE_BYTES; q -= 6) {
+      out = await base.clone().jpeg({ quality: q, mozjpeg: true }).toBuffer();
+    }
+    return out;
   } catch { return input; }
 }
 
@@ -479,19 +492,19 @@ function variantEmail(variant: EmailVariant, p: { first: string; industry: strin
   if (variant === 'B') {
     return {
       subject: 'how your team decides what to build',
-      intro: `Hi ${p.first},\n\nI'm a student at Berkeley, and my friend and I are trying to understand how ${ind} teams actually decide what to build next. We're talking to product leaders to learn how they prioritize, and would genuinely love your take. Made you a quick page: ${p.pageUrl}`,
+      intro: `Hi ${p.first},\n\nI'm a student at Berkeley, and my friend and I are trying to understand how ${ind} teams actually decide what to build next. We're talking to product leaders to learn how they prioritize, and would genuinely love your take. Made you a quick page: ${p.pageUrl}\n\nAnd if there's a prioritization problem you're stuck on right now, we'd genuinely love to hear about it on a quick call and see if we can help.`,
     };
   }
   if (variant === 'C') {
     return {
       subject: 'cal student curious about prioritization',
-      intro: `Hi ${p.first},\n\nMy friend and I are two Berkeley students talking to product leaders${spec ? ` in ${spec}` : ''} about how they prioritize, and we put together a quick page for you: ${p.pageUrl}`,
+      intro: `Hi ${p.first},\n\nMy friend and I are two Berkeley students talking to product leaders${spec ? ` in ${spec}` : ''} about how they prioritize, and we put together a quick page for you: ${p.pageUrl}\n\nIf your team's wrestling with a tough call on what to build next, we'd love to hear it on a short chat and see where we can help.`,
     };
   }
   // A (control) — current copy
   return {
     subject: VISUAL_SUBJECT,
-    intro: `Hi ${p.first}!\n\nI came across your profile through our mutual LinkedIn connections. Me and another Berkeley student are developing a new product for ${ind} eng teams. We made this quick page for you: ${p.pageUrl}`,
+    intro: `Hi ${p.first}!\n\nI came across your profile through our mutual LinkedIn connections. Me and another Berkeley student are developing a new product for ${ind} eng teams. We made this quick page for you: ${p.pageUrl}\n\nIf there's a problem your team keeps hitting around what to build next, we'd love 20 minutes to hear it.`,
   };
 }
 
@@ -523,7 +536,7 @@ export function renderEmailHtml(introText: string, imageUrl: string | null, page
 
   // Plain inline photo — NOT a link (per request).
   const img = safeImg
-    ? `<img src="${esc(safeImg)}" alt="" width="460" style="width:100%;max-width:460px;height:auto;border-radius:8px;border:1px solid #e5e5e5;display:block" />`
+    ? `<img src="${esc(safeImg)}" alt="" width="400" style="width:100%;max-width:400px;height:auto;border-radius:8px;border:1px solid #e5e5e5;display:block" />`
     : '';
   const intro = `<div style="margin:0 0 16px">${toHtml(introText)}</div>`;
   const sign = signoff ? `<div style="margin:16px 0 0">${toHtml(signoff)}</div>` : '';
