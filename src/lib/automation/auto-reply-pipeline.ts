@@ -4,7 +4,7 @@
  * Orchestrates the 5-stage bulletproof auto-reply system:
  * 1. Deterministic pre-filter (no AI) - instant skip for OOO, unsubscribe, etc.
  * 2. AI Classifier (Haiku) - 40+ categories with multi-category support
- * 3. AI Edge Case Detector (DeepSeek) - scoring rubric with 7.0/10 threshold
+ * 3. AI Edge Case Detector (Claude Haiku) - scoring rubric with 7.0/10 threshold
  * 4. AI Writer (Haiku) - addresses all categories and embedded questions
  * 5. Queue for 30-60 min delay with human-reply cancellation
  */

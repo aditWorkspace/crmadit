@@ -96,6 +96,16 @@ export const FIRECRAWL_MAX_SUCCESS_PAGES = 2;
 export const FIRECRAWL_MAX_TOTAL_MARKDOWN_CHARS = 40_000;
 export const FIRECRAWL_SCRAPE_TIMEOUT_MS = 12_000;
 
+// Daily Firecrawl credit ceiling (per UTC day), enforced at the scrapeUrl choke
+// point via a DB ledger (migration 042_firecrawl_daily_budget). Each scrape =
+// 1 credit; the live visual pipeline scrapes once per lead, so this is also the
+// effective per-lead budget. Scrapes past the cap fall back to the free plain-
+// fetch path — quality dips slightly, nothing fails. Env-overridable (set
+// FIRECRAWL_DAILY_CREDIT_CAP in Vercel) so it can be tuned without a code deploy.
+// NOTE: the live key is 1,000 credits/MONTH; at 700/day it lasts ~1.4 days, so a
+// larger Firecrawl plan is required to actually sustain this ceiling.
+export const FIRECRAWL_DAILY_CREDIT_CAP = Number(process.env.FIRECRAWL_DAILY_CREDIT_CAP) || 700;
+
 // Perplexity Sonar request timeout. Without this the fetch can hang forever
 // and hold the worker lock (observed: a single call ran 450s+ in testing).
 export const SONAR_TIMEOUT_MS = 45_000;
@@ -104,7 +114,7 @@ export const SONAR_TIMEOUT_MS = 45_000;
 // These are planning numbers; verify against live pricing before scaling.
 export const SONAR_CALL_COST_USD = 0.008;
 export const FIRECRAWL_SCRAPE_COST_USD = 0.002;
-export const LLM_EXTRACT_COST_USD = 0.0006;   // DeepSeek extraction
+export const LLM_EXTRACT_COST_USD = 0.0006;   // Claude Haiku extraction
 export const LLM_WRITE_COST_USD = 0.0015;     // Haiku write
 export const LLM_CLAIMCHECK_COST_USD = 0.0006;
 

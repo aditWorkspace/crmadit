@@ -3,7 +3,7 @@
 //   0. sendability pre-check (don't spend on a lead we can't email)
 //   1. company research  (Firecrawl scrape, cached per domain)
 //   2. person+company research (Perplexity Sonar, cited)
-//   3. extraction        (DeepSeek → structured evidence cards)
+//   3. extraction        (Claude Haiku → structured evidence cards)
 //   4. verification      (IN CODE: citation + quote-in-source + sensitive filter)
 //   5. tier + score      (IN CODE, never the model)
 //   6. write             (Haiku, from SELECTED cards only)

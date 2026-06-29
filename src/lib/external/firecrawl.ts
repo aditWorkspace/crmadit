@@ -28,6 +28,7 @@ import {
   FIRECRAWL_MAX_TOTAL_MARKDOWN_CHARS,
   FIRECRAWL_SCRAPE_TIMEOUT_MS,
 } from '@/lib/email-tool/cold-constants';
+import { consumeFirecrawlCredit } from './firecrawl-budget';
 
 const SCRAPE_ENDPOINT = 'https://api.firecrawl.dev/v2/scrape';
 
@@ -74,6 +75,9 @@ export async function scrapeUrl(
   opts: { timeoutMs?: number } = {},
 ): Promise<string | null> {
   const key = apiKey();
+  // Daily budget gate: once today's Firecrawl credits are spent, skip the paid
+  // scrape and behave like a page-level miss so callers use the free fallback.
+  if (!(await consumeFirecrawlCredit())) return null;
   let res: Response;
   try {
     res = await fetchWithTimeout(

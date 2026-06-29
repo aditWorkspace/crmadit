@@ -13,7 +13,7 @@ function debateEnabled(): boolean {
 //   - If CHAT_DEBATE_ENABLED is on (default), runs the router → retriever →
 //     (advocates|lookup) → judge pipeline with transcript evidence and
 //     conversation history.
-//   - Otherwise falls back to the legacy single DeepSeek call over just the
+//   - Otherwise falls back to the legacy single-model (Claude) call over just the
 //     four knowledge docs.
 export async function answerInsightsChat(
   question: string,

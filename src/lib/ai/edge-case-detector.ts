@@ -1,5 +1,5 @@
 /**
- * Stage 3: AI Edge Case Detector (DeepSeek)
+ * Stage 3: AI Edge Case Detector (Claude Haiku)
  *
  * Paranoid safety check - finds ANY reason not to auto-reply.
  * Uses scoring rubric with 7.0/10 threshold.

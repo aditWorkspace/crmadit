@@ -259,17 +259,18 @@ Sends both HTML (nicely formatted) and plain text versions.
 
 ## AI Features
 
-All AI calls go through OpenRouter (`src/lib/ai/openrouter.ts`):
-- Default model: `anthropic/claude-sonnet-4-20250514`
-- Auto follow-up uses: `anthropic/claude-haiku-4-5` (cheaper, fast)
-- AI email drafting uses: `deepseek/deepseek-chat-v3-0324` (draft-email route)
-- JSON mode via `response_format: { type: 'json_object' }`
+Text + vision LLM calls go **directly to the Anthropic API** (`src/lib/ai/anthropic.ts`) — the `isAnthropicModel` seam in `openrouter.ts` routes any `claude-*` id there. Only image generation still uses OpenRouter (Claude can't generate images).
+- Default text model: `claude-sonnet-4-6`
+- Hot-path / cheap calls (auto follow-up, triage, extraction, edge detector): `claude-haiku-4-5`
+- AI email drafting (draft-email route): `claude-sonnet-4-6`
+- Whiteboard image gen: `google/gemini-3.1-flash-image-preview` via OpenRouter
+- JSON mode via the Anthropic SDK (DeepSeek/Qwen fully retired as of 2026-06)
 
 **Transcript processing** (`src/lib/ai/transcript-processor.ts`): Full call transcript → structured JSON with summary, sentiment, interest level, next steps, action items, key quotes, pain points, product feedback, follow-up suggestions, and extracted contact info.
 
 **Follow-up drafter** (`src/lib/ai/followup-drafter.ts`): Drafts a 2-3 sentence casual follow-up email in the style of a Berkeley student founder (direct, unpretentious).
 
-**Email compose modal** (`src/components/leads/email-compose-modal.tsx`): Inline compose window in the lead detail page. Has an "AI Draft" button that calls `/api/leads/[id]/draft-email` to generate a draft from the thread context using DeepSeek.
+**Email compose modal** (`src/components/leads/email-compose-modal.tsx`): Inline compose window in the lead detail page. Has an "AI Draft" button that calls `/api/leads/[id]/draft-email` to generate a draft from the thread context using Claude (Sonnet).
 
 ---
 
@@ -349,7 +350,7 @@ All AI calls go through OpenRouter (`src/lib/ai/openrouter.ts`):
 - `POST /api/leads/[id]/note` — add note interaction
 - `GET/POST /api/leads/[id]/action-items` — list/create action items
 - `GET/POST /api/leads/[id]/interactions` — list/create interactions
-- `POST /api/leads/[id]/draft-email` — AI-generated email draft (DeepSeek)
+- `POST /api/leads/[id]/draft-email` — AI-generated email draft (Claude Sonnet)
 - `POST /api/leads/[id]/send-email` — send email via Gmail + log interaction
 
 ### Gmail
